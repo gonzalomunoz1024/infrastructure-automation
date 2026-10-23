@@ -406,6 +406,8 @@ abstract class AccountLifecycleFlows extends WithService {
         call(POST, a.base() + "/access-keys", internal(), Map.of("userId", miaId), CONFLICT);
         call(POST, a.base() + "/access-requests", member, Map.of("action", "iam:create", "role", "account-admin", "reason", "let me back in"), FORBIDDEN);
         call(POST, a.users(), a.owner(), Map.of("email", email("late")), FORBIDDEN);
+        JsonNode renamed = call(PATCH, a.base(), a.owner(), Map.of("name", a.name() + " reopened"), FORBIDDEN);
+        assertThat(renamed.get("denied").get("reason").asText()).as("nor does its owner change it").isEqualTo("account closed");
         JsonNode decision = call(POST, "/v1/authorize", member, Map.of("principal", Map.of("userId", miaId, "accountId", a.accountId()), "checks",
                 List.of(Map.of("action", "compute:get", "resource", vm))), OK).get("decisions").get(0);
         assertThat(decision.get("allowed").asBoolean()).isFalse();
@@ -440,6 +442,9 @@ abstract class AccountLifecycleFlows extends WithService {
         assertThat(call(PATCH, a.base(), internal(), Map.of("costCentre", "cc-9"), OK).get("costCentre").asText()).isEqualTo("cc-9");
         assertThat(call(PATCH, a.base(), a.owner(), Map.of("name", a.name() + " renamed"), OK).get("costCentre").asText()).as("absent keeps it")
                 .isEqualTo("cc-9");
+        String operator = bearer(addUser(a, email("op"), "members"), a.accountId(), List.of("members"));
+        JsonNode refused = call(PATCH, a.base(), operator, Map.of("costCentre", "cc-mine"), FORBIDDEN);
+        assertThat(refused.get("denied").get("action").asText()).as("an account change is the account admin's").isEqualTo("account:update");
         assertThat(call(PATCH, a.base(), internal(), Map.of("costCentre", ""), OK).has("costCentre")).as("empty clears it").isFalse();
         assertThat(call(GET, a.base(), a.owner(), null, OK).has("costCentre")).isFalse();
         call(PATCH, a.base(), internal(), Map.of("costCentre", "c".repeat(65)), BAD_REQUEST);

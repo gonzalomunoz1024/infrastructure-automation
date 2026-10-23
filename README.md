@@ -152,12 +152,13 @@ to the hub first).
   in the directory. `POST /v1/accounts/{accountId}:close` (internal, `{reason}`, 202) closes an
   account for good: every call in it is refused from then on (`account closed`) and sign-in leaves
   it out; its usable access keys are revoked, its pending access requests expire and its open quota
-  requests are withdrawn, each with its event, then `AccountChanged closed`. A `PATCH` never sets
-  `closed` and no longer changes a closed account's status (`suspended` stays reversible), closing
-  twice is a 409, no key is minted in an account that is not active, and the platform service
-  account stays as it is (the platform cannot disable one). An account may carry a `costCentre`
-  (at most 64 characters, `""` clears it): the cost service groups chargeback by it, and by
-  `owningTeam` when there is none.
+  requests are withdrawn, each with its event, then `AccountChanged closed`. A user's `PATCH` of an
+  account takes `account:update` (account admins), so only internal callers change a suspended or
+  closed account; a `PATCH` never sets `closed` and no longer changes a closed account's status
+  (`suspended` stays reversible), closing twice is a 409, no key is minted in an account that is not
+  active, and the platform service account stays as it is (the platform cannot disable one). An
+  account may carry a `costCentre` (at most 64 characters, `""` clears it): the cost service groups
+  chargeback by it, and by `owningTeam` when there is none.
 - Access keys: `ck_` id plus a 43-character secret shown once; at most two usable keys per user;
   rotation keeps the previous secret for ten minutes; a removed user's keys are revoked.
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the

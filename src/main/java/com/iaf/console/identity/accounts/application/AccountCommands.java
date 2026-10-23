@@ -15,6 +15,7 @@ import com.iaf.console.identity.accounts.ports.outbound.SecretsPort;
 import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.Names;
 import com.iaf.console.identity.common.Versions;
+import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.kit.errors.ConflictException;
@@ -27,8 +28,10 @@ import reactor.core.publisher.Mono;
  * The writes on accounts. Creating one mints the twelve-digit id, asks the platform for the
  * account's console service account (P-03), puts its token in the secrets store, stores the
  * account, provisions its built-in IAM and first owner, and appends {@code AccountChanged}. A
- * change takes no {@code closed} status: an account closes through {@link AccountClosure}, and a
- * closed account's status no longer changes.
+ * user's change takes {@code account:update} on the account (the account-admin role has it), so
+ * nobody changes a suspended or closed account but the console's own services. A change takes no
+ * {@code closed} status: an account closes through {@link AccountClosure}, and a closed account's
+ * status no longer changes.
  */
 public final class AccountCommands {
 
@@ -42,19 +45,23 @@ public final class AccountCommands {
     private final SecretsPort secrets;
     private final AccountProvisioningPort provisioning;
     private final IdentityEvents events;
+    private final AccessGuard guard;
     private final Ids ids;
     private final Clock clock;
+    private final String partition;
     private final String defaultRegion;
 
     public AccountCommands(AccountStore accounts, PlatformIdentityPort platform, SecretsPort secrets, AccountProvisioningPort provisioning,
-            IdentityEvents events, Ids ids, Clock clock, String defaultRegion) {
+            IdentityEvents events, AccessGuard guard, Ids ids, Clock clock, String partition, String defaultRegion) {
         this.accounts = accounts;
         this.platform = platform;
         this.secrets = secrets;
         this.provisioning = provisioning;
         this.events = events;
+        this.guard = guard;
         this.ids = ids;
         this.clock = clock;
+        this.partition = partition;
         this.defaultRegion = defaultRegion;
     }
 
@@ -125,6 +132,7 @@ public final class AccountCommands {
         AccountScope scope = caller.scope(accountId);
         return accounts.find(scope)
                 .switchIfEmpty(Mono.error(NotFoundException.of("account", accountId)))
+                .flatMap(current -> guard.require(caller, accountId, "account:update", resource(accountId)).thenReturn(current))
                 .flatMap(current -> {
                     Versions.check(ifMatch, current.version(), "the account");
                     if (current.isClosed() && command.status() != null) {
@@ -142,6 +150,11 @@ public final class AccountCommands {
                             .flatMap(stored -> events.changed(IdentityEvents.Subject.ACCOUNT, stored.accountId(), stored.accountId(), caller.actor(),
                                     stored.version(), action, stored).thenReturn(stored));
                 });
+    }
+
+    /** The account as a resource, named as the IAM things are ({@code wfrn:<partition>:iam::<account>:account/<account>}). */
+    private String resource(String accountId) {
+        return "wfrn:" + partition + ":iam::" + accountId + ":account/" + accountId;
     }
 
     /** A cost centre is at most 64 characters once trimmed; a blank one is none. */

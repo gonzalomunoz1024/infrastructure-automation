@@ -25,6 +25,7 @@ import com.iaf.console.identity.accounts.ports.outbound.PlatformIdentityPort;
 import com.iaf.console.identity.accounts.ports.outbound.SecretsPort;
 import com.iaf.console.identity.common.IdentityProperties;
 import com.iaf.console.identity.common.Ids;
+import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.kit.mongo.Mongo;
 import com.iaf.console.platform.client.PlatformPort;
@@ -67,8 +68,8 @@ public class AccountsConfiguration {
 
     @Bean
     public AccountCommands accountCommands(AccountStore accounts, PlatformIdentityPort platform, SecretsPort secrets, AccountProvisioningPort provisioning,
-            IdentityEvents events, Ids ids, Clock clock, IdentityProperties properties) {
-        return new AccountCommands(accounts, platform, secrets, provisioning, events, ids, clock, properties.region());
+            IdentityEvents events, AccessGuard guard, Ids ids, Clock clock, IdentityProperties properties) {
+        return new AccountCommands(accounts, platform, secrets, provisioning, events, guard, ids, clock, properties.partition(), properties.region());
     }
 
     /** The closure, with every slice's closure step (looked up per closure, so no slice's beans wait on this one). */
