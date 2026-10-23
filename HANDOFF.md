@@ -22,6 +22,53 @@ status reports in the same hour; they were not re-run for this handoff. Anything
 progress but had **not pushed** is lost to you unless it later appears on GitHub; section 6 says
 which items are at risk.
 
+## Final status at handoff (about 19:55 UTC)
+
+All build sessions stopped at about 19:50 UTC, when the usage limit was reached. They were told to push everything, WIP included. `handoff/BRANCH-HEADS.md` lists every branch head at that moment. This block supersedes the 19:05 update below wherever they differ. Its contents are from the owners' final reports; CI was not re-run.
+
+**Fixed since 19:05**
+- **Full-system run findings.** The e2e run (draft PR #55) numbers its integration bugs F-1 to F-15.
+  - F-1, F-2, F-7 and F-11: fixed in console-libs at **cd6f535** on PR #4's branch, CI green.
+    - The fake runs on a JRE.
+    - The fake app publishes the feed to Kafka under its `kafka` profile, so the e2e bridge can go.
+    - The fake serves P-22 price lists, and types carry price bindings.
+    - Fake-created VMs report their own attributes, so new VMs no longer show drift.
+    - One gap remains: publishing a price list emits no event, because the event contract has no price-list content kind.
+  - F-9: the blank console after sign-in (`/types` read as a bare list instead of `{items}`). Fixed on web #41 and phase 7.
+  - F-12 and F-14: a revert is followed until it closes, and a deleted resource shows its tombstone. Done in PR #56 (`console-web--resource-fixes`), merged into `console-web--phase-5`.
+  - F-15: web cost #49 was blank against the live BFF. Fixed at b327e4d.
+  - F-10: the cost service answers internal reads of one resource (#28).
+  - F-13: the stale resource ETag (it hid a changed `lastJob`). Fixed on BFF phase 4 and carried into `console-bff--cost` (#34 at c4dc41a). **Not yet carried into #51 (phase 9) or #52 (org admins):** merge phase-4 into them.
+- **State service.** All 9 security findings are fixed on #33 (0d6164a), including the transfer fix.
+  - The state service's `:transfer` now accepts only the BFF calling with its service token, naming the person who asked (see the commit "the state service's transfer is called with the BFF's service token" on this branch).
+  - B-4's transfer route must call it that way.
+  - #33, #45 (a85521f) and #48 are green and mergeable.
+  - #47: the PR run is green, but one push build died during setup, before any of the PR's code ran. Click "Re-run failed jobs" once.
+- **BFF.** Security fixes are on PR #6, merged into phase 4 (#26): 197 tests green.
+- **Cost.** #28 is green at 3664b57. #34 is green at c4dc41a: cost, scorecards and drift routes, plus the phase-4 security fixes.
+- **Drift scan.** Each type's list is now walked once across all accounts, and discover walks are capped to the cold tier. At 1M resources: 4.9 platform calls/s, nothing past its interval (was 74%). Draft #53; the 10M runs at 5/s and 6.7/s were still running.
+- **Drift scorecards.** Security fixes are on PR #21: remediation actor and assertion, write checks, OPA package check, bearer token, push off by default. A follow-up is WIP on `console-drift-service--scorecards-wip`.
+
+**Unfinished at handoff (start here)**
+| Item | Branch / PR | State |
+|---|---|---|
+| BFF CLI sign-in (decision 31) | `console-bff--clients` 5c66f1f | WIP |
+| BFF notifications (decision 32) | `console-bff--notifications` a55ca11 | WIP |
+| SDKs and CLI | `console-sdk` 338a4e0 | TypeScript and Java SDKs and CLI; 192 tests green locally; CLI sign-in waits on `--clients` |
+| BFF time travel, revert plan, map, activity, transfer (B-4) | none pushed | A worker was mid-way at the stop; assume lost. Spec in `handoff/bff-remaining.md` |
+| BFF blueprints routes and executor (B-5) | none pushed | As above |
+| BFF ChatOps (B-8) | `console-bff--chatops` 3c36e69 | WIP, unreviewed, no PR |
+| BFF load tests | none | No code written |
+| BFF unverified security items (shared jti store, cluster-token cap, rate limit) | `console-bff--security-next` 27a2ffe | Verify, then merge into phase-1 and upward |
+| Carry BFF phase-4 fixes into #51, #52 and #42 | - | #42 merge was in progress (one conflict resolved, building) |
+| Web phase 7 | draft #54 `console-web--phase-7` 154347f | Policy editor, simulator, boundaries, guardrails, activity trail, time travel, lineage and resource map merged (514 unit tests). Still to merge: recent, favourites, Service Quotas and quota increases; blueprints, change risk, scorecards and event subscriptions; resource transfer and mobile approvals; team dashboards and service health (stream branches `console-web--p7-*`) |
+| Web security fixes for #41 | `console-web--phase-5-security` / `-security-wip` ea33f69 | Journey suite was running |
+| e2e full journey | draft #55 `console-e2e--journey` cbf72e5 | Pinned to every owner's fix, all steps enabled; first full CI run not confirmed green |
+| Cost: one audience per service token | #28 | Not checked by its owner |
+| Drift 10M scan runs | draft #53 cfddfee | Running at the stop |
+
+---
+
 ## Update 19:05 UTC: most at-risk work is now on GitHub
 
 The build sessions pushed their work in progress just after this file was first written. Read

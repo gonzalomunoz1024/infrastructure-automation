@@ -10,5 +10,6 @@ Start with `../HANDOFF.md`, then `DEVIN-PLAYBOOK.md`.
 | `PLAN-SNAPSHOT.md` | The full product plan, converted from the plan document (revision 72) |
 | `services/*.md` | Per-service engineering notes recorded by the build sessions |
 | `security-review/*.md` | The 2026-10-23 cross-service security review, per service |
+| `BRANCH-HEADS.md` | Every branch head at handoff, 19:55 UTC |
 | `scripts/` | The drift/BFF cross-service journey script and its route notes |
 - [bff-remaining.md](bff-remaining.md): the BFF's four unstarted items (ChatOps, time travel and transfer, blueprints executor, WP 6.2 load tests) and where its in-progress branches stand.
