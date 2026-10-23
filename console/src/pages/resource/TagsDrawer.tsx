@@ -6,7 +6,7 @@ import { FailureNote, useCommand } from '../../app/commands'
 import { ActionButton } from '../../app/Refusal'
 import { Link, pathFor } from '../../app/router'
 import { bff } from '../../lib/bff'
-import type { ConsoleType } from '../../lib/descriptors'
+import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { allowedSentence, andList, newTagRow, tagAccepts, tagDefault, TAG_NAME, TAG_VALUE_MAX, tagsApi, type RequiredTag, type TagRow } from '../../lib/tags'
 import { TagRows } from '../tags/TagRows'
@@ -74,8 +74,9 @@ export function TagsDrawer({ type, wfrn, name, tags, onClose, onSaved }: TagsDra
   const initial = useMemo(() => rowsOf(tags, required), [tags, required])
   const shown = rows ?? initial
   const reqKeys = new Set(required.map((t) => t.key))
+  const noun = singularOf(type.title).toLowerCase()
   // a required tag the resource carries stays: its row keeps its name and cannot be removed
-  const locked = Object.fromEntries(shown.filter((r) => reqKeys.has(r.key) && r.key in tags).map((r) => [r.id, `Required by this account, so it stays on the ${type.title.toLowerCase().replace(/s$/, '')}; change its value instead.`]))
+  const locked = Object.fromEntries(shown.filter((r) => reqKeys.has(r.key) && r.key in tags).map((r) => [r.id, `Required by this account, so it stays on the ${noun}; change its value instead.`]))
   const errors = drawerErrors(shown, tags, required, problems)
   const present = new Set(shown.map((r) => r.key.trim()))
   const lacking = required.filter((t) => !present.has(t.key))
@@ -144,7 +145,7 @@ export function TagsDrawer({ type, wfrn, name, tags, onClose, onSaved }: TagsDra
           )}
           {lacking.length > 0 && decision.allowed && (
             <div className="mt-5 rounded-lg border border-dashed border-stroke-light px-3 py-2.5 text-caption text-secondary">
-              <p>{`This ${type.title.toLowerCase().replace(/s$/, '')} does not carry ${andList(lacking.map((t) => t.title))}, which the account requires of every new resource.`}</p>
+              <p>{`This ${noun} does not carry ${andList(lacking.map((t) => t.title))}, which the account requires of every new resource.`}</p>
               <Button size="sm" variant="ghost" icon="plus" className="mt-1.5" onClick={() => setRows([...shown, ...lacking.map((t) => newTagRow(t.key, tagDefault(t, {})))])}>
                 {lacking.length === 1 ? `Add ${lacking[0].title}` : 'Add the missing required tags'}
               </Button>

@@ -49,7 +49,8 @@ export default function TagPolicyPage(_props: PageProps) {
       ) : required.length === 0 ? (
         <EmptyState icon="shield" title="No tags are required here" message="This account asks for no tag on a new resource; a create may name its own." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-stroke-light">
+        // on a phone the table scrolls sideways: its frame takes the focus so a keyboard can scroll it
+        <div role="region" aria-label="Required tags" tabIndex={0} className="overflow-x-auto rounded-lg border border-stroke-light">
           <table className="w-full min-w-[44rem] text-left text-sm">
             <caption className="sr-only">{`The tags every new resource of ${account.name} must carry`}</caption>
             <thead className="text-caption text-tertiary">

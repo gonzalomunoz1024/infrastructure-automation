@@ -68,7 +68,9 @@ export function ApplyTagsDialog({ resources: given, onClose, onApplied }: ApplyT
   // the names the resources carry, which may be removed; a required tag stays
   const carried = [...new Set(resources.flatMap((r) => Object.keys(r.tags ?? {})))].sort()
   const set = Object.fromEntries(rows.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value]))
-  const change: TagApplyInput = { resources: resources.map((r) => r.wfrn), set, remove }
+  // a tag named above is set, not removed: its box stands aside while the row names it
+  const removing = remove.filter((k) => !(k in set))
+  const change: TagApplyInput = { resources: resources.map((r) => r.wfrn), set, remove: removing }
   const local = applyProblems(required, change)
   // a row says what is wrong with it: its name or a required tag's value; the BFF's word by pointer
   const errors = rowErrors(rows, [])
@@ -115,7 +117,7 @@ export function ApplyTagsDialog({ resources: given, onClose, onApplied }: ApplyT
               ))}
             </ul>
           )}
-          {result.applied.length > 0 && <p className={failed.length ? 'mt-4 text-sm text-secondary' : 'text-sm text-secondary'}>{`${plural(result.applied.length)} now carry ${Object.keys(set).length ? Object.entries(set).map(([k, v]) => `${k}=${v}`).join(', ') : 'their tags'}${remove.length ? `, without ${remove.join(', ')}` : ''}.`}</p>}
+          {result.applied.length > 0 && <p className={failed.length ? 'mt-4 text-sm text-secondary' : 'text-sm text-secondary'}>{`${plural(result.applied.length)} now carry ${Object.keys(set).length ? Object.entries(set).map(([k, v]) => `${k}=${v}`).join(', ') : 'their tags'}${removing.length ? `, without ${removing.join(', ')}` : ''}.`}</p>}
         </OverlayBody>
         <OverlayFooter>
           <CloseButton label="Done" />
@@ -168,7 +170,7 @@ export function ApplyTagsDialog({ resources: given, onClose, onApplied }: ApplyT
                 {carried.map((k) => (
                   <Checkbox
                     key={k}
-                    checked={remove.includes(k)}
+                    checked={removing.includes(k)}
                     disabled={reqKeys.has(k) || k in set}
                     description={reqKeys.has(k) ? 'Required by this account' : k in set ? 'Set above' : undefined}
                     label={<span className="font-mono text-caption">{k}</span>}
