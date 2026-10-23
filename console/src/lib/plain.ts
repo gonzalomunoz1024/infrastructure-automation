@@ -69,8 +69,33 @@ function detailOf(e: ApiError): string | undefined {
   return undefined
 }
 
+/** The version a 409 says the resource moved on to (the BFF's ConflictException carries it as `detail.version`), when it says so. */
+export function movedOnTo(error: unknown): number | undefined {
+  if (!isApiError(error) || error.status !== 409 || !error.detail || typeof error.detail !== 'object') return undefined
+  const v = (error.detail as { version?: unknown }).version
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** The state a 409 refused a change in (`detail.state`): the BFF changes a resource only while it is active or failed. */
+export function refusedInState(error: unknown): string | undefined {
+  if (!isApiError(error) || error.status !== 409 || !error.detail || typeof error.detail !== 'object') return undefined
+  const s = (error.detail as { state?: unknown }).state
+  return typeof s === 'string' && s ? s : undefined
+}
+
+/** The 409s whose `error` is a sentence rather than a code, said in the console's words. */
+function conflictWords(error: unknown): Explanation | undefined {
+  const version = movedOnTo(error)
+  if (version !== undefined) return { title: 'Someone changed this first', message: `It moved on to version ${version} while you had it open.`, next: 'Load the latest, check what changed, and apply yours again.', retryable: false }
+  const state = refusedInState(error)
+  if (state) return { title: `It is ${state} right now`, message: 'A change runs only while the resource is active or failed.', next: 'Wait for the request in flight to end, then send it again.', retryable: true }
+  return undefined
+}
+
 /** A failed call as words: what happened, why, and what to do next. */
 export function explain(error: unknown, what?: string): Explanation {
+  const conflict = conflictWords(error)
+  if (conflict && isApiError(error)) return { ...conflict, correlationId: error.correlationId }
   if (isApiError(error)) {
     const byCode = CODES[error.stepUp ? 'step-up.required' : error.error]
     const byStatus = STATUS[error.status] ?? (error.status >= 500 ? STATUS[500] : error.status >= 400 ? STATUS[400] : undefined)

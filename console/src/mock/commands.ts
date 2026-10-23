@@ -222,6 +222,28 @@ export function updateSchemaOf(rt: ResourceType): Schema {
   return { type: 'object', properties: Object.fromEntries(props) }
 }
 
+/** What an update workflow's input may carry besides its subject (P-08): the mutable fields it changes, and operational inputs such as its reason. */
+export function updateInputsOf(entry: CatalogEntry, rt: ResourceType): { mutable: string[]; operational: string[] } {
+  const subject = subjectFieldOf(entry, rt)
+  const props = Object.entries(entry.input?.properties ?? {}).filter(([name]) => name !== subject)
+  const flagged = (flag: 'mutable' | 'operational') => props.filter(([, p]) => p?.['x-console']?.[flag] === true).map(([name]) => name)
+  return { mutable: flagged('mutable'), operational: flagged('operational') }
+}
+
+/** The 400 for update inputs that are neither mutable nor operational: each was fixed when the resource was created. */
+function immutableProblems(input: Record<string, unknown>, allowed: { mutable: string[]; operational: string[] }, noun: string): Problem[] {
+  return Object.keys(input)
+    .filter((k) => !allowed.mutable.includes(k) && !allowed.operational.includes(k))
+    .map((k) => ({ level: 'error' as const, code: 'immutable', field: `/input/${k}`, message: `${k} was set when the ${noun} was created and cannot be changed` }))
+}
+
+/** The version an If-Match names (`3`, `"3"`, `W/"3"`); `*` and an unreadable value match any. */
+function ifMatchVersion(header: string | undefined): number | undefined {
+  const raw = header?.trim().replace(/^W\//, '').replace(/^"(.*)"$/, '$1')
+  if (!raw || raw === '*' || !/^\d+$/.test(raw)) return undefined
+  return Number(raw)
+}
+
 const SIZES: Record<string, { cpu: number; memoryGb: number }> = { small: { cpu: 2, memoryGb: 8 }, medium: { cpu: 4, memoryGb: 16 }, large: { cpu: 8, memoryGb: 32 }, xlarge: { cpu: 16, memoryGb: 64 } }
 
 /** The attributes a create records: the input's fields the type knows, plus what the workflow derives (a size becomes cpu and memory). */
@@ -529,20 +551,29 @@ export function previewCreate(data: MockData, s: RouteContext['session'], rt: Re
   }
 }
 
+/**
+ * A verb's preview. A delete or a destructive verb carries its blast radius (what depends on the
+ * resource, every type and account counted), whose named dependents join the affected resources;
+ * a delete with live dependents is denied by `dependents.exist`. An update previews the type's
+ * update workflow with only the fields it changes.
+ */
 export function previewVerb(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, verb: string, entry: CatalogEntry | undefined, input: Record<string, unknown>, _now: number): ConsolePreview {
   const service = serviceOf(rt)
   const provider = providerOf(service)
   const noun = nounOf(rt).toLowerCase()
   const name = r.name ?? r.id
-  const destructive = entry?.destructive ?? verb === 'delete'
-  const dependents = data.resources.filter((x) => x.builtFrom?.includes(r.id) && classOf(rt, x.status) !== 'deleted')
+  const destructive = verb !== 'update' && (entry?.destructive ?? verb === 'delete')
+  const radius = destructive ? blastRadiusOf(data, s, [r]) : undefined
   const steps: PreviewStep[] = [{ id: 'check', name: `Check ${noun} ${name} exists`, effect: 'read', detail: `${provider} ${rt.name}.get` }]
   const needsApproval = destructive || !!(entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) || r.attributes?.environment === 'prod'
   if (needsApproval) steps.push({ id: 'approve', name: 'Wait for an approval', effect: 'none', detail: 'compute-approvers, within 4h' })
   if (verb === 'update') {
-    const changes = Object.entries(input).map(([k, v]) => `${k} ${String(r.attributes?.[k])} → ${String(v)}`)
-    steps.push({ id: 'apply', name: `Resize ${noun} ${name}`, effect: 'change', detail: changes.join(' · ') || 'nothing changes' })
-    steps.push({ id: 'register', name: 'Update the registry', effect: 'change' })
+    const changing = entry ? updateInputsOf(entry, rt).mutable : Object.keys(input)
+    const changes = Object.entries(input)
+      .filter(([k]) => changing.includes(k))
+      .map(([k, v]) => `${k} ${String(r.attributes?.[k])} → ${String(v)}`)
+    steps.push({ id: 'apply', name: `Update ${noun} ${name} in ${provider}`, effect: 'change', detail: changes.join(' · ') || 'nothing changes' })
+    steps.push({ id: 'register', name: 'Record the new attributes', effect: 'change', detail: 'the registry keeps them as the desired state' })
   } else if (verb === 'delete') {
     steps.push({ id: 'apply', name: `Delete ${noun} ${name} in ${provider}`, effect: 'delete', detail: input.keepSnapshotDays !== undefined ? `a snapshot is kept for ${String(input.keepSnapshotDays)} days` : undefined })
     steps.push({ id: 'register', name: `Retire the ${noun} in the registry`, effect: 'delete' })
@@ -552,7 +583,8 @@ export function previewVerb(data: MockData, s: RouteContext['session'], rt: Reso
   }
   const rules: Rule[] = [{ id: 'rbac.role', result: 'pass', message: `Your role allows ${service}:${verb} on this ${noun}` }]
   if (needsApproval) rules.push({ id: destructive ? 'destructive.approval' : 'approval.required', result: 'needs-approval', message: destructive ? `${verb} is destructive: compute-approvers must approve it` : 'This change waits for compute-approvers' })
-  if (verb === 'delete' && dependents.length) rules.push({ id: 'dependents.exist', result: 'deny', message: `${dependents.length} ${dependents.length === 1 ? 'resource is' : 'resources are'} built from this ${noun}; delete them first` })
+  // what is built from it, of every type and in every account, holds a delete back
+  if (verb === 'delete' && radius && radius.direct > 0) rules.push({ id: 'dependents.exist', result: 'deny', message: `${radius.direct} ${radius.direct === 1 ? 'resource is' : 'resources are'} built from this ${noun}; delete them first` })
   const current = priceOf(rt, r.attributes ?? {})
   let cost: ConsolePreview['cost']
   if (verb === 'delete' && current) cost = { monthly: -current.monthly, currency: 'USD', detail: `saved: ${current.detail}` }
@@ -560,8 +592,9 @@ export function previewVerb(data: MockData, s: RouteContext['session'], rt: Reso
     const next = priceOf(rt, { ...r.attributes, ...input })
     if (next) cost = { monthly: next.monthly, currency: 'USD', detail: current && current.monthly !== next.monthly ? `${next.detail}; was ${current.monthly.toFixed(2)} USD` : next.detail }
   }
-  const affected: ResourceRef[] = [refOf(data, s, r), ...(verb === 'delete' ? dependents.map((x) => refOf(data, s, x)) : [])]
-  return { workflow: entry?.workflow ?? `${verb}-${rt.name}`, version: entry?.version ?? '1.0.0', steps, affectedResources: affected, cost, policy: { decision: decide(rules), rules, engine: 'mock' } }
+  const named: ResourceRef[] = (radius?.dependents ?? []).map(({ depth: _depth, ...ref }) => ref)
+  const affected: ResourceRef[] = [refOf(data, s, r), ...named]
+  return { workflow: entry?.workflow ?? `${verb}-${rt.name}`, version: entry?.version ?? '1.0.0', steps, affectedResources: affected, cost, policy: { decision: decide(rules), rules, engine: 'mock' }, blastRadius: radius }
 }
 
 /* ----------------------------------------------------------------------------
@@ -922,7 +955,7 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
     return run({ at: now, kind: 'create', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, body: ctx.body, ids: {} })
   }
 
-  m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})\/([^/:]+)(?::([a-z][a-z0-9-]{0,31}))?(?::(preview))?(?:\/(activity|drift|lineage|tags))?$/.exec(path)
+  m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})\/([^/:]+)(?::([a-z][a-z0-9-]{0,31}))?(?::(preview))?(?:\/(activity|drift|lineage|tags|blast-radius))?$/.exec(path)
   if (m) {
     const rt = typeOf(data, m[1])
     if (!rt) return { status: 404, body: { error: `No resource type ${m[1]}` } }
@@ -945,17 +978,30 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
         return { status: 200, body: toConsoleResourceDetail(data, s, rt, r, now, can) }
       }
       if (method === 'PATCH') {
+        // the type's update verb (P-08): its workflow's mutable fields and operational inputs, nothing else
         const d = can(`${service}:update`, wfrn)
         if (!d.allowed) return refused(d, correlation())
-        const schema = updateSchemaOf(rt)
+        const entry = verbEntryOf(data, rt, 'update')
+        if (!entry) return { status: 404, body: { error: 'verb.unknown', detail: `No workflow updates ${rt.plural}: editing is not offered by this provider` } }
         const input = ctx.body.input
         if (!isRecord(input)) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'The body needs an `input` object with the fields to change' }])
-        const immutable = Object.keys(input).filter((k) => !(k in (schema.properties ?? {})))
-        if (immutable.length) return problems400(immutable.map((k) => ({ level: 'error' as const, code: 'immutable', field: `/input/${k}`, message: `${k} was set when the ${noun} was created and cannot be changed` })))
-        if (Object.keys(input).length === 0) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'Name at least one field to change' }])
-        const problems = validateAgainst(schema, input).filter((p) => p.level === 'error')
+        const allowed = updateInputsOf(entry, rt)
+        const immutable = immutableProblems(input, allowed, noun)
+        if (immutable.length) return problems400(immutable)
+        if (!Object.keys(input).some((k) => allowed.mutable.includes(k))) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'Name at least one field to change' }])
+        const problems = validateAgainst(inputSchemaOf(entry, subjectFieldOf(entry, rt)), input).filter((p) => p.level === 'error')
         if (problems.length) return problems400(problems)
-        return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: ctx.body, ids: {} })
+        if (typeof ctx.body.reason === 'string' && ctx.body.reason.length > 1000) return problems400([{ level: 'error', code: 'maxLength', field: '/reason', message: 'The reason is longer than 1000 characters' }])
+        if (st.inFlight.some((f) => f.resourceId === r.id)) return { status: 409, body: { error: 'resource.busy', detail: `A request is already changing this ${noun}; wait for it to finish` } }
+        const current = toConsoleResource(data, s, rt, r, now)
+        // as the BFF's ConflictException renders: the error in words, the detail the client acts on
+        if (current.state !== 'active' && current.state !== 'failed') return { status: 409, body: { error: `the resource is ${current.state}; it changes only while active or failed`, detail: { state: current.state } } }
+        const held = ifMatchVersion(ctx.headers['if-match'])
+        if (held !== undefined && held !== current.version) return { status: 409, body: { error: `the resource moved on to version ${current.version}`, detail: { version: current.version } } }
+        // the job writes the mutable fields as the new desired state; an operational reason travels with the request
+        const changes = Object.fromEntries(Object.entries(input).filter(([k]) => allowed.mutable.includes(k)))
+        const reason = typeof ctx.body.reason === 'string' ? ctx.body.reason : typeof input.reason === 'string' ? input.reason : undefined
+        return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: { ...ctx.body, input: changes, ...(reason ? { reason } : {}) }, ids: {} })
       }
       return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
     }
@@ -976,6 +1022,12 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
       const d = can(`${service}:get`, wfrn)
       if (!d.allowed) return refused(d, correlation())
       if (sub === 'drift') return { status: 200, body: { items: findingsOf(data, s, rt, r, now) } }
+      if (sub === 'blast-radius') {
+        const raw = params.get('depth')
+        const depth = raw === null || raw === '' ? 3 : Number(raw)
+        if (!Number.isInteger(depth) || depth < 1 || depth > 5) return problems400([{ level: 'error', code: 'depth.range', field: '/depth', message: 'The depth is a whole number from 1 to 5' }])
+        return { status: 200, body: blastRadiusOf(data, s, [r], depth) }
+      }
       if (sub === 'lineage') {
         const byId = new Map(data.resources.map((x) => [x.id, x]))
         const builtFrom = (r.builtFrom ?? []).map((id) => byId.get(id)).filter((x): x is Resource => !!x)
@@ -1002,29 +1054,38 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
     /* a verb on this resource */
     if (!verb || !VERB.test(verb) || verb === 'create') return { status: 404, body: { error: 'verb.unknown', detail: `No verb ${verb ?? ''} on ${rt.plural}` } }
     if (method !== 'POST') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
-    const entry = verb === 'update' ? undefined : verbEntryOf(data, rt, verb)
-    if (!entry && verb !== 'update' && verb !== 'delete') return { status: 404, body: { error: 'verb.unknown', detail: `No workflow runs ${verb} on ${rt.plural}` } }
+    const entry = verbEntryOf(data, rt, verb)
+    if (verb === 'update' && !entry) return { status: 404, body: { error: 'verb.unknown', detail: `No workflow updates ${rt.plural}: editing is not offered by this provider` } }
+    // an update runs through PATCH on the resource; only its preview is a verb route (P-08)
+    if (verb === 'update' && !preview) return { status: 404, body: { error: 'verb.unknown', detail: `An update runs as PATCH /console/v1/r/${rt.name}/{wfrn}; preview it with :update:preview` } }
+    if (!entry && verb !== 'delete') return { status: 404, body: { error: 'verb.unknown', detail: `No workflow runs ${verb} on ${rt.plural}` } }
     const d = can(`${service}:${verb}`, wfrn)
     if (!d.allowed) return refused(d, correlation())
     if (classOf(rt, r.status) === 'deleted') return { status: 409, body: { error: 'resource.deleted', detail: `This ${noun} is already deleted` } }
     const subject = entry ? subjectFieldOf(entry, rt) : undefined
-    const schema = verb === 'update' ? updateSchemaOf(rt) : entry ? inputSchemaOf(entry, subject) : { type: 'object', properties: { reason: { type: 'string', title: 'Reason' } } }
+    const schema = entry ? inputSchemaOf(entry, subject) : { type: 'object', properties: { reason: { type: 'string', title: 'Reason' } } }
     const rawInput = ctx.body.input
     const input = isRecord(rawInput) ? { ...rawInput } : {}
     if (subject) delete input[subject]
+    if (verb === 'update' && entry) {
+      const immutable = immutableProblems(input, updateInputsOf(entry, rt), noun)
+      if (immutable.length) return problems400(immutable)
+    }
     const problems = validateAgainst(schema, input).filter((p) => p.level === 'error')
     if (problems.length) return problems400(problems)
     const judged = previewVerb(data, s, rt, r, verb, entry, input, now)
     if (preview) return { status: 200, body: judged }
-    // a delete with live dependents is refused by name, the way the BFF answers it (409 with them)
+    // a delete with live dependents is refused by name, the way the BFF answers it: 409 with what the walk found
     const blocked = judged.policy.rules?.find((x) => x.id === 'dependents.exist' && x.result === 'deny')
-    if (blocked) return { status: 409, body: { error: 'dependents.exist', detail: { dependents: judged.affectedResources.filter((x) => x.wfrn !== wfrn) }, problems: [{ level: 'error' as const, code: 'dependents.exist', message: blocked.message }] } }
+    if (blocked) {
+      const radius = judged.blastRadius ?? blastRadiusOf(data, s, [r])
+      return { status: 409, body: { error: 'dependents.exist', message: blocked.message, problems: [{ level: 'error' as const, code: 'dependents.exist', message: blocked.message }], correlationId: correlation(), detail: { dependents: radius.dependents, total: radius.total, byAccount: radius.byAccount } } }
+    }
     const denied = policyDenied(judged)
     if (denied) return denied
     const destructive = entry?.destructive ?? verb === 'delete'
     if (destructive && ctx.body.confirm !== true) return problems400([{ level: 'error', code: 'confirm.required', field: '/confirm', message: `${entry?.title ?? verb} is destructive: send confirm: true to run it` }])
     if (st.inFlight.some((f) => f.resourceId === r.id)) return { status: 409, body: { error: 'resource.busy', detail: `A request is already changing this ${noun}; wait for it to finish` } }
-    if (verb === 'update') return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: { ...ctx.body, input }, ids: {} })
     return run({ at: now, kind: 'verb', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, verb, body: { ...ctx.body, input: subject ? { ...input, [subject]: r.id } : input }, ids: {} })
   }
 
