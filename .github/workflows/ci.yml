@@ -87,20 +87,24 @@ jobs:
           cp .gitleaks.toml "$RUNNER_TEMP/tree/"
           "$(go env GOPATH)/bin/gitleaks" dir --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml "$RUNNER_TEMP/tree"
       - name: Scan the new commits
-        # the commits of the pull request or the push; with no range (the first push of a branch)
-        # the commits this orphan branch holds, which is its whole history
+        # the commits of the pull request or the push; on the first push of a topic branch the
+        # commits it added to the service branch; on the service branch itself its whole history.
+        # Always a range of this orphan branch: without --log-opts gitleaks scans every ref the
+        # checkout fetched, the platform's main included, whose history the platform's own CI
+        # scans with its own reviewed exceptions.
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
+          SERVICE_BRANCH: console-identity-service
         run: |
-          range=""
           if [ -n "$BASE" ]; then
             range="$BASE..HEAD"
           elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             range="$BEFORE..HEAD"
-          fi
-          if [ -n "$range" ]; then
-            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
+          elif git rev-parse --verify -q "origin/$SERVICE_BRANCH" > /dev/null && [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$SERVICE_BRANCH")" ]; then
+            range="origin/$SERVICE_BRANCH..HEAD"
           else
-            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml .
+            range="HEAD"
           fi
+          echo "scanning $range"
+          "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
