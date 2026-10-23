@@ -75,6 +75,32 @@ info:
     explains itself at `GET /console/v1/jobs/{jobId}/explanation`, whose fix the console sends to
     the phase 4 retry. The copilot never acts: it fills lists, forms and drawers for the person to
     review, and every change still goes through its preview and IAM.
+
+    **API clients (decision 31).** The CLI and the SDKs sign in with OAuth 2.0's device grant
+    (RFC 8628) at `POST /auth/device` and `POST /auth/token`: the person approves the code in a
+    signed-in browser (`/console/v1/device-grants/{userCode}:approve`, a fresh sign-in needed), and
+    the client calls `/console/v1/*` with `Authorization: Bearer` and a 15-minute access token
+    (`typ: at+jwt`, `aud: console-api`) it refreshes with a rotating refresh token, within a
+    12-hour API session the person can see and revoke (`/console/v1/api-sessions`). A bearer call
+    reads no cookie and sends no CSRF token; it names its account and region with
+    `X-Console-Account` and `X-Console-Region` (one of the person's memberships, else 403
+    `account.not-member`), else the API session's own; a call with both a bearer token and the
+    session cookie is a 400 `auth.ambiguous`, and an expired, revoked or foreign token is a 401
+    with `WWW-Authenticate: Bearer error="invalid_token"`. Signing in, switching the session and
+    deciding device grants or chat links are browser-only (403 `browser.only`). A bearer call's
+    step-up time is the approving sign-in. The console shell is a page of the web app that runs the
+    CLI's command core with the page's own session. ChatOps (`/chatops/slack/*`,
+    `/chatops/teams/messages`) acts as the person a chat identity is linked to
+    (`/console/v1/chat-links`), through the same IAM, and never satisfies a step-up.
+
+    **Notifications (decision 32).** Jobs that end or pause, approvals, access requests, drift
+    findings, quotas near their limit, budget alerts and the weekly digest notify the people they
+    concern, in the console (`/console/v1/notifications` and `notification` events on the live
+    stream) and by email, Slack or Teams as each person's settings say
+    (`/console/v1/notification-settings`); each is delivered once per event, person and channel.
+    The console home reads the account's recent visits (`/console/v1/recent`) and favourite
+    resources (`/console/v1/favourites`; favourite services stay `Preferences.pinnedTypes`), and
+    every Monday the BFF writes each account's digest of the week before (`/console/v1/digests`).
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -100,9 +126,22 @@ tags:
   - name: Keys
   - name: Service tokens
     description: Tokens for console services calling each other on their own (in-cluster only)
+  - name: Device sign-in
+    description: The CLI and the SDKs signing in with the device grant (decision 31)
+  - name: API sessions
+    description: The person's CLI and SDK sign-ins (decision 31)
+  - name: ChatOps
+    description: Slack and Teams acting as a linked person (decision 31)
+  - name: Notifications
+    description: The feed and where each kind goes (decision 32)
+  - name: Recent and favourites
+    description: The console home's recent visits and favourite resources (decision 32)
+  - name: Digests
+    description: Each account's weekly digest (decision 32)
   - name: Health
 security:
   - session: []
+  - bearer: []
 paths:
   /actuator/health:
     get:
@@ -202,7 +241,10 @@ paths:
     put:
       operationId: switchSession
       summary: Switch the account or the region
+      description: 'Browser sessions only (403 `browser.only` with a bearer token, which names its account and region per call instead).'
       tags: [Session]
+      security:
+        - session: []
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
@@ -745,7 +787,7 @@ paths:
     get:
       operationId: streamEvents
       summary: Live updates for open pages
-      description: Server-sent events of the account's resources, findings and jobs; `id:` is a cursor the browser sends back as `Last-Event-ID`, `event:` is the event type and `data:` the event. `wfrn` narrows the stream to one resource.
+      description: Server-sent events of the account's resources, findings and jobs, and the person's own notifications (`notification`, on every stream the person has open); `id:` is a cursor the browser sends back as `Last-Event-ID`, `event:` is the event type and `data:` the event. `wfrn` narrows the stream to one resource.
       tags: [Events]
       parameters:
         - name: wfrn
@@ -1321,6 +1363,623 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '502': { $ref: '#/components/responses/BadGateway' }
+  /auth/device:
+    post:
+      operationId: startDeviceAuthorization
+      summary: Start signing the CLI or an SDK in (RFC 8628)
+      description: |
+        The device authorization request of OAuth 2.0's device grant (RFC 8628 §3.1). The CLI shows
+        `user_code` and `verification_uri` (the web app's `#/device` page) and polls
+        `POST /auth/token` every `interval` seconds until the person approves or denies it in a
+        signed-in browser. `user_code` is eight letters from `BCDFGHJKLMNPQRSTVWXZ` written
+        `XXXX-XXXX`; only a SHA-256 of `device_code` is kept. At most ten grants a minute from one
+        address (429 `slow_down`).
+      tags: [Device sign-in]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, enum: [console-cli, console-sdk] }
+      responses:
+        '200':
+          description: The codes
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceAuthorization' }
+        '400':
+          description: '`invalid_client`: an unknown client_id'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+        '429':
+          description: '`slow_down`: too many grants from one address'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+  /auth/token:
+    post:
+      operationId: issueApiToken
+      summary: Redeem an approved device grant, or refresh
+      description: |
+        The token request of the device grant (RFC 8628 §3.4) and the refresh grant (RFC 6749 §6).
+        While the person has not decided, the answer is 400 `authorization_pending`; polling sooner
+        than the grant's `interval` is `slow_down` and adds 5 seconds to it; a denied grant is
+        `access_denied`, an expired one `expired_token`, and a device code is redeemed once
+        (`invalid_grant` after). An approved grant opens an API session and answers a 15-minute
+        access token with a refresh token.
+
+        **Refresh tokens rotate**: each refresh answers a new one and ends the old one; a rotated
+        refresh token presented again revokes the whole API session (`invalid_grant`). A refresh
+        reads the person's memberships from the identity service again, as a sign-in does. An API
+        session lasts 12 hours from its approval and ends after 8 hours with no refresh.
+
+        **The access token** is a JWT the BFF signs with its own key (its JWKS), header
+        `typ: at+jwt` (RFC 9068): `iss` the BFF, `aud` `console-api`, `sub` the person, `sid` the
+        API session, `client_id`, `auth_time` (the browser sign-in that approved the grant),
+        `iat`, `exp`, `jti`. No other console service accepts it, and the BFF accepts no internal
+        token in its place.
+      tags: [Device sign-in]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/ApiTokenRequest' }
+      responses:
+        '200':
+          description: The tokens
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiToken' }
+        '400':
+          description: '`invalid_request`, `unsupported_grant_type`, `authorization_pending`, `slow_down`, `access_denied`, `expired_token` or `invalid_grant`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+        '401':
+          description: '`invalid_client`: an unknown client_id, or not the one the grant was started for'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+  /auth/revoke:
+    post:
+      operationId: revokeApiToken
+      summary: Sign the CLI or an SDK out (RFC 7009)
+      description: Revokes the API session a refresh token belongs to. The answer is 200 whatever the token was, as RFC 7009 has it.
+      tags: [Device sign-in]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                token_type_hint: { type: string, enum: [refresh_token] }
+      responses:
+        '200':
+          description: Revoked, or nothing to revoke
+  /console/v1/device-grants/{userCode}:
+    parameters:
+      - $ref: '#/components/parameters/UserCodePath'
+    get:
+      operationId: getDeviceGrant
+      summary: A device grant waiting for the person's decision
+      description: What the `#/device` page shows before the person approves. The code is matched case-insensitively with or without its hyphen.
+      tags: [Device sign-in]
+      security:
+        - session: []
+      responses:
+        '200':
+          description: The grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/device-grants/{userCode}:approve:
+    parameters:
+      - $ref: '#/components/parameters/UserCodePath'
+    post:
+      operationId: approveDeviceGrant
+      summary: Sign the CLI or SDK in as this person
+      description: 'Browser sessions only (403 `browser.only` with a bearer token). Approving needs a fresh sign-in, as a delete does: past `console.auth.step-up.max-age` it is the step-up 403. A grant is decided once (409 `device-grant.decided`) and never after it expired (410 `device-grant.expired`).'
+      tags: [Device sign-in]
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Approved; the CLI's next poll gets its tokens
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /console/v1/device-grants/{userCode}:deny:
+    parameters:
+      - $ref: '#/components/parameters/UserCodePath'
+    post:
+      operationId: denyDeviceGrant
+      summary: Refuse a device grant
+      tags: [Device sign-in]
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Denied; the CLI's next poll gets `access_denied`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /console/v1/api-sessions:
+    get:
+      operationId: listApiSessions
+      summary: The person's CLI and SDK sign-ins
+      description: Newest first, the open ones only.
+      tags: [API sessions]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiSession' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/api-sessions/{apiSessionId}:
+    delete:
+      operationId: revokeApiSession
+      summary: Sign one CLI or SDK out
+      description: Its refresh token stops working at once and its access token within 15 minutes. Another person's session is a 404.
+      tags: [API sessions]
+      parameters:
+        - name: apiSessionId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^aps_[0-9a-z]{26}$' }
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Revoked
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/chat-links:
+    get:
+      operationId: listChatLinks
+      summary: The person's linked Slack and Teams identities
+      tags: [ChatOps]
+      responses:
+        '200':
+          description: The links
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChatLink' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: createChatLink
+      summary: Link a chat identity to this person
+      description: 'The `token` comes from the chat app''s answer to `/console link` (the `#/chat-link?token=` page): a BFF-signed token, audience `console-chat-link`, ten minutes, naming the platform, the workspace and the chat user. Browser sessions only. One person per chat user (409 `chat-link.taken`).'
+      tags: [ChatOps]
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '201':
+          description: Linked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatLink' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/chat-links/{linkId}:
+    delete:
+      operationId: deleteChatLink
+      summary: Unlink a chat identity
+      tags: [ChatOps]
+      parameters:
+        - name: linkId
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Unlinked
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /chatops/slack/commands:
+    post:
+      operationId: slackCommand
+      summary: A Slack slash command (`/console …`)
+      description: |
+        Verified with Slack's signature: `X-Slack-Signature` is `v0=` and the HMAC-SHA256 of
+        `v0:<X-Slack-Request-Timestamp>:<raw body>` under the signing secret, the timestamp within
+        five minutes; anything else is a 401. Acknowledged at once (Slack waits 3 seconds); the
+        answer follows through the command's `response_url`. Commands: `find <text>`, `show <wfrn>`,
+        `jobs`, `run <verb> <wfrn>` (the preview with Confirm and Cancel), `approve`,
+        `account <id> [region]`, `subscribe <kind…>`, `unsubscribe`, `subscriptions`, `link`,
+        `unlink`, `help`. Each runs as the linked person through the console's own IAM; a chat call
+        never satisfies a step-up, so a destructive verb answers with a link to the console. 404
+        while Slack is not configured.
+      tags: [ChatOps]
+      security: []
+      parameters:
+        - { name: X-Slack-Signature, in: header, required: true, schema: { type: string } }
+        - { name: X-Slack-Request-Timestamp, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object, additionalProperties: { type: string } }
+      responses:
+        '200':
+          description: The acknowledgement, an ephemeral Slack message
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /chatops/slack/interactions:
+    post:
+      operationId: slackInteraction
+      summary: A button pressed in a Slack message
+      description: Verified like the commands. Confirm re-decides the action as the linked person before it runs; an approval button decides as the person, once.
+      tags: [ChatOps]
+      security: []
+      parameters:
+        - { name: X-Slack-Signature, in: header, required: true, schema: { type: string } }
+        - { name: X-Slack-Request-Timestamp, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [payload]
+              properties:
+                payload: { type: string, description: 'Slack''s interaction payload, JSON' }
+      responses:
+        '200':
+          description: Taken; the message is updated through its `response_url`
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /chatops/teams/messages:
+    post:
+      operationId: teamsMessage
+      summary: A message or card action sent to the Teams bot
+      description: 'Verified with the Bot Framework''s JWT: keys from its OpenID configuration (`https://login.botframework.com/v1/.well-known/openidconfiguration`), `aud` the bot''s app id, `iss` `https://api.botframework.com`; anything else is a 401. The same commands and buttons as Slack. 404 while Teams is not configured.'
+      tags: [ChatOps]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: A Bot Framework activity, additionalProperties: true }
+      responses:
+        '200':
+          description: Taken
+        '202':
+          description: Taken; the answer follows as a proactive message
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/notifications:
+    get:
+      operationId: listNotifications
+      summary: The person's notifications, newest first
+      description: Across the person's accounts, each naming its account; kept 90 days. The live stream carries the new ones as `notification` events.
+      tags: [Notifications]
+      parameters:
+        - { name: unread, in: query, schema: { type: boolean } }
+        - { name: kind, in: query, schema: { $ref: '#/components/schemas/NotificationKind' } }
+        - { name: accountId, in: query, schema: { $ref: '#/components/schemas/AccountId' } }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page and the unread count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next, unread]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+                  unread: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/notifications:read:
+    post:
+      operationId: markNotificationsRead
+      summary: Mark notifications read
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: '`ids` (at most 200), or `all: true`'
+              properties:
+                ids:
+                  type: array
+                  maxItems: 200
+                  items: { type: string }
+                all: { type: boolean }
+      responses:
+        '200':
+          description: What is left unread
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unread]
+                properties:
+                  unread: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/notification-settings:
+    get:
+      operationId: getNotificationSettings
+      summary: Where the person is notified of what
+      tags: [Notifications]
+      responses:
+        '200':
+          description: The settings
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: putNotificationSettings
+      summary: Replace the person's notification settings
+      description: 'Needs `If-Match` with the version read (400 without it, 409 `version.moved` when it moved on). The email address is the identity provider''s and cannot be set here; a channel that is not linked cannot be enabled.'
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationSettings' }
+      responses:
+        '200':
+          description: The settings
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/notification-settings:test:
+    post:
+      operationId: testNotificationChannel
+      summary: Send a test notification on one channel
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { $ref: '#/components/schemas/NotificationChannel' }
+      responses:
+        '202':
+          description: Sent to the outbox
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/recent:
+    get:
+      operationId: listRecent
+      summary: The session account's recently visited types and resources
+      description: The 20 latest, newest first.
+      tags: [Recent and favourites]
+      responses:
+        '200':
+          description: The visits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/RecentVisit' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: recordVisit
+      summary: Record a visit
+      description: The web app posts when a type's list or a resource's page opens; the same key moves to the top.
+      tags: [Recent and favourites]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, key, title]
+              properties:
+                kind: { type: string, enum: [type, resource] }
+                key: { type: string, maxLength: 1024, description: 'A type key, or a wfrn' }
+                title: { type: string, maxLength: 256 }
+      responses:
+        '204':
+          description: Recorded
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/favourites:
+    get:
+      operationId: listFavourites
+      summary: The session account's favourite resources
+      description: Newest first, at most 100, leaving out the ones whose type the person may no longer list. Favourite services stay `Preferences.pinnedTypes`.
+      tags: [Recent and favourites]
+      responses:
+        '200':
+          description: The favourites
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Favourite' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/favourites/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    put:
+      operationId: putFavourite
+      summary: Make a resource a favourite
+      description: 'Idempotent; 409 `favourites.full` past 100 in the account.'
+      tags: [Recent and favourites]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, name]
+              properties:
+                type: { type: string }
+                name: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: The favourite
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Favourite' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteFavourite
+      summary: Stop a resource being a favourite
+      tags: [Recent and favourites]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Removed, or never a favourite
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/digests:
+    get:
+      operationId: listDigests
+      summary: The session account's weekly digests, newest first
+      description: 'As `digests:get` allows on `wfrn:<partition>:digests::<account>:*`; every managed role reads.'
+      tags: [Digests]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/DigestSummary' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/digests/{weekStart}:
+    get:
+      operationId: getDigest
+      summary: One week's digest of the session account
+      tags: [Digests]
+      parameters:
+        - name: weekStart
+          in: path
+          required: true
+          description: The week's Monday (UTC)
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: The digest
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Digest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     session:
@@ -1328,6 +1987,11 @@ components:
       in: cookie
       name: console_session
       description: The session cookie set by /auth/callback; state-changing calls also send X-Csrf-Token
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'An access token from POST /auth/token (decision 31): typ at+jwt, aud console-api, 15 minutes; no CSRF token'
   parameters:
     CsrfToken:
       name: X-Csrf-Token
@@ -1385,6 +2049,12 @@ components:
       in: path
       required: true
       schema: { type: string }
+    UserCodePath:
+      name: userCode
+      in: path
+      required: true
+      description: 'The code the CLI shows, XXXX-XXXX; matched case-insensitively, with or without the hyphen'
+      schema: { type: string, pattern: '^[A-Za-z]{4}-?[A-Za-z]{4}$' }
     Limit:
       name: limit
       in: query
@@ -1437,6 +2107,11 @@ components:
           schema: { $ref: '#/components/schemas/IamBody' }
     NotFound:
       description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Gone:
+      description: Ended, such as a device grant past its expiry
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -1932,7 +2607,7 @@ components:
       type: object
       required: [type, at]
       properties:
-        type: { type: string, description: 'A state.resources or drift.findings event type, or job.updated' }
+        type: { type: string, description: 'A state.resources or drift.findings event type, job.updated, or notification (the person''s own, a Notification in data)' }
         wfrn: { $ref: '#/components/schemas/Wfrn' }
         at: { type: string, format: date-time }
         version: { type: integer }
@@ -2064,7 +2739,8 @@ components:
       properties:
         error:
           type: string
-          enum: [invalid_request, invalid_client, unsupported_grant_type, invalid_target]
+          description: 'RFC 6749 §5.2, RFC 8628 §3.5 and RFC 8707; the service-token path answers the first four'
+          enum: [invalid_request, invalid_client, unsupported_grant_type, invalid_target, invalid_grant, authorization_pending, slow_down, access_denied, expired_token]
         error_description:
           type: string
     JsonWebKeySet:
@@ -2360,3 +3036,179 @@ components:
             properties:
               title: { type: string }
               url: { type: string }
+    DeviceAuthorization:
+      type: object
+      description: RFC 8628 §3.2
+      required: [device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval]
+      properties:
+        device_code: { type: string, description: 'The CLI''s secret for polling; 32 random bytes, base64url' }
+        user_code: { type: string, pattern: '^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$' }
+        verification_uri: { type: string, description: 'The web app''s #/device page' }
+        verification_uri_complete: { type: string, description: The page with the code filled in }
+        expires_in: { type: integer, examples: [600] }
+        interval: { type: integer, description: Seconds between polls, examples: [5] }
+    DeviceGrant:
+      type: object
+      required: [userCode, clientId, status, requestedAt, expiresAt]
+      properties:
+        userCode: { type: string }
+        clientId: { type: string, enum: [console-cli, console-sdk] }
+        status: { type: string, enum: [pending, approved, denied, expired] }
+        requestedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        requestedFrom:
+          type: object
+          description: Where the CLI asked from, so the person can tell it is theirs
+          properties:
+            ip: { type: string }
+            userAgent: { type: string }
+        decidedAt: { type: string, format: date-time }
+    ApiTokenRequest:
+      type: object
+      required: [grant_type, client_id]
+      properties:
+        grant_type:
+          type: string
+          enum: ['urn:ietf:params:oauth:grant-type:device_code', refresh_token]
+        client_id: { type: string, enum: [console-cli, console-sdk] }
+        device_code: { type: string, description: With the device grant }
+        refresh_token: { type: string, description: With the refresh grant }
+    ApiToken:
+      type: object
+      required: [access_token, token_type, expires_in, refresh_token, refresh_expires_in, scope]
+      properties:
+        access_token: { type: string, description: 'The access token, a JWT (typ at+jwt, aud console-api)' }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer, description: Seconds the access token lives, examples: [900] }
+        refresh_token: { type: string, description: 'Rotates on every refresh; a rotated one presented again ends the API session' }
+        refresh_expires_in: { type: integer, description: 'Seconds until the API session ends, whatever the refreshes' }
+        scope: { type: string, enum: [console] }
+    ApiSession:
+      type: object
+      description: A CLI or SDK signed in with the device grant
+      required: [id, clientId, createdAt, expiresAt]
+      properties:
+        id: { type: string, pattern: '^aps_[0-9a-z]{26}$' }
+        clientId: { type: string, enum: [console-cli, console-sdk] }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        userAgent: { type: string }
+        ip: { type: string }
+    ChatLink:
+      type: object
+      required: [id, platform, workspaceId, chatUserId, linkedAt]
+      properties:
+        id: { type: string }
+        platform: { type: string, enum: [slack, teams] }
+        workspaceId: { type: string, description: 'The Slack team or the Teams tenant' }
+        chatUserId: { type: string }
+        chatUserName: { type: string }
+        linkedAt: { type: string, format: date-time }
+    NotificationKind:
+      type: string
+      enum: [job.succeeded, job.failed, job.needs-attention, approval.requested, approval.decided, access-request.created, access-request.decided, drift.found, quota.near-limit, budget.alert, digest.ready]
+    NotificationChannel:
+      type: string
+      enum: [console, email, slack, teams]
+    Notification:
+      type: object
+      required: [id, kind, severity, title, accountId, link, createdAt]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/NotificationKind' }
+        severity: { type: string, enum: [info, warning, critical] }
+        title: { type: string }
+        body: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        jobId: { type: string }
+        link: { type: string, description: 'The console path it opens, such as /r/<type>/<wfrn> or /jobs/<jobId>; absolute in emails and chat' }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time }
+    NotificationSettings:
+      type: object
+      required: [version, channels, rules]
+      properties:
+        version: { type: integer }
+        channels:
+          type: object
+          required: [email, slack, teams]
+          properties:
+            email:
+              type: object
+              required: [enabled]
+              properties:
+                address: { type: string, readOnly: true, description: 'The identity provider''s address; never set here' }
+                enabled: { type: boolean }
+            slack: { $ref: '#/components/schemas/LinkedChannel' }
+            teams: { $ref: '#/components/schemas/LinkedChannel' }
+        rules:
+          type: object
+          description: 'Per kind, the channels it goes to; a kind left out takes its default (console for every kind; email, and Slack or Teams once linked, for job.failed, job.needs-attention, approval.requested, access-request.created, access-request.decided, budget.alert and digest.ready)'
+          propertyNames: { $ref: '#/components/schemas/NotificationKind' }
+          additionalProperties:
+            type: array
+            uniqueItems: true
+            items: { $ref: '#/components/schemas/NotificationChannel' }
+    LinkedChannel:
+      type: object
+      required: [linked, enabled]
+      properties:
+        linked: { type: boolean, readOnly: true, description: Whether the person linked a chat identity (ChatOps) }
+        enabled: { type: boolean }
+    RecentVisit:
+      type: object
+      required: [kind, key, title, visitedAt]
+      properties:
+        kind: { type: string, enum: [type, resource] }
+        key: { type: string, description: 'A type key, or a wfrn' }
+        title: { type: string }
+        visitedAt: { type: string, format: date-time }
+    Favourite:
+      type: object
+      required: [wfrn, type, name, addedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        name: { type: string }
+        addedAt: { type: string, format: date-time }
+    DigestSummary:
+      type: object
+      required: [weekStart, headline, generatedAt]
+      properties:
+        weekStart: { type: string, format: date }
+        headline: { type: string }
+        generatedAt: { type: string, format: date-time }
+    Digest:
+      type: object
+      description: 'One account''s week, Monday to Sunday (UTC), written every Monday at 06:00 UTC by the copilot, or by a template without it'
+      required: [accountId, weekStart, weekEnd, generatedAt, source, headline, sections]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        weekStart: { type: string, format: date }
+        weekEnd: { type: string, format: date }
+        generatedAt: { type: string, format: date-time }
+        source: { type: string, enum: [assistant, rules] }
+        headline: { type: string }
+        sections:
+          type: array
+          items:
+            type: object
+            required: [kind, title, text]
+            properties:
+              kind: { type: string, enum: [changes, drift, cost, access] }
+              title: { type: string }
+              text: { type: string }
+              facts: { type: object, additionalProperties: true, description: The numbers the text was written from }
+              highlights:
+                type: array
+                items:
+                  type: object
+                  required: [text]
+                  properties:
+                    text: { type: string }
+                    link: { type: string }
