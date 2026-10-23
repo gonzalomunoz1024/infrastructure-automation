@@ -55,8 +55,11 @@ info:
     account manages. Each object carries a guess at its owning account: a tag naming an account's
     owning team or id is a `high` guess, the account's name in the object's name is `medium`,
     sharing a placement value (a folder, network, cluster or pool) with one account's resources and
-    no other's is `low`; `reasons` say which in plain words. Each carries an estimated monthly
-    cost from the console's price list. `POST /v1/unmanaged:assign` hands an object to another
+    no other's is `low`, and so, failing that, is being the only account that manages resources of
+    the type in the region; `reasons` say which in plain words. The guesses read the fields the
+    type's `observe.map` gives the object (P-09): a map that names the object's name, tags and
+    folder gives the best guesses. Each carries an estimated monthly cost from the console's list
+    prices (the cost service's `POST /v1/cost:estimate`). `POST /v1/unmanaged:assign` hands an object to another
     team: it then also shows in that account's list, with the assignment, until either account
     imports it; an import by either removes it from both.
 
@@ -455,7 +458,7 @@ paths:
                 providerId: { type: string }
                 accountId: { $ref: '#/components/schemas/AccountId' }
                 note: { type: string, maxLength: 500 }
-                actor: { type: string, description: The console user, when the BFF sends it for one }
+                actor: { type: string, description: 'The console user, when the BFF sends it for one' }
       responses:
         '200':
           description: The object, with its assignment
@@ -1285,7 +1288,7 @@ components:
         comparison: { type: string, enum: [above, below] }
         threshold: { type: number }
         windowMinutes: { type: integer, minimum: 1, maximum: 1440, default: 10, description: The average over this window is compared }
-        actor: { type: string, description: The console user, when the BFF sends it for one }
+        actor: { type: string, description: 'The console user, when the BFF sends it for one' }
     Alarm:
       type: object
       required: [alarmId, wfrn, accountId, type, metric, comparison, threshold, windowMinutes, state, createdAt, updatedAt]
@@ -1335,7 +1338,7 @@ components:
         utilisation: { $ref: '#/components/schemas/Utilisation' }
         monthlyCost: { $ref: '#/components/schemas/Money' }
         monthlySaving: { $ref: '#/components/schemas/Money' }
-        jobId: { type: string, description: The resize or delete job, once applied }
+        jobId: { type: string, description: 'The resize or delete job, once applied' }
         decidedBy: { type: string }
         reason: { type: string }
         dismissedUntil: { type: string, format: date-time }

@@ -2544,7 +2544,7 @@ components:
         utilisation: { $ref: '#/components/schemas/Utilisation' }
         monthlyCost: { $ref: '#/components/schemas/Money' }
         monthlySaving: { $ref: '#/components/schemas/Money' }
-        jobId: { type: string, description: The resize or delete job, once applied }
+        jobId: { type: string, description: 'The resize or delete job, once applied' }
         decidedBy: { type: string }
         reason: { type: string }
         dismissedUntil: { type: string, format: date-time }
