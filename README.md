@@ -490,7 +490,43 @@ To be written with WP 7.3 and 9.3.
 
 ### The copilot (60 to 64)
 
-To be written with WP 9.1.
+60. **The copilot sits beside the page and never acts.** Its panel is a non-modal complementary
+    region beside the page, and the page makes room for it (half the screen at most), so the page
+    stays in reach and nothing focused there hides underneath; narrower than 768 px it covers the
+    screen, keeps Tab, and closes once something it proposes opens. It answers in words and
+    proposals, each a card the person opens: a filter opens the list with the list's own `?f=`
+    tokens, a create opens the wizard and an action the resource's drawer, both filled through
+    `?prefill=`, and nothing runs from the panel. Opening it puts the focus in its box, Escape gives
+    the focus back to what opened it (the header's button when that is gone), and a polite status
+    line says when it thinks, answers or fails.
+61. **A reading the copilot is not sure of waits for the person.** The person's words also go to
+    `search:interpret`, and a filter proposal whose reading came back `confidence: low` says it is
+    not sure, shows the filter chip by chip as the list will show it, names the words left out, and
+    applies only when its button is pressed. No filter applies itself at any confidence: a sure
+    reading is one click too, so the list changes only because the person chose it. What the list
+    cannot hold (a tag with any value, another region) is named on the card rather than dropped in
+    silence.
+62. **One conversation per person and account, read only while the panel is open.** It lives outside
+    React (`app/copilot/thread.ts`), so it survives closing the panel and changing page; New
+    conversation forgets it. An answer is read at once, then after 1 s, backing off by half a second
+    to every 3 s, and the reading stops when the panel closes and carries on when it opens. A 429
+    says when to ask again and enables Try again then; a failed turn and an unreachable copilot
+    offer Try again, which sends the same question; a refusal does not; a conversation the copilot
+    no longer has (24 hours) starts a new one.
+63. **The mock reads plain English as the search indexer does, and counts with the list.**
+    `mock/assistant.ts` is deterministic: types by name, plural and title, a typo forgiven; states
+    and their everyday words (`stopped` is `deleted`, and the answer says so); drift, times, sorts,
+    the account's own tags and the query syntax. A union, a negation or a second state is left out
+    rather than guessed, and so is `tag:<name>` with any value, which the list cannot hold. The
+    mock's list and its counts keep `created:` and `updated:` terms themselves, so the copilot's "10
+    match" is the count the list then shows, and a test holds every reading to it.
+64. **The mock's copilot is as honest as the real one has to be.** It reads with the person's own
+    access: a list, a create, an action or an explanation their roles refuse is answered with what
+    refused it, the cost section needs `cost:get`, dependents are the ones they can read, and a
+    sensitive field is never shown. A turn thinks for 1.2 s on the server's clock; "fail the
+    copilot" fails a conversation's first turn so that Try again can be seen; ten questions a minute
+    per person, then 429 with `Retry-After`; a conversation is the person's own and ends after 24
+    hours (404).
 
 ### The failure explainer (65 to 69)
 
