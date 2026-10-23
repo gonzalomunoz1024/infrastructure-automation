@@ -1,5 +1,6 @@
 import { ICON_NAMES, type IconName } from '@iaf/ui'
 import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase, xConsoleOf, type CatalogEntry, type LifecycleClass, type Resource, type ResourceType, type Rollout, type Schema, type XConsole } from '@iaf/console-kit'
+import type { BffConsoleType } from './types'
 
 /*
  * One ConsoleType per resource type, composed in the browser from what the platform serves today
@@ -235,10 +236,19 @@ export const TAB_LABELS: Record<string, string> = {
   json: 'JSON',
 }
 
-/** The type's observe block as the console reads it: whether drift, metrics and discovery cover the type. */
-export function observeOf(rt: Pick<ResourceType, 'observe'>): ConsoleObserve {
+/**
+ * The type's observe block as the console reads it: whether drift, metrics and discovery cover the
+ * type. What the BFF's descriptor says wins field by field (it reads the published type); the
+ * platform's own block answers what the descriptor leaves out.
+ */
+export function observeOf(rt: Pick<ResourceType, 'observe'>, described?: BffConsoleType['observe']): ConsoleObserve {
   const o = rt.observe
-  return { supported: !!o?.action, interval: o?.interval, metrics: !!o?.metrics?.action, discover: !!o?.discover?.action }
+  return {
+    supported: described?.supported ?? !!o?.action,
+    interval: described?.interval ?? o?.interval,
+    metrics: described?.metrics ?? !!o?.metrics?.action,
+    discover: described?.discover ?? !!o?.discover?.action,
+  }
 }
 
 /** The default tabs, with Monitoring after Drift when the type has a metrics read (a type without one shows no tab). */
@@ -299,13 +309,13 @@ export function actionsOf(rt: ResourceType, catalog: CatalogEntry[]): ConsoleAct
     .sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title))
 }
 
-export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleType {
+export function composeType(rt: ResourceType, catalog: CatalogEntry[], described?: BffConsoleType): ConsoleType {
   const actions = actionsOf(rt, catalog)
   const producer = rt.producedBy ? catalog.find((e) => e.workflow === rt.producedBy) : undefined
   const create = producer ? toAction(producer) : (actions.find((a) => a.verb === 'create') ?? null)
   const columns = columnsOf(rt)
   const sort = sortOf(rt.console?.list?.defaultSort, columns)
-  const observe = observeOf(rt)
+  const observe = observeOf(rt, described?.observe)
   return {
     name: rt.name,
     plural: rt.plural,
@@ -332,8 +342,9 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
   }
 }
 
-export function composeTypes(types: ResourceType[], catalog: CatalogEntry[]): ConsoleType[] {
-  return types.map((rt) => composeType(rt, catalog)).sort((a, b) => a.service.localeCompare(b.service) || a.title.localeCompare(b.title))
+/** Every type, read with the BFF's descriptor of it when there is one. */
+export function composeTypes(types: ResourceType[], catalog: CatalogEntry[], described: BffConsoleType[] = []): ConsoleType[] {
+  return types.map((rt) => composeType(rt, catalog, described.find((d) => d.type === rt.name))).sort((a, b) => a.service.localeCompare(b.service) || a.title.localeCompare(b.title))
 }
 
 /** Types grouped by service, services by name. */

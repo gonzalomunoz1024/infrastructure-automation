@@ -172,3 +172,21 @@ describe('words', () => {
     expect(purposeOf({ title: 'Vms', create: null, owner: 'team-compute', states: [] })).toBe("Vms are created by team-compute's workflows and tracked by the platform.")
   })
 })
+
+describe('what the BFF’s descriptor says of a type', () => {
+  const vm = types.find((t) => t.name === 'vm') as ResourceType
+  const bare = { ...vm, observe: undefined }
+
+  it('decides the Monitoring tab and discovery over the platform’s own observe block', () => {
+    expect(composeType(bare, catalog).tabs).not.toContain('Monitoring')
+    const described = composeType(bare, catalog, { key: 'compute/vm', type: 'vm', service: 'compute', actions: [], observe: { supported: true, interval: '1h', metrics: true, discover: true } })
+    expect(described.observe).toEqual({ supported: true, interval: '1h', metrics: true, discover: true })
+    expect(described.tabs).toContain('Monitoring')
+  })
+
+  it('leaves the platform’s block to answer what the descriptor does not say', () => {
+    const own = { ...vm, observe: { provider: 'vsphere', action: 'vm.get', interval: '6h', metrics: { action: 'vm.metrics' } } } as ResourceType
+    expect(composeType(own, catalog, { key: 'compute/vm', type: 'vm', service: 'compute', actions: [], observe: { discover: false } }).observe).toEqual({ supported: true, interval: '6h', metrics: true, discover: false })
+    expect(composeTypes([own], catalog, [{ key: 'data/database', type: 'database', service: 'data', actions: [], observe: { metrics: false } }])[0].observe.metrics).toBe(true)
+  })
+})

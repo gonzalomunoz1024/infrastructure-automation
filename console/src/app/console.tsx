@@ -50,7 +50,7 @@ export function ConsoleProvider({ session, children }: { session: Session; child
   const regions = useQuery(['regions', scope], () => api.regions())
   const decisions = useQuery(['console-types', scope], () => bff.types())
 
-  const composed = useMemo(() => composeTypes(types.data ?? [], catalog.data ?? []), [types.data, catalog.data])
+  const composed = useMemo(() => composeTypes(types.data ?? [], catalog.data ?? [], decisions.data), [types.data, catalog.data, decisions.data])
   const services = useMemo(() => groupServices(composed), [composed])
   const regionList = useMemo(() => regions.data ?? [GLOBAL_REGION], [regions.data])
   const region = regionOf(session.region, regionList)

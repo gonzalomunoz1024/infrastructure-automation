@@ -143,6 +143,8 @@ export interface BffConsoleType {
   plural?: string
   title?: string
   actions: BffConsoleAction[]
+  /** what the drift service reads of the type (P-06, P-09) */
+  observe?: { supported?: boolean; interval?: string; metrics?: boolean; discover?: boolean }
   etag?: string
   [key: string]: unknown
 }
