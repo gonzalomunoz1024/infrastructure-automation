@@ -695,7 +695,7 @@ components:
         version: { type: integer, minimum: 1, description: 'The day as days since 1970-01-01, which only grows' }
         day: { type: string, format: date }
         score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
-        previousScore: { type: [integer, 'null'], description: The last snapshot's score, when there is one }
+        previousScore: { type: [integer, 'null'], description: "The last snapshot's score, when there is one" }
         packs:
           type: object
           additionalProperties: { type: [integer, 'null'] }

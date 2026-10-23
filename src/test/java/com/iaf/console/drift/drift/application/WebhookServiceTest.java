@@ -49,6 +49,24 @@ class WebhookServiceTest {
     }
 
     @Test
+    void theSameNotificationSentAgainSchedulesNothing() {
+        Watch w = Watch.builder("wfrn:wf:compute:global:123456789012:vm/vm-02", "123456789012", "global", "vm").providerId("vm-1006")
+                .registryId("vm-02").tier(Tier.WARM).nextCheckAt(clock.instant().plus(Duration.ofMinutes(50))).build();
+        watches.save(w).block();
+        byte[] body = BODY.getBytes(StandardCharsets.UTF_8);
+        String signature = "sha256=" + WebhookService.sign("s3cret", body);
+        assertThat(webhooks.receive("vsphere", signature, body).block().scheduled()).isEqualTo(1);
+        // replayed within the window: verified, but nothing is read again
+        assertThat(webhooks.receive("vsphere", signature, body).block().scheduled()).isZero();
+        // another notification is another change
+        byte[] other = BODY.replace("vm.changed", "vm.reconfigured").getBytes(StandardCharsets.UTF_8);
+        assertThat(webhooks.receive("vsphere", "sha256=" + WebhookService.sign("s3cret", other), other).block().scheduled()).isEqualTo(1);
+        // past the window the first one counts again
+        clock.advance(WebhookService.REPLAY_WINDOW.plusSeconds(1));
+        assertThat(webhooks.receive("vsphere", signature, body).block().scheduled()).isEqualTo(1);
+    }
+
+    @Test
     void anUnsignedOrMissignedOrUnknownSenderIsRefused() {
         byte[] body = BODY.getBytes(StandardCharsets.UTF_8);
         assertThatThrownBy(() -> webhooks.receive("vsphere", null, body).block()).isInstanceOf(WebhookService.BadSignature.class);

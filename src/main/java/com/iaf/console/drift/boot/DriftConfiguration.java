@@ -19,6 +19,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.iaf.console.drift.drift.adapters.cost.HttpCostEstimates;
+import com.iaf.console.drift.drift.adapters.cost.PriceListCostEstimates;
+import com.iaf.console.drift.drift.adapters.identity.IdentityAccountDirectory;
+import com.iaf.console.drift.drift.adapters.memory.ListedAccountDirectory;
 import com.iaf.console.drift.drift.adapters.platform.AccountWorkflowStarter;
 import com.iaf.console.drift.drift.adapters.platform.ChainedPlatformCredentials;
 import com.iaf.console.drift.drift.adapters.platform.DemoPlatformCredentials;
@@ -42,8 +46,11 @@ import com.iaf.console.drift.drift.application.RevertFollower;
 import com.iaf.console.drift.drift.application.ShardScanner;
 import com.iaf.console.drift.drift.application.StateEvents;
 import com.iaf.console.drift.drift.application.WebhookService;
+import com.iaf.console.drift.drift.domain.AccountInfo;
 import com.iaf.console.drift.drift.domain.ObserveBudget;
 import com.iaf.console.drift.drift.domain.TierRules;
+import com.iaf.console.drift.drift.ports.outbound.AccountDirectoryPort;
+import com.iaf.console.drift.drift.ports.outbound.CostEstimatesPort;
 import com.iaf.console.drift.drift.ports.outbound.DiscoveryStorePort;
 import com.iaf.console.drift.drift.ports.outbound.FindingStorePort;
 import com.iaf.console.drift.drift.ports.outbound.IdempotencyKeyPort;
@@ -54,6 +61,7 @@ import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
 import com.iaf.console.drift.drift.ports.outbound.WatchStorePort;
 import com.iaf.console.drift.drift.ports.outbound.WorkflowStarterPort;
 import com.iaf.console.fake.PlatformFake;
+import com.iaf.console.fake.demo.DemoSeed;
 import com.iaf.console.kit.outbox.OutboxPort;
 import com.iaf.console.platform.client.PlatformPort;
 
@@ -68,6 +76,7 @@ public class DriftConfiguration {
     /** The audiences this service asks the BFF's service tokens for (registered for it there). */
     static final String STATE_AUDIENCE = "console-state-service";
     static final String IDENTITY_AUDIENCE = "console-identity-service";
+    static final String COST_AUDIENCE = "console-cost-service";
 
     @Bean
     @ConditionalOnMissingBean
@@ -156,6 +165,42 @@ public class DriftConfiguration {
         return new ChainedPlatformCredentials(properties.platform().accountTokens(), sources);
     }
 
+    /**
+     * The accounts the owner guesses and assignments name: the demo's two in the demo, else the
+     * identity service's active accounts, kept for the sync's account refresh.
+     */
+    @Bean
+    public AccountDirectoryPort accountDirectory(DriftProperties properties, WebClient.Builder webClients, ServiceCredentials credentials,
+            ObjectProvider<PlatformFake> fake, Clock clock) {
+        PlatformFake demo = fake.getIfAvailable();
+        if (demo != null) {
+            log.info("accounts: the demo's two, {} and {}", demo.demo().compute().accountId(), demo.demo().data().accountId());
+            return new ListedAccountDirectory(List.of(demoAccount(demo.demo().compute()), demoAccount(demo.demo().data())));
+        }
+        return new IdentityAccountDirectory(webClients, properties.identity().baseUrl(), credentials.forAudience(IDENTITY_AUDIENCE),
+                properties.identity().timeout(), properties.drift().sync().accountsRefresh(), clock);
+    }
+
+    /** "team-compute" owns the account named "Compute", as in the identity service's demo seed. */
+    private static AccountInfo demoAccount(DemoSeed.ConsoleAccount account) {
+        String word = account.team().startsWith("team-") ? account.team().substring("team-".length()) : account.team();
+        return new AccountInfo(account.accountId(), Character.toUpperCase(word.charAt(0)) + word.substring(1), account.team());
+    }
+
+    /** Monthly costs: the cost service's list-price estimates, or the price list in the settings when no cost service is set. */
+    @Bean
+    public CostEstimatesPort costEstimates(DriftProperties properties, WebClient.Builder webClients, ServiceCredentials credentials) {
+        DriftProperties.CostSettings c = properties.cost();
+        if (c.service()) {
+            log.info("costs: the cost service at {}", c.baseUrl());
+            return new HttpCostEstimates(webClients, c.baseUrl(), credentials.forAudience(COST_AUDIENCE), c.timeout());
+        }
+        Map<String, PriceListCostEstimates.TypePrices> prices = new LinkedHashMap<>();
+        c.prices().forEach((type, p) -> prices.put(type, new PriceListCostEstimates.TypePrices(p.monthly(), p.per(), p.by(), p.choices())));
+        log.info("costs: the price list in console.cost.prices ({} type(s))", prices.size());
+        return new PriceListCostEstimates(prices, c.currency(), c.basis());
+    }
+
     @Bean
     public WorkflowStarterPort workflowStarter(PlatformCredentialsPort credentials, DriftProperties properties, ObjectProvider<PlatformFake> fake) {
         PlatformFake demo = fake.getIfAvailable();
@@ -224,14 +269,15 @@ public class DriftConfiguration {
     }
 
     @Bean
-    public FindingQueries findingQueries(FindingStorePort findings, WatchStorePort watches) {
-        return new FindingQueries(findings, watches);
+    public FindingQueries findingQueries(FindingStorePort findings, WatchStorePort watches, Clock clock) {
+        return new FindingQueries(findings, watches, clock);
     }
 
     @Bean
     public DiscoveryService discoveryService(DiscoveryStorePort store, ResourceTypesPort types, PlatformPort platform, StateServicePort state,
-            InventorySync sync, IdempotentCommands idempotent, DriftProperties properties, Clock clock) {
-        return new DiscoveryService(store, types, platform, state, sync, idempotent, properties.wfrn().partition(), clock);
+            InventorySync sync, IdempotentCommands idempotent, AccountDirectoryPort directory, CostEstimatesPort costs, DriftProperties properties,
+            Clock clock) {
+        return new DiscoveryService(store, types, platform, state, sync, idempotent, directory, costs, properties.wfrn().partition(), clock);
     }
 
     @Bean

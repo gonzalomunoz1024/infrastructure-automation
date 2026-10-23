@@ -31,6 +31,7 @@ final class ContractSchemas {
     static final JsonSchema WATCH = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Watch");
     static final JsonSchema SCAN_REPORT = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/ScanReport");
     static final JsonSchema SYNC_REPORT = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/SyncReport");
+    static final JsonSchema FINDING_STATS = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/FindingStats");
     static final JsonSchema FINDING_EVENT = schema("contracts/asyncapi/console-events.yaml", "/components/schemas/FindingEvent");
     static final JsonSchema RULE_PACK = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/RulePackSummary");
     static final JsonSchema SCORECARD = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Scorecard");
@@ -49,7 +50,7 @@ final class ContractSchemas {
      * {@code #/components/schemas/...} resolve; the document's own root (an AsyncAPI {@code id}, the
      * OpenAPI paths) is left out, since it is not a schema.
      */
-    private static JsonSchema schema(String resource, String pointer) {
+    static JsonSchema schema(String resource, String pointer) {
         try (InputStream in = ContractSchemas.class.getClassLoader().getResourceAsStream(resource)) {
             JsonNode document = YAML.readTree(in);
             ObjectNode root = YAML.createObjectNode();

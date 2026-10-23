@@ -26,6 +26,24 @@ final class DemoWorld {
     private DemoWorld() {
     }
 
+    /**
+     * The sizes of the VMs vSphere has that no account manages (the {@code vm.list} sample, which
+     * gives only their power state), so the shadow-infrastructure finder can price them. Answers
+     * how many it sized.
+     */
+    static int sizeUnmanagedVms(PlatformFake fake) {
+        int sized = 0;
+        for (Object[] vm : new Object[][] {{"vm-1042", 4, 16}, {"vm-1043", 2, 8}, {"vm-2001", 8, 32}}) {
+            ObjectNode body = JsonNodeFactory.instance.objectNode();
+            body.put("provider", "vsphere");
+            body.putObject("match").put("id", (String) vm[0]);
+            body.putObject("set").put("cpu", (Integer) vm[1]).put("memoryGb", (Integer) vm[2]);
+            fake.world().mutate(body);
+            sized++;
+        }
+        return sized;
+    }
+
     /** Answers how many provider objects now read as the registry records them. */
     static int alignSingleReads(PlatformFake fake) {
         int aligned = 0;

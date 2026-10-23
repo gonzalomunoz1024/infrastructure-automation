@@ -58,9 +58,14 @@ public abstract class DemoServiceTest {
     }
 
     /** A person of an account, with the groups the platform's delegation checks. */
+    /** A person of an account, an operator unless {@link #as(String, String, String, String)} names other roles. */
     protected WebTestClient as(String accountId, String user, String groups) {
+        return as(accountId, user, groups, "operator");
+    }
+
+    protected WebTestClient as(String accountId, String user, String groups, String roles) {
         return web.mutate().defaultHeader(ConsoleAuthWebFilter.ACCOUNT_HEADER, accountId).defaultHeader(ConsoleAuthWebFilter.USER_HEADER, user)
-                .defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, groups).build();
+                .defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, groups).defaultHeader(ConsoleAuthWebFilter.ROLES_HEADER, roles).build();
     }
 
     /** Dana, a developer of the compute account. */

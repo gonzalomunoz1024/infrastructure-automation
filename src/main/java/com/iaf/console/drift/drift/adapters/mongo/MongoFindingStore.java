@@ -11,6 +11,7 @@ import org.bson.conversions.Bson;
 
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingStatus;
 import com.iaf.console.drift.drift.domain.FindingsSummary;
 import com.iaf.console.drift.drift.domain.RevertStatus;
@@ -22,6 +23,8 @@ import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
 import com.mongodb.MongoException;
+import com.mongodb.client.model.Accumulators;
+import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.IndexModel;
 import com.mongodb.client.model.IndexOptions;
@@ -57,7 +60,12 @@ public final class MongoFindingStore implements FindingStorePort, MongoIndexed {
                 new IndexModel(Indexes.ascending("wfrn", "status")),
                 new IndexModel(Indexes.ascending("wfrn"), new IndexOptions().name("one_open_finding_per_resource").unique(true)
                         .partialFilterExpression(Filters.eq("status", FindingStatus.OPEN.id()))),
-                new IndexModel(Indexes.ascending("status", "revertStatus"))));
+                new IndexModel(Indexes.ascending("status", "revertStatus")),
+                // the executive home's windows, per account and over every account
+                new IndexModel(Indexes.ascending("accountId", "openedAt")),
+                new IndexModel(Indexes.ascending("accountId", "closedAt")),
+                new IndexModel(Indexes.ascending("openedAt")),
+                new IndexModel(Indexes.ascending("closedAt"))));
     }
 
     @Override
@@ -130,6 +138,47 @@ public final class MongoFindingStore implements FindingStorePort, MongoIndexed {
     }
 
     @Override
+    public Mono<FindingStats> countWindow(AccountScope scope, Instant since, Instant until) {
+        return window(scope.accountId(), since, until);
+    }
+
+    @Override
+    public Mono<FindingStats> countWindowEveryAccount(Instant since, Instant until) {
+        return window(null, since, until);
+    }
+
+    /** Three questions to the collection: opened in the window by severity, closed in it by resolution with their time open, open now. */
+    private Mono<FindingStats> window(String accountId, Instant since, Instant until) {
+        Bson account = accountId == null ? new Document() : Filters.eq("accountId", accountId);
+        Mono<Map<String, Long>> opened = Flux.from(mongo.collection(COLLECTION).aggregate(List.of(
+                        Aggregates.match(Filters.and(account, Filters.gte("openedAt", Mongo.date(since)), Filters.lt("openedAt", Mongo.date(until)))),
+                        Aggregates.group("$severity", Accumulators.sum("n", 1)))))
+                .collectMap(d -> d.getString("_id"), d -> ((Number) d.get("n")).longValue());
+        Mono<List<Document>> closed = Flux.from(mongo.collection(COLLECTION).aggregate(List.of(
+                        Aggregates.match(Filters.and(account, Filters.gte("closedAt", Mongo.date(since)), Filters.lt("closedAt", Mongo.date(until)))),
+                        Aggregates.group("$resolution", Accumulators.sum("n", 1),
+                                Accumulators.sum("millis", new Document("$subtract", List.of("$closedAt", "$openedAt")))))))
+                .collectList();
+        Mono<Long> open = Mono.from(mongo.collection(COLLECTION).countDocuments(Filters.and(account, Filters.eq("status", FindingStatus.OPEN.id()))));
+        return Mono.zip(opened, closed, open).map(t -> {
+            Map<String, Long> bySeverity = new TreeMap<>(t.getT1());
+            long total = 0;
+            long millis = 0;
+            Map<String, Long> byResolution = new TreeMap<>();
+            for (Document d : t.getT2()) {
+                long n = ((Number) d.get("n")).longValue();
+                total += n;
+                millis += ((Number) d.get("millis")).longValue();
+                byResolution.merge(String.valueOf(d.get("_id")), n, Long::sum);
+            }
+            FindingStats.Closed counts = new FindingStats.Closed(total, byResolution.getOrDefault("reverted", 0L), byResolution.getOrDefault("accepted", 0L),
+                    byResolution.getOrDefault("ignored", 0L), byResolution.getOrDefault("vanished", 0L));
+            return new FindingStats(accountId, since, until, bySeverity.values().stream().mapToLong(Long::longValue).sum(), counts, t.getT3(), bySeverity,
+                    FindingStats.meanMinutes(millis, total));
+        });
+    }
+
+    @Override
     public Mono<Finding> findOpenByWfrn(String wfrn) {
         return Mono.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("wfrn", wfrn), Filters.eq("status", FindingStatus.OPEN.id()))).first())
                 .map(this::read);
@@ -164,6 +213,8 @@ public final class MongoFindingStore implements FindingStorePort, MongoIndexed {
                 .append("severity", f.severity().id())
                 .append("version", f.version())
                 .append("openedAt", Mongo.date(f.openedAt()))
+                .append("closedAt", f.closedAt() == null ? null : Mongo.date(f.closedAt()))
+                .append("resolution", f.resolution() == null ? null : f.resolution().id())
                 .append("revertStatus", f.revertStatus() == null ? null : f.revertStatus().id())
                 .append(Mongo.DOC, mongo.doc(f));
     }

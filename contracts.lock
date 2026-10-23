@@ -1,13 +1,14 @@
 # contracts.lock
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
 branch: console-root
-# the drift contract's additions are hub PR #14 (console-root--drift-contract); the scorecards
-# contract and rule packs are hub PR #19 (console-root--scorecards-contract, stacked on it)
-commit: 02b5030c73b4a9949df74a2e5bcc720eda30ea1d
+# the drift contract's additions are hub PR #14 (console-root--drift-contract) and PR #17
+# (console-root--drift-finder-monitoring, stacked on it); the scorecards contract and rule packs
+# are hub PR #19 (console-root--scorecards-contract, stacked on #17)
+commit: 4d9c555d1cd4e8d018074567d6952beeb3bedcf7
 files:
-  contracts/openapi/console-drift-service.yaml: sha256:c71dda36ddc9d2b31174746d443668030d9b3520fd37eed44c7a0ac99f0446aa
+  contracts/openapi/console-drift-service.yaml: sha256:544b276f1b9739d29357e6cbb5aa46fbba9b227631bc55e2ed61bd182c4f520d
   contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
-  contracts/asyncapi/console-events.yaml: sha256:744828ef41fe2b7defa3f82df0189dd704485bfc74d08f35b2b4269e4de6cb96
+  contracts/asyncapi/console-events.yaml: sha256:f95a2fcc94da75bb3882b1d77a43181e8672047aa158bbe8ea1354da891cc834
   contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c
   contracts/schemas/rule-pack.schema.json: sha256:d5b9f40e26530720a892c45c1742ddb03ce045fb4f131e7a48e958949fce8f8e
   rule-packs/required-tags.yaml: sha256:27ed0c7147e56fad82a24b14fc1b5cb590d83283ee37e5dbfc8b5f4be69d24b9

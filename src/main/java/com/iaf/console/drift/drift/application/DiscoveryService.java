@@ -1,11 +1,13 @@
 package com.iaf.console.drift.drift.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -14,13 +16,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.drift.drift.domain.AccountInfo;
+import com.iaf.console.drift.drift.domain.Assignment;
 import com.iaf.console.drift.drift.domain.DiscoveryRun;
 import com.iaf.console.drift.drift.domain.Json;
+import com.iaf.console.drift.drift.domain.OwnerGuesses;
 import com.iaf.console.drift.drift.domain.TypeInfo;
 import com.iaf.console.drift.drift.domain.UnmanagedObject;
+import com.iaf.console.drift.drift.ports.outbound.AccountDirectoryPort;
+import com.iaf.console.drift.drift.ports.outbound.CostEstimatesPort;
 import com.iaf.console.drift.drift.ports.outbound.DiscoveryStorePort;
 import com.iaf.console.drift.drift.ports.outbound.ResourceTypesPort;
 import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
@@ -40,15 +48,22 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Discovery: a run pages through the type's {@code :discover} read (P-09) in every environment of
- * the region and keeps what carries no wfrn as unmanaged, for the account that asked; an import
- * mints the object a wfrn through the state service ({@code POST /v1/resources:import}, source
- * {@code discover}) and takes it off the list. One run per type and region at a time.
+ * Discovery and the shadow-infrastructure finder (WP 5.3): a run pages through the type's
+ * {@code :discover} read (P-09) in every environment of the region and keeps what carries no wfrn
+ * as unmanaged, for the account that asked. Once the walk is done each object found is judged: who
+ * most likely owns it ({@link OwnerGuesses}, with the managed objects the walk paged past as its
+ * neighbours) and what it costs a month. An object can be assigned to another team's account,
+ * which then lists it too; an import by either account mints the object a wfrn through the state
+ * service ({@code POST /v1/resources:import}, source {@code discover}) and takes every copy off the
+ * lists. One run per type and region at a time: a second is a 409 naming the running one, and a
+ * run still running after {@link #ABANDONED_AFTER} lost its walk, so it is marked failed and steps aside.
  */
 public final class DiscoveryService {
 
     private static final Logger log = LoggerFactory.getLogger(DiscoveryService.class);
     private static final int PAGE = 500;
+    /** A run still running after this long lost its walk (the pod stopped): it is marked failed and no longer blocks a new one. */
+    static final Duration ABANDONED_AFTER = Duration.ofHours(2);
 
     private final DiscoveryStorePort store;
     private final ResourceTypesPort types;
@@ -56,17 +71,21 @@ public final class DiscoveryService {
     private final StateServicePort state;
     private final InventorySync sync;
     private final IdempotentCommands idempotent;
+    private final AccountDirectoryPort directory;
+    private final CostEstimatesPort costs;
     private final String partition;
     private final Clock clock;
 
     public DiscoveryService(DiscoveryStorePort store, ResourceTypesPort types, PlatformPort platform, StateServicePort state, InventorySync sync,
-            IdempotentCommands idempotent, String partition, Clock clock) {
+            IdempotentCommands idempotent, AccountDirectoryPort directory, CostEstimatesPort costs, String partition, Clock clock) {
         this.store = store;
         this.types = types;
         this.platform = platform;
         this.state = state;
         this.sync = sync;
         this.idempotent = idempotent;
+        this.directory = directory;
+        this.costs = costs;
         this.partition = partition;
         this.clock = clock;
     }
@@ -85,11 +104,28 @@ public final class DiscoveryService {
                         return Mono.error(new InvalidInputException("the type cannot be discovered",
                                 List.of(Problem.error("type.notDiscoverable", "type", type + " has no observe.discover or observe.list action"))));
                     }
-                    return store.findRunningRun(scope, type, region).switchIfEmpty(Mono.defer(() -> {
-                        DiscoveryRun run = DiscoveryRun.start("disc-" + Ulid.next().toLowerCase(Locale.ROOT), scope.accountId(), type, region, clock.instant());
-                        return store.saveRun(run).doOnSuccess(saved -> walk(scope, t, saved).subscribeOn(Schedulers.boundedElastic()).subscribe());
-                    }));
+                    // one run per type and region: a second is a 409 naming the running one, unless that one was abandoned
+                    return store.findRunningRun(scope, type, region)
+                            .flatMap(running -> running.startedAt().plus(ABANDONED_AFTER).isAfter(clock.instant())
+                                    ? Mono.<DiscoveryRun>error(new ConflictException("discover.running: a discovery run of " + type + " in " + region
+                                            + " is already running", Map.of("runId", running.runId())))
+                                    : store.saveRun(running.failed("abandoned: the run did not finish within " + ABANDONED_AFTER.toHours() + " hours",
+                                            running.seen() == null ? 0 : running.seen(), running.unmanaged() == null ? 0 : running.unmanaged(), clock.instant()))
+                                            .doOnSuccess(r -> log.warn("discovery {} abandoned, starting another", r.runId()))
+                                            .then(Mono.<DiscoveryRun>empty()))
+                            .switchIfEmpty(Mono.defer(() -> {
+                                DiscoveryRun run = DiscoveryRun.start("disc-" + Ulid.next().toLowerCase(Locale.ROOT), scope.accountId(), type, region, clock.instant());
+                                return store.saveRun(run).doOnSuccess(saved -> walk(scope, t, saved).subscribeOn(Schedulers.boundedElastic()).subscribe());
+                            }));
                 });
+    }
+
+    /** The console service of a type, for the checks of a write on it: its {@code service}, else the type's name; 400 for a type the platform does not have. */
+    public Mono<String> serviceOf(String type) {
+        return types.find(type)
+                .switchIfEmpty(Mono.error(() -> new InvalidInputException("unknown resource type",
+                        List.of(Problem.error("type.unknown", "type", "the platform has no resource type " + type)))))
+                .map(t -> t.service() != null ? t.service() : type);
     }
 
     /** The walk itself, after the 202. */
@@ -98,6 +134,7 @@ public final class DiscoveryService {
         Set<String> seen = ConcurrentHashMap.newKeySet();
         Set<String> unmanaged = ConcurrentHashMap.newKeySet();
         AtomicInteger nameless = new AtomicInteger();
+        OwnerGuesses.Neighbours neighbours = new OwnerGuesses.Neighbours();
         return environments(run.region())
                 .flatMapMany(Flux::fromIterable)
                 .concatMap(environment -> pages(type, run.region(), environment, null))
@@ -106,18 +143,25 @@ public final class DiscoveryService {
                         nameless.incrementAndGet();
                         return Mono.empty();
                     }
+                    if (item.wfrn() != null) {
+                        // a managed object says where its account's resources sit, for the low guesses
+                        neighbours.add(accountOf(item.wfrn()), Json.objectNode(item.observed()));
+                    }
                     if (!seen.add(item.providerId()) || item.wfrn() != null || Boolean.TRUE.equals(item.managed())) {
                         return Mono.empty();
                     }
-                    // an object imported earlier is managed by the console though the registry does not know it
-                    return sync.watching(scope.accountId(), type.name(), run.region(), item.providerId()).flatMap(watched -> {
-                        if (watched) {
-                            return Mono.empty();
-                        }
-                        unmanaged.add(item.providerId());
-                        return remember(scope, type, run.region(), item).then();
-                    });
+                    // an object imported earlier, by this account or another, is managed though the registry does not know it
+                    return sync.watcher(type.name(), run.region(), item.providerId()).map(Optional::of).defaultIfEmpty(Optional.empty())
+                            .flatMap(watcher -> {
+                                if (watcher.isPresent()) {
+                                    neighbours.add(watcher.get(), Json.objectNode(item.observed()));
+                                    return Mono.empty();
+                                }
+                                unmanaged.add(item.providerId());
+                                return remember(scope, type, run.region(), item).then();
+                            });
                 })
+                .then(Mono.defer(() -> judge(scope, type, run.region(), unmanaged, neighbours)))
                 .then(Mono.defer(() -> store.saveRun(run.succeeded(seen.size() + nameless.get(), unmanaged.size(), clock.instant()))))
                 .doOnSuccess(r -> log.info("discovery {}: {} {} object(s) seen in {}, {} unmanaged", r.runId(), r.seen(), type.name(), r.region(), r.unmanaged()))
                 .onErrorResume(e -> {
@@ -125,6 +169,47 @@ public final class DiscoveryService {
                     log.warn("discovery {} failed: {}", run.runId(), why);
                     return store.saveRun(run.failed(why, seen.size() + nameless.get(), unmanaged.size(), clock.instant()));
                 });
+    }
+
+    /**
+     * After the walk: each object found gets its owner guess and monthly cost, and the copy it was
+     * handed to in another account follows. A guess or a price that cannot be had leaves that
+     * field empty; it never fails the run.
+     */
+    private Mono<Void> judge(AccountScope scope, TypeInfo type, String region, Set<String> found, OwnerGuesses.Neighbours neighbours) {
+        if (found.isEmpty()) {
+            return Mono.empty();
+        }
+        return directory.listAccounts().onErrorReturn(List.of()).flatMap(accounts -> {
+            OwnerGuesses guesses = new OwnerGuesses(accounts, neighbours);
+            return Flux.fromIterable(List.copyOf(found))
+                    .concatMap(providerId -> store.findUnmanaged(scope, type.name(), region, providerId)
+                            .flatMap(object -> costs.monthly(type.name(), region, object.observed()).onErrorResume(e -> Mono.empty())
+                                    .map(Optional::of).defaultIfEmpty(Optional.empty())
+                                    .map(cost -> object.judged(guesses.guess(object.name(), object.observed()), cost.orElse(null))))
+                            .flatMap(store::saveUnmanaged)
+                            .flatMap(this::refreshHandedCopy))
+                    .then();
+        });
+    }
+
+    /** The copy another account was handed of this object takes what its finder now knows of it, assignment kept. */
+    private Mono<Void> refreshHandedCopy(UnmanagedObject home) {
+        if (home.assignment() == null) {
+            return Mono.empty();
+        }
+        return store.findCopies(home.type(), home.region(), home.providerId())
+                .filter(copy -> copy.handedHere() && home.accountId().equals(copy.foundBy()))
+                .concatMap(copy -> store.saveUnmanaged(home.forAccount(copy.accountId()).assigned(copy.assignment())))
+                .then();
+    }
+
+    private static String accountOf(String wfrn) {
+        try {
+            return Wfrn.parse(wfrn).account();
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private Flux<ObserveListPage.Item> pages(TypeInfo type, String region, String environment, String cursor) {
@@ -143,7 +228,7 @@ public final class DiscoveryService {
         String name = observed.hasNonNull("name") ? observed.get("name").asText() : item.id() != null ? item.id() : item.providerId();
         return store.findUnmanaged(scope, type.name(), region, item.providerId())
                 .map(existing -> existing.seen(observed, now))
-                .defaultIfEmpty(new UnmanagedObject(scope.accountId(), item.providerId(), type.name(), region, name, observed, now, now))
+                .defaultIfEmpty(UnmanagedObject.found(scope.accountId(), item.providerId(), type.name(), region, name, observed, now))
                 .flatMap(store::saveUnmanaged);
     }
 
@@ -162,16 +247,81 @@ public final class DiscoveryService {
         return store.findRun(scope, runId).switchIfEmpty(Mono.error(() -> NotFoundException.of("discovery run", runId)));
     }
 
-    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, int limit, String after) {
-        return store.listUnmanaged(scope, type, region, limit, after);
+    /** The account's unmanaged objects, of one type or all, filtered by owner ({@code any}, {@code mine}, {@code unknown}). */
+    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, String owner, int limit, String after) {
+        return store.listUnmanaged(scope, type, region, owner, limit, after);
+    }
+
+    /**
+     * Hands an object to another team's account: the finder's copy carries the assignment and the
+     * named account gets a copy of its own, until either imports it. Assigning it again moves the
+     * assignment (the copy handed out before is taken back); assigning it to the account that found
+     * it takes the assignment off. Either account may assign it.
+     */
+    public Mono<IdempotentCommands.Outcome> assign(AccountScope scope, String type, String region, String providerId, String toAccountId, String note,
+            String actor, String idempotencyKey) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("op", "assign");
+        body.put("type", type);
+        body.put("region", region);
+        body.put("providerId", providerId);
+        body.put("accountId", toAccountId);
+        if (note != null) {
+            body.put("note", note);
+        }
+        return idempotent.run(scope.accountId(), idempotencyKey, body, 200,
+                () -> doAssign(scope, type, region, providerId, toAccountId, note, actor).map(Json::objectNode));
+    }
+
+    private Mono<UnmanagedObject> doAssign(AccountScope scope, String type, String region, String providerId, String toAccountId, String note,
+            String actor) {
+        if (toAccountId == null || toAccountId.equals(scope.accountId()) || !AccountScope.isAccountId(toAccountId)) {
+            return Mono.error(unknownAccount(toAccountId));
+        }
+        return store.findUnmanaged(scope, type, region, providerId)
+                .switchIfEmpty(Mono.error(() -> NotFoundException.of("unmanaged object", providerId)))
+                .flatMap(mine -> directory.listAccounts().flatMap(accounts -> {
+                    AccountInfo to = accounts.stream().filter(a -> a.accountId().equals(toAccountId)).findFirst().orElse(null);
+                    if (to == null) {
+                        return Mono.error(unknownAccount(toAccountId));
+                    }
+                    String finder = mine.foundBy();
+                    Mono<UnmanagedObject> home = finder.equals(mine.accountId()) ? Mono.just(mine)
+                            : store.findUnmanaged(AccountScope.of(finder, region, scope.principal()), type, region, providerId).defaultIfEmpty(mine);
+                    return home.flatMap(found -> {
+                        String by = actor != null ? actor : scope.principal();
+                        Assignment assignment = toAccountId.equals(found.accountId()) ? null
+                                : new Assignment(toAccountId, to.name(), found.accountId(), by, note, clock.instant());
+                        // the copy handed out before goes back; the new one is written after the finder's copy
+                        return store.findCopies(type, region, providerId)
+                                .filter(copy -> copy.handedHere() && found.accountId().equals(copy.foundBy()) && !copy.accountId().equals(toAccountId))
+                                .concatMap(copy -> store.deleteUnmanaged(AccountScope.of(copy.accountId(), region, by), type, region, providerId))
+                                .then(store.saveUnmanaged(found.assigned(assignment)))
+                                .flatMap(saved -> assignment == null ? Mono.just(saved)
+                                        : store.saveUnmanaged(saved.forAccount(toAccountId)).thenReturn(saved))
+                                .doOnSuccess(saved -> log.info("{} {} in {}: {} by {} for account {}", type, providerId, region,
+                                        assignment == null ? "assignment taken off" : "assigned to " + toAccountId, by, scope.accountId()));
+                    });
+                }));
+    }
+
+    private static InvalidInputException unknownAccount(String accountId) {
+        return new InvalidInputException("unmanaged.unknownAccount",
+                List.of(Problem.error("unmanaged.unknownAccount", "accountId", "no other active account has the id " + accountId)));
     }
 
     /** The answer of an import: the wfrn the state service minted. */
     public record Imported(String wfrn) {
     }
 
+    /**
+     * Takes an object under management. Only the account it was handed to may, else the account it
+     * most likely belongs to; an object nobody is guessed for, only an account admin
+     * ({@code mayClaimUnknown}). Anyone else is a 409 {@code unmanaged.notYours}: discovery sees the
+     * whole region, so finding an object is no claim on it, and Assign to team hands it on.
+     */
     public Mono<IdempotentCommands.Outcome> importUnmanaged(AccountScope scope, String type, String region, String providerId, String name, String actor,
-            String idempotencyKey, String requestId) {
+            boolean mayClaimUnknown, String idempotencyKey, String requestId) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("op", "import");
         body.put("type", type);
@@ -181,12 +331,31 @@ public final class DiscoveryService {
             body.put("name", name);
         }
         return idempotent.run(scope.accountId(), idempotencyKey, body, 201,
-                () -> doImport(scope, type, region, providerId, name, actor, requestId).map(Json::objectNode));
+                () -> doImport(scope, type, region, providerId, name, actor, mayClaimUnknown, requestId).map(Json::objectNode));
     }
 
-    private Mono<Imported> doImport(AccountScope scope, String type, String region, String providerId, String name, String actor, String requestId) {
+    /** Whose object it is to import: the account it was handed to, else the guessed owner, else nobody's yet (null). */
+    static String claimant(UnmanagedObject object) {
+        if (object.assignment() != null && object.assignment().accountId() != null) {
+            return object.assignment().accountId();
+        }
+        return object.ownerGuess() == null ? null : object.ownerGuess().accountId();
+    }
+
+    private Mono<Imported> doImport(AccountScope scope, String type, String region, String providerId, String name, String actor,
+            boolean mayClaimUnknown, String requestId) {
         return store.findUnmanaged(scope, type, region, providerId)
                 .switchIfEmpty(Mono.error(() -> NotFoundException.of("unmanaged object", providerId)))
+                .flatMap(object -> {
+                    String claimant = claimant(object);
+                    if (claimant == null ? !mayClaimUnknown : !claimant.equals(scope.accountId())) {
+                        return Mono.error(new ConflictException(claimant == null
+                                ? "unmanaged.notYours: nobody is guessed to own " + providerId + "; an account admin may import it, or hand it on with Assign to team"
+                                : "unmanaged.notYours: " + providerId + " is for account " + claimant + " to import; hand it on with Assign to team",
+                                claimant == null ? Map.of() : Map.of("accountId", claimant)));
+                    }
+                    return Mono.just(object);
+                })
                 .flatMap(object -> types.find(type).map(t -> t.service() != null ? t.service() : type).defaultIfEmpty(type).flatMap(service -> {
                     String id = MintedIds.mint(type, Ulid.next().toLowerCase(Locale.ROOT));
                     String wfrn = new Wfrn(partition, service, region, scope.accountId(), type, id).format();
@@ -195,9 +364,18 @@ public final class DiscoveryService {
                             .importResource(new StateServicePort.ImportCommand(type, region, wfrn, providerId, resourceName, attributes,
                                     actor != null ? actor : scope.principal(), requestId))
                             .flatMap(resource -> sync.upsert(resource).thenReturn(resource))
-                            .flatMap(resource -> store.deleteUnmanaged(scope, type, region, providerId).thenReturn(new Imported(resource.wfrn() != null ? resource.wfrn() : wfrn)))
+                            .flatMap(resource -> forgetEveryCopy(scope, type, region, providerId)
+                                    .thenReturn(new Imported(resource.wfrn() != null ? resource.wfrn() : wfrn)))
                             .doOnSuccess(i -> log.info("{} {} imported as {} for account {}", type, providerId, i.wfrn(), scope.accountId())));
                 }));
+    }
+
+    /** A managed object is nobody's unmanaged object: this account's copy goes, and the finder's or the handed one in the other account. */
+    private Mono<Void> forgetEveryCopy(AccountScope scope, String type, String region, String providerId) {
+        return store.deleteUnmanaged(scope, type, region, providerId)
+                .thenMany(store.findCopies(type, region, providerId))
+                .concatMap(copy -> store.deleteUnmanaged(AccountScope.of(copy.accountId(), region, scope.principal()), type, region, providerId))
+                .then();
     }
 
     /** The observed fields the type's schema knows become the desired attributes; the rest stays observed only. */

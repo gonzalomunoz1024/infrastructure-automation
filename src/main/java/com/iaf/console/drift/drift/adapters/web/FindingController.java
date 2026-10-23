@@ -14,12 +14,14 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.drift.auth.application.WriteGuard;
+import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.application.DriftService;
 import com.iaf.console.drift.drift.application.FindingQueries;
-import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.domain.Decision;
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingsSummary;
 import com.iaf.console.drift.drift.domain.Severity;
 import com.iaf.console.kit.paging.CursorPaging;
@@ -30,7 +32,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * The findings API of {@code contracts/openapi/console-drift-service.yaml}: the list, the
- * summary, one finding, and the three decisions. A revert relays the BFF's
+ * summary, the window counts, one finding, and the three decisions. A revert relays the BFF's
  * {@code X-On-Behalf-Of} for the person, so the job names them.
  */
 @RestController
@@ -42,10 +44,24 @@ public final class FindingController {
 
     private final FindingQueries queries;
     private final DriftService decisions;
+    private final WriteGuard guard;
 
-    public FindingController(FindingQueries queries, DriftService decisions) {
+    public FindingController(FindingQueries queries, DriftService decisions, WriteGuard guard) {
         this.queries = queries;
         this.decisions = decisions;
+        this.guard = guard;
+    }
+
+    /** The scope of a decision on a finding, once the caller may update the finding's resource ({@code <service>:update}, as at the BFF). */
+    private Mono<AccountScope> decidable(ServerWebExchange exchange, ConsolePrincipal principal, String findingId, String accountId) {
+        return Principals.findingScope(exchange, findingId, accountId, queries)
+                .flatMap(scope -> principal.internal() ? Mono.just(scope)
+                        : queries.get(scope, findingId).flatMap(f -> guard.require(principal, "update", f.wfrn())).thenReturn(scope));
+    }
+
+    /** The decision as the caller may give it: a person is always its actor. */
+    private static Decision decision(ConsolePrincipal principal, String reason, String actor) {
+        return new Decision(reason, WriteGuard.actor(principal, actor));
     }
 
     @GetMapping("/v1/findings")
@@ -89,6 +105,21 @@ public final class FindingController {
         return queries.summary(scope, region != null ? region : scope.region());
     }
 
+    /** The drift numbers of the executive home; the internal principal names no account for every account's. */
+    @GetMapping("/v1/findings/stats")
+    public Mono<FindingStats> stats(ServerWebExchange exchange,
+            @RequestParam(required = false) String accountId,
+            @RequestParam(required = false) String since,
+            @RequestParam(required = false) String until) {
+        Instant from = instant(since, "since");
+        Instant to = instant(until, "until");
+        ConsolePrincipal principal = Principals.principal(exchange);
+        if (principal.internal() && accountId == null) {
+            return queries.stats(null, from, to);
+        }
+        return queries.stats(Principals.scope(exchange, accountId, null), from, to);
+    }
+
     @GetMapping("/v1/findings/{findingId}")
     public Mono<Finding> get(ServerWebExchange exchange, @PathVariable String findingId, @RequestParam(required = false) String accountId) {
         ConsolePrincipal principal = Principals.principal(exchange);
@@ -106,8 +137,8 @@ public final class FindingController {
             @RequestHeader(value = ON_BEHALF_OF, required = false) String onBehalfOf,
             @RequestBody(required = false) Requests.DecisionRequest body) {
         ConsolePrincipal principal = Principals.principal(exchange);
-        Decision decision = body == null ? Decision.NONE : body.decision();
-        return Principals.findingScope(exchange, findingId, accountId, queries)
+        Decision decision = decision(principal, body == null ? null : body.reason(), body == null ? null : body.actor());
+        return decidable(exchange, principal, findingId, accountId)
                 .flatMap(scope -> decisions.revert(scope, findingId, decision, idempotencyKey, requestId, onBehalfOf, Principals.person(principal)))
                 .map(Principals::respond);
     }
@@ -118,8 +149,9 @@ public final class FindingController {
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String idempotencyKey,
             @RequestHeader(value = REQUEST_ID, required = false) String requestId,
             @RequestBody(required = false) Requests.DecisionRequest body) {
-        Decision decision = body == null ? Decision.NONE : body.decision();
-        return Principals.findingScope(exchange, findingId, accountId, queries)
+        ConsolePrincipal principal = Principals.principal(exchange);
+        Decision decision = decision(principal, body == null ? null : body.reason(), body == null ? null : body.actor());
+        return decidable(exchange, principal, findingId, accountId)
                 .flatMap(scope -> decisions.accept(scope, findingId, decision, idempotencyKey, requestId))
                 .map(Principals::respond);
     }
@@ -130,9 +162,10 @@ public final class FindingController {
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String idempotencyKey,
             @RequestHeader(value = REQUEST_ID, required = false) String requestId,
             @RequestBody(required = false) Requests.IgnoreRequest body) {
-        Decision decision = body == null ? Decision.NONE : body.decision();
+        ConsolePrincipal principal = Principals.principal(exchange);
+        Decision decision = decision(principal, body == null ? null : body.reason(), body == null ? null : body.actor());
         Instant until = body == null ? null : body.until();
-        return Principals.findingScope(exchange, findingId, accountId, queries)
+        return decidable(exchange, principal, findingId, accountId)
                 .flatMap(scope -> decisions.ignore(scope, findingId, decision, until, idempotencyKey, requestId))
                 .map(Principals::respond);
     }

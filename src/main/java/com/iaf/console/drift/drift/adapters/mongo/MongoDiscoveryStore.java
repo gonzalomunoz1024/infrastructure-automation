@@ -27,7 +27,8 @@ import reactor.core.publisher.Mono;
 /**
  * Discovery in MongoDB: runs in {@code drift_discovery_runs}, unmanaged objects in
  * {@code drift_unmanaged}, keyed by account, type, region and provider id. The account rides
- * beside the JSON, which leaves it out.
+ * beside the JSON, which leaves it out, and so do the guessed owner and the account an object was
+ * assigned to, which the owner filter reads.
  */
 public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndexed {
 
@@ -47,7 +48,9 @@ public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndex
     @Override
     public Mono<Void> ensureIndexes() {
         return mongo.indexes(RUNS, List.of(new IndexModel(Indexes.ascending("accountId", "type", "region", "status"))))
-                .then(mongo.indexes(UNMANAGED, List.of(new IndexModel(Indexes.ascending("accountId", "type", "region", "_id")))));
+                .then(mongo.indexes(UNMANAGED, List.of(new IndexModel(Indexes.ascending("accountId", "type", "region", "_id")),
+                        new IndexModel(Indexes.ascending("accountId", "_id")),
+                        new IndexModel(Indexes.ascending("providerId", "type", "region")))));
     }
 
     @Override
@@ -75,7 +78,7 @@ public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndex
     }
 
     @Override
-    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, int limit, String after) {
+    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, String owner, int limit, String after) {
         List<Bson> filters = new ArrayList<>();
         filters.add(Filters.eq("accountId", scope.accountId()));
         if (type != null) {
@@ -83,6 +86,11 @@ public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndex
         }
         if (region != null) {
             filters.add(Filters.eq("region", region));
+        }
+        if (MINE.equals(owner)) {
+            filters.add(Filters.or(Filters.eq("guessAccountId", scope.accountId()), Filters.eq("assignedTo", scope.accountId())));
+        } else if (UNKNOWN.equals(owner)) {
+            filters.add(Filters.eq("guessAccountId", null));
         }
         if (after != null && !after.isBlank()) {
             filters.add(Filters.gt("_id", CursorPaging.decode(after).id()));
@@ -109,6 +117,8 @@ public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndex
                 .append("type", o.type())
                 .append("region", o.region())
                 .append("providerId", o.providerId())
+                .append("guessAccountId", o.ownerGuess() == null ? null : o.ownerGuess().accountId())
+                .append("assignedTo", o.assignment() == null ? null : o.assignment().accountId())
                 .append("seenAt", Mongo.date(o.seenAt()))
                 .append(Mongo.DOC, mongo.doc(o));
         return Mono.from(mongo.collection(UNMANAGED).replaceOne(Filters.eq("_id", id), d, new ReplaceOptions().upsert(true))).thenReturn(o);
@@ -117,6 +127,12 @@ public final class MongoDiscoveryStore implements DiscoveryStorePort, MongoIndex
     @Override
     public Mono<Void> deleteUnmanaged(AccountScope scope, String type, String region, String providerId) {
         return Mono.from(mongo.collection(UNMANAGED).deleteOne(Filters.eq("_id", key(scope.accountId(), type, region, providerId)))).then();
+    }
+
+    @Override
+    public Flux<UnmanagedObject> findCopies(String type, String region, String providerId) {
+        return Flux.from(mongo.collection(UNMANAGED).find(Filters.and(Filters.eq("providerId", providerId), Filters.eq("type", type),
+                Filters.eq("region", region)))).map(this::readUnmanaged);
     }
 
     private DiscoveryRun readRun(Document d) {
