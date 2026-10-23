@@ -136,12 +136,14 @@ export function codeSamplesFor(request: CodeRequest): CodeSample[] {
 
   const action = req.kind === 'update' ? (req.action ?? null) : req.action
   const subject = action ? (action.subject ?? subjectFor(action, type)) : undefined
+  // the reason the console carries beside an update's input is the workflow's own operational input on the platform (P-08)
+  const reason = req.kind === 'update' && body.reason && action?.input.properties?.reason ? { reason: body.reason } : {}
   const platformCall = action
     ? curlCommand({
         method: action.method,
         url: `${origin}${platformPath(action, subjectId)}`,
         headers: { 'X-User': '<you>', 'X-On-Behalf-Of': `account:${req.context.accountId}`, 'Idempotency-Key': KEY_PLACEHOLDER },
-        body: req.kind !== 'create' ? { ...body.input, ...(subject ? { [subject]: subjectId } : {}) } : body.input,
+        body: req.kind !== 'create' ? { ...body.input, ...reason, ...(subject ? { [subject]: subjectId } : {}) } : body.input,
       })
     : `# the platform runs the type's update workflow for a PATCH through the console; it has no direct path of its own`
 

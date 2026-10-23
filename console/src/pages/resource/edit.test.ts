@@ -117,9 +117,13 @@ describe('the edit as code', () => {
     expect(rest).toContain(`curl -X PATCH https://console.example.test/console/v1/r/vm/${encodeURIComponent(WEB02)}`)
     expect(rest).toContain("'If-Match: 3'")
     expect(rest).toContain('curl -X PATCH https://console.example.test/api/v1/vms/vm-demo03')
-    // the platform call names the VM it changes; the console call does not need to
-    expect(rest).toContain('"vmId": "vm-demo03"')
-    expect(rest.split('# straight from the platform')[0]).not.toContain('vmId')
+    // the platform call names the VM it changes and carries the reason as the workflow's own input; the console's keeps it beside the input
+    const [throughConsole, platform] = rest.split('# straight from the platform')
+    expect(platform).toContain('"vmId": "vm-demo03"')
+    expect(platform).toContain('"reason": "more room"')
+    expect(throughConsole).not.toContain('vmId')
+    expect(throughConsole).toContain('"input": {\n    "memoryGb": 32\n  },\n  "reason": "more room"')
+    expect(samples[0].code).toContain("--reason 'more room'")
     const yaml = workflowRunYaml(req)
     expect(yaml).toContain('  workflow: update-vm')
     expect(yaml).toContain(`  subject: "${WEB02}"`)
