@@ -10,11 +10,12 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.cost.pricing.domain.Micros;
 import com.iaf.console.cost.pricing.domain.PriceRule;
 import com.iaf.console.cost.pricing.domain.Rate;
 
-/** The ledger's arithmetic: accrual by the millisecond, a day's close, and the transitions that make the deltas. */
+/** The ledger's arithmetic: accrual by the millisecond, a day's close, and the transitions that make the deltas, a move's included. */
 class LedgerMathTest {
 
     private static final String WFRN = "wfrn:wf:compute:global:123456789012:vm/web-01";
@@ -75,6 +76,53 @@ class LedgerMathTest {
     }
 
     @Test
+    void aMoveIsReadFromTheStateServiceAndEndsTheRateInTheBucketItLeft() throws Exception {
+        String to = "wfrn:wf:compute:global:210987654321:vm/vm-01jcd5p8w2k4m6n8q0r2t4v6x8";
+        Instant moved = Instant.parse("2026-10-12T15:30:00Z");
+        ObjectMapper json = new ObjectMapper();
+
+        // the resource the move opened names the wfrn it was, and lives in the other account
+        ResourceSnapshot opened = ResourceSnapshot.of(json.readTree("{\"wfrn\":\"" + to + "\",\"accountId\":\"210987654321\",\"state\":\"active\","
+                + "\"version\":1,\"source\":\"transfer\",\"transferredFrom\":\"" + WFRN + "\",\"attributes\":{\"cpu\":4},\"tags\":{\"team\":\"web\"},"
+                + "\"createdAt\":\"2026-10-12T15:30:00.003Z\",\"updatedAt\":\"2026-10-12T15:30:00.003Z\"}"));
+        assertThat(opened.transferredFrom()).isEqualTo(WFRN);
+        assertThat(opened.transferredTo()).isNull();
+        assertThat(opened.charged()).isTrue();
+        assertThat(Bucket.of(opened).accountId()).isEqualTo("210987654321");
+
+        // the tombstone it left, 410 resource.transferred, ends the rate at the move in the bucket it was charged to
+        ResourceSnapshot gone = ResourceSnapshot.tombstone(WFRN, json.readTree("{\"error\":\"resource.transferred\",\"wfrn\":\"" + WFRN + "\","
+                + "\"deletedAt\":\"2026-10-12T15:30:00Z\",\"lastVersion\":3,\"transferredTo\":\"" + to + "\"}"));
+        assertThat(gone.tombstone()).isTrue();
+        assertThat(gone.charged()).isFalse();
+        assertThat(gone.transferredTo()).isEqualTo(to);
+        assertThat(gone.changedAt()).isEqualTo(moved);
+        Rate rate = new Rate(Micros.of(77.0), "USD", true, RULE, Rate.DESIRED);
+        Transition.Outcome priced = Transition.apply(Optional.empty(), snapshot("active", 2, Map.of("team", "web")), rate,
+                Instant.parse("2026-10-01T00:00:00Z"), false).orElseThrow();
+        Transition.Outcome closed = Transition.apply(Optional.of(priced.record()), gone, rate, gone.changedAt(), false).orElseThrow();
+        assertThat(closed.deltas()).singleElement().satisfies(d -> {
+            assertThat(d.bucket()).isEqualTo(priced.record().contribution().bucket());
+            assertThat(d.at()).isEqualTo(moved);
+            assertThat(d.monthlyMicros()).isEqualTo(-Micros.of(77.0));
+            assertThat(d.resources()).isEqualTo(-1);
+        });
+        assertThat(closed.record().stateVersion()).isEqualTo(3);
+
+        // a 410 may say less: the wfrn asked for stands in, and the event that made it gives the rest; what the body gives stands
+        ResourceSnapshot bare = ResourceSnapshot.tombstone(WFRN, json.readTree("{\"error\":\"resource.transferred\"}"));
+        assertThat(bare.wfrn()).isEqualTo(WFRN);
+        assertThat(bare.accountId()).isEqualTo("123456789012");
+        assertThat(bare.version()).isZero();
+        assertThat(bare.changedAt()).isNull();
+        ResourceSnapshot completed = bare.completedBy(moved, 3, to);
+        assertThat(completed.changedAt()).isEqualTo(moved);
+        assertThat(completed.version()).isEqualTo(3);
+        assertThat(completed.transferredTo()).isEqualTo(to);
+        assertThat(gone.completedBy(moved.plusSeconds(60), 4, WFRN)).isEqualTo(gone);
+    }
+
+    @Test
     void aBucketIsTheSameForTheSameTagsInAnyOrder() {
         Bucket a = Bucket.of("123456789012", "global", "compute", "vm", Map.of("a", "1", "b", "2"));
         Bucket b = Bucket.of("123456789012", "global", "compute", "vm", new java.util.TreeMap<>(Map.of("b", "2", "a", "1")));
@@ -85,6 +133,6 @@ class LedgerMathTest {
 
     private static ResourceSnapshot snapshot(String state, long version, Map<String, String> tags) {
         return new ResourceSnapshot(WFRN, "123456789012", "global", "vm", "compute", state, version, tags, Map.of("cpu", 4), Map.of(),
-                Instant.parse("2026-10-01T00:00:00Z"), Instant.parse("2026-10-01T00:00:00Z").plusSeconds(version), null, false);
+                Instant.parse("2026-10-01T00:00:00Z"), Instant.parse("2026-10-01T00:00:00Z").plusSeconds(version), null, false, null, null);
     }
 }

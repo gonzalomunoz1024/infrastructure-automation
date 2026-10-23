@@ -13,7 +13,10 @@ import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriBuilder;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.console.cost.ledger.adapters.tokens.ServiceTokens;
 import com.iaf.console.cost.ledger.domain.ResourceSnapshot;
 import com.iaf.console.cost.ledger.ports.outbound.StateServicePort;
@@ -26,12 +29,14 @@ import reactor.util.retry.Retry;
 /**
  * The state service over HTTP ({@code contracts/openapi/console-state-service.yaml}), as the
  * console-internal principal (the WebClient carries this service's credentials): the resource by
- * wfrn ({@code 410} is its tombstone, {@code 404} nothing), and the account's list page after
- * page, oldest change first, so a walk can resume from a watermark.
+ * wfrn ({@code 410} is its tombstone, of a delete or of a move to another account, which names the
+ * wfrn it became; {@code 404} nothing), and the account's list page after page, oldest change
+ * first, so a walk can resume from a watermark.
  */
 public final class HttpStateService implements StateServicePort {
 
     private static final Logger log = LoggerFactory.getLogger(HttpStateService.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final int PAGE = 200;
 
     private final WebClient web;
@@ -50,7 +55,8 @@ public final class HttpStateService implements StateServicePort {
                         return r.releaseBody().then(Mono.<ResourceSnapshot>empty());
                     }
                     if (status == 410) {
-                        return r.bodyToMono(JsonNode.class).map(ResourceSnapshot::tombstone);
+                        // gone, whatever the body holds: one that names nothing is still the tombstone of the wfrn asked for
+                        return r.bodyToMono(String.class).defaultIfEmpty("").map(text -> ResourceSnapshot.tombstone(wfrn, tombstoneBody(text)));
                     }
                     if (r.statusCode().is2xxSuccessful()) {
                         return r.bodyToMono(JsonNode.class).map(ResourceSnapshot::of);
@@ -95,6 +101,16 @@ public final class HttpStateService implements StateServicePort {
                     JsonNode next = body.get("next");
                     return new Listed(items, next == null || next.isNull() ? null : next.asText());
                 });
+    }
+
+    /** A 410's body as JSON ({@code Tombstone}): an empty object when it is empty or not a JSON object. */
+    private static JsonNode tombstoneBody(String text) {
+        try {
+            JsonNode body = text.isBlank() ? null : JSON.readTree(text);
+            return body != null && body.isObject() ? body : JsonNodeFactory.instance.objectNode();
+        } catch (JsonProcessingException e) {
+            return JsonNodeFactory.instance.objectNode();
+        }
     }
 
     private static <T> Mono<T> failure(ClientResponse r) {

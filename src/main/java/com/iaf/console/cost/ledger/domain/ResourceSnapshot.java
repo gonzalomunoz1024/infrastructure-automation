@@ -12,11 +12,13 @@ import com.iaf.console.wfrn.Wfrn;
 /**
  * A resource as the state service serves it ({@code ConsoleResource}), or its tombstone (the 410
  * body), reduced to what pricing needs: where it is charged, its state and version, its tags, its
- * desired and observed attributes, and when it last changed.
+ * desired and observed attributes, when it last changed, and the wfrns a move to another account
+ * links it to (hub decision 30): {@code transferredFrom} on the resource a move opened, the one it
+ * was, and {@code transferredTo} on the tombstone a move left, the one it became.
  */
 public record ResourceSnapshot(String wfrn, String accountId, String region, String type, String service, String state, long version,
         Map<String, String> tags, Map<String, Object> attributes, Map<String, Object> observed, Instant createdAt, Instant updatedAt,
-        Instant deletedAt, boolean tombstone) {
+        Instant deletedAt, boolean tombstone, String transferredFrom, String transferredTo) {
 
     /** The states in which a resource exists at its provider and is charged. */
     public static final Set<String> CHARGED_STATES = Set.of("active", "updating", "deleting");
@@ -37,16 +39,31 @@ public record ResourceSnapshot(String wfrn, String accountId, String region, Str
         return new ResourceSnapshot(wfrn, orElse(text(json, "accountId"), name.account()), orElse(text(json, "region"), name.region()),
                 orElse(text(json, "type"), name.type()), orElse(text(json, "service"), name.service()), text(json, "state"),
                 json.path("version").asLong(0), tags, map(json.get("attributes")), map(json.get("observed")), instant(json, "createdAt"),
-                instant(json, "updatedAt"), instant(json, "deletedAt"), false);
+                instant(json, "updatedAt"), instant(json, "deletedAt"), false, text(json, "transferredFrom"), text(json, "transferredTo"));
     }
 
-    /** The 410 body: the name, when it was deleted, the last version. */
-    public static ResourceSnapshot tombstone(JsonNode json) {
-        String wfrn = text(json, "wfrn");
+    /**
+     * The 410 body answered for {@code asked}: the name (the one asked for when the body leaves it
+     * out), when it was deleted or moved, its last version (0 when not given), and the wfrn it became
+     * when it moved to another account ({@code resource.transferred}).
+     */
+    public static ResourceSnapshot tombstone(String asked, JsonNode json) {
+        String wfrn = orElse(text(json, "wfrn"), asked);
         Wfrn name = Wfrn.parse(wfrn);
         Instant deletedAt = instant(json, "deletedAt");
         return new ResourceSnapshot(wfrn, name.account(), name.region(), name.type(), name.service(), "deleted", json.path("lastVersion").asLong(0),
-                Map.of(), Map.of(), Map.of(), null, deletedAt, deletedAt, true);
+                Map.of(), Map.of(), Map.of(), null, deletedAt, deletedAt, true, null, text(json, "transferredTo"));
+    }
+
+    /**
+     * This tombstone with what its 410 body left out given by the event that made it
+     * ({@code Transferred} or {@code Deleted}): the instant it went, its version and the wfrn it
+     * became. What the body gives stands.
+     */
+    public ResourceSnapshot completedBy(Instant at, long eventVersion, String becameWfrn) {
+        Instant when = deletedAt != null ? deletedAt : at;
+        return new ResourceSnapshot(wfrn, accountId, region, type, service, state, version > 0 ? version : eventVersion, tags, attributes, observed,
+                createdAt, updatedAt != null ? updatedAt : when, when, tombstone, transferredFrom, transferredTo != null ? transferredTo : becameWfrn);
     }
 
     /** Whether the resource exists at its provider now, so it costs. */
@@ -54,7 +71,7 @@ public record ResourceSnapshot(String wfrn, String accountId, String region, Str
         return !tombstone && state != null && CHARGED_STATES.contains(state);
     }
 
-    /** When the state service says it last changed: the delete for a tombstone, else the last update. */
+    /** When the state service says it last changed: the delete or the move for a tombstone, else the last update. */
     public Instant changedAt() {
         if (tombstone || "deleted".equals(state)) {
             return deletedAt != null ? deletedAt : updatedAt;

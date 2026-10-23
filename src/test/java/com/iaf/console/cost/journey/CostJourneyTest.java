@@ -214,6 +214,7 @@ class CostJourneyTest {
     private static ResourceSnapshot resource(String wfrn, String type, String service, Map<String, Object> attributes, Map<String, String> tags,
             String created) {
         Instant at = Instant.parse(created);
-        return new ResourceSnapshot(wfrn, ACCOUNT, "global", type, service, "active", 1, tags, attributes, Map.of(), at, at, null, false);
+        return new ResourceSnapshot(wfrn, ACCOUNT, "global", type, service, "active", 1, tags, attributes, Map.of(), at, at, null, false, null,
+                null);
     }
 }

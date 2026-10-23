@@ -57,8 +57,11 @@ public final class LedgerService {
     /**
      * When a resource the ledger has never seen started to cost, and the first day an account's
      * ledger holds. In production: its creation, no earlier than the ledger's first day, which is
-     * the day the account was first seen less {@code backfillDays}. The demo spreads first sightings
-     * over its history ({@link #spread(int)}) so a report has a past to show.
+     * the day the account was first seen less {@code backfillDays}. A resource moved here from
+     * another account ({@code transferredFrom}, hub decision 30) was created by its import, so it
+     * starts then and never earlier: its time before is its old wfrn's, charged to the account it
+     * left. The demo spreads first sightings over its history ({@link #spread(int)}) so a report has
+     * a past to show, but never a moved resource's.
      */
     public interface ChargeStart {
         Instant of(ResourceSnapshot resource, AccountLedger ledger);
@@ -69,6 +72,7 @@ public final class LedgerService {
             return new ChargeStart() {
                 @Override
                 public Instant of(ResourceSnapshot r, AccountLedger ledger) {
+                    // a moved resource's createdAt is its import, the Imported event's at, never its first creation
                     Instant created = r.createdAt() != null ? r.createdAt() : r.changedAt();
                     Instant first = ledger.firstDay().atStartOfDay().toInstant(ZoneOffset.UTC);
                     return created == null || created.isBefore(first) ? first : created;
@@ -83,7 +87,9 @@ public final class LedgerService {
 
         /**
          * The demo's history: a resource first seen is taken to have started between 1 and
-         * {@code days} days before it was created, the same day for the same wfrn every time.
+         * {@code days} days before it was created, the same day for the same wfrn every time. A
+         * resource moved from another account starts at its import all the same: the account it
+         * left was charged until then.
          */
         static ChargeStart spread(int days) {
             ChargeStart created = created(days);
@@ -91,6 +97,9 @@ public final class LedgerService {
                 @Override
                 public Instant of(ResourceSnapshot r, AccountLedger ledger) {
                     Instant base = created.of(r, ledger);
+                    if (r.transferredFrom() != null) {
+                        return base;
+                    }
                     long back = 1 + Math.floorMod(r.wfrn().hashCode(), Math.max(1, days - 1));
                     Instant spread = base.minus(java.time.Duration.ofDays(back)).minus(java.time.Duration.ofMinutes(Math.floorMod(r.wfrn().hashCode() / 7, 1440)));
                     Instant first = ledger.firstDay().atStartOfDay().toInstant(ZoneOffset.UTC);

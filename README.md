@@ -28,12 +28,20 @@ The contract is `contracts/openapi/console-cost-service.yaml` on the hub, pinned
    signed deltas with deterministic ids, stored on the record as pending first and written after,
    so a crash between the two is mended by writing them again. Charged states: `active`,
    `updating`, `deleting`.
-4. **Days.** A day closes 30 minutes after it ends into one row per bucket (its opening and closing
+4. **Moves.** A resource moved to another account of the organization (hub decision 30) is two
+   wfrns, each priced in its own account. `Transferred` makes the old wfrn a tombstone: read
+   back, it answers 410 `resource.transferred` (or is listed with the deleted ones when polling),
+   and its rate ends at the move as a delete's does, at the tombstone's `deletedAt`, else at the
+   `at` of the `Transferred` itself. `Imported` with `source: transfer` opens the new wfrn
+   (`transferredFrom`), which starts at its import, its `createdAt`, never earlier; the demo's
+   spread of first sightings leaves it there. So a month's chargeback splits at the move by
+   itself, and a move is no new resource: one leaves the old account's bucket and joins the new.
+5. **Days.** A day closes 30 minutes after it ends into one row per bucket (its opening and closing
    rate and what it cost, accrued by the millisecond at `monthly / days in the month`). A late
    delta marks its day dirty and the closer re-closes from there. Reports read the closed rows
    plus the open days computed from their deltas, so a query is bounded by tag sets, never by
    resources, and never waits for the closer.
-5. **Forecast.** Month to date plus the run rate for the rest of the month; the band is two
+6. **Forecast.** Month to date plus the run rate for the rest of the month; the band is two
    standard deviations of the last 14 closed days, widened by √(days left).
 
 Money is micros in a `long` throughout and rounded to cents only at the API edge.

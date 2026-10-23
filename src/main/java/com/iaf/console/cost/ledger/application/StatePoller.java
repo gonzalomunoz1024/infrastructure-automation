@@ -25,7 +25,9 @@ import reactor.core.scheduler.Schedulers;
  * Where Kafka is not there (the demo, a laptop), the ledger follows the state service by polling:
  * every account's resources changed after its watermark, live and deleted, each interval. The
  * watermark is moved back a second each time, so a change in the same instant is not missed; the
- * ledger skips what it already priced.
+ * ledger skips what it already priced. A resource moved to another account is listed with the old
+ * account's deleted ones ({@code transferredTo}, {@code deletedAt} the move), so its rate ends there
+ * at the move as a delete's does, and with the new account's live ones from its import.
  */
 public final class StatePoller implements EventSource {
 
