@@ -420,7 +420,7 @@ export function ResourceGroupPage({ route }: PageProps) {
       {route.query.action === 'delete' && remove.allowed && (
         <ConfirmDialog
           title={`Delete ${g.name}?`}
-          message="The group and its query go; the resources it matches are not touched. Type the group's name to confirm."
+          message="The group and its query go; the resources it matches are not touched. Type the group’s name to confirm."
           confirmLabel="Delete group"
           tone="danger"
           icon="trash"

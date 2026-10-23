@@ -277,6 +277,20 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(page.getByRole('heading', { name: 'api-01-copy', level: 1 })).toBeVisible()
   })
 
+  test('the Required tags page names each tag, what it takes and where its default comes from', async ({ page }) => {
+    await signInAs(page, /Continue as Mia Chen/, '/tag-policy')
+    await expect(page.getByRole('heading', { name: 'Required tags', level: 1 })).toBeVisible()
+    await expect(page.getByText(/A create that leaves one of these tags out/)).toBeVisible()
+    const table = page.getByRole('table', { name: /The tags every new resource of Compute must carry/ })
+    await expect(table.locator('[data-tag="cost-centre"]')).toContainText('^cc-[0-9]{4}$')
+    await expect(table.locator('[data-tag="cost-centre"]')).toContainText('cc-1042')
+    await expect(table.locator('[data-tag="cost-centre"]')).toContainText('Set for this account')
+    await expect(table.locator('[data-tag="environment"]')).toContainText('Copied from the create’s own environment field')
+    await expect(table.locator('[data-tag="data-class"]')).toContainText('Set for the organization')
+    await expectNoSeriousA11y(page, 'required tags')
+    await page.screenshot({ path: shot('tag-policy-desktop'), fullPage: true })
+  })
+
   test('the Tags step and the Tags drawer fit a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await signInAs(page, /Continue as Dana Reyes/, '/console/compute')
@@ -300,5 +314,10 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(page.getByRole('heading', { name: 'Resource groups', level: 1 })).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await expectNoSeriousA11y(page, 'resource groups at phone width')
+
+    await page.goto('/#/tag-policy')
+    await expect(page.getByRole('heading', { name: 'Required tags', level: 1 })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+    await expectNoSeriousA11y(page, 'required tags at phone width')
   })
 })

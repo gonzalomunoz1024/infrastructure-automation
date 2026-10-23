@@ -209,7 +209,7 @@ export function tagDefault(tag: RequiredTag, input: Record<string, unknown> = {}
 /** Where a tag's default comes from, in words. */
 export function defaultSource(tag: RequiredTag): string {
   const field = inputFieldOf(tag)
-  if (field) return `Copied from the create's own ${field} field`
+  if (field) return `Copied from the create’s own ${field} field`
   if (tag.defaultFrom === 'account') return 'Set for this account'
   if (tag.defaultFrom === 'organization' || (tag.default && !tag.defaultFrom)) return 'Set for the organization'
   return 'No default'
