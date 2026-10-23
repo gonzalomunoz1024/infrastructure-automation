@@ -70,7 +70,7 @@ const collectRefs = (node, out = new Set()) => {
   return out;
 };
 
-const PLATFORM_CHANGE = /^P-(0[1-9]|1[0-9]|2[0-2])$/;
+const PLATFORM_CHANGE = /^P-(0[1-9]|1[0-9]|2[0-3])$/;
 const CAMEL = /^[a-z][a-zA-Z0-9]*$/;
 const BUILT_IN_COLUMNS = new Set(['name', 'status', 'wfrn', 'owner', 'created', 'updated']);
 

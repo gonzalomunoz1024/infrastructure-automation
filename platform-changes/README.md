@@ -31,6 +31,8 @@ covers what changes on the platform side so that plan can work, and why.
   and registry ids can collide and silently merge (P-05).
 - Extended 2026-10-23 with P-22 (price lists over the API and a type's price binding) for the
   console's cost service (hub decision 25, work packages 7.3, 9.3 and 9.9).
+- Extended 2026-10-23 with P-23 (moving a registry record to another account), for the console's
+  account transfers (hub decision 30).
 
 Contents
 
@@ -60,6 +62,7 @@ Contents
    - [P-20 Job retention and a global job stream](#p-20-job-retention-and-a-global-job-stream)
    - [P-21 Idempotency for every verb](#p-21-idempotency-for-every-verb)
    - [P-22 Price lists over the API and a type's price binding](#p-22-price-lists-over-the-api-and-a-types-price-binding)
+   - [P-23 Moving a registry record to another account](#p-23-moving-a-registry-record-to-another-account)
 5. [Order of work and pull requests](#5-order-of-work-and-pull-requests)
 6. [Compatibility: what existing callers see](#6-compatibility-what-existing-callers-see)
 7. [Testing](#7-testing)
@@ -97,7 +100,7 @@ The console is a new client of the platform, not a rewrite of it. These stay exa
 
 ## 2. The changes at a glance
 
-Twenty-two changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
+Twenty-three changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
 tests and doc updates but not review time. "Needed by" is the first console roadmap phase that
 relies on the change.
 
@@ -125,8 +128,9 @@ relies on the change.
 | P-20 | Job retention (TTL and archive for `runs_jobs` and `runs_events`) and a cross-replica job event stream with cursor resume | `runs`, `common/events`, `config` | Phase 2 | 105 |
 | P-21 | Idempotency for every verb: `DELETE` and `PATCH`, capacity sized to peak, context headers in the fingerprint | `gateway` | Phase 2 | 60 |
 | P-22 | Price lists readable over the API; a ResourceType's optional `cost` block naming the price that prices its resources | `resources` (price lists, ResourceType), `packages/workflow-checks`, sample content | Phase 7 | 60 |
+| P-23 | Moving a registry record to another account: `POST /resources/{id}:rehome` with the new wfrn and account, old wfrns kept as aliases | `resources`, `audit` | Phase 7 | 60 |
 
-Total: about 2,125 agent minutes. Sections 5 and 6 cover how they split into pull requests and
+Total: about 2,185 agent minutes. Sections 5 and 6 cover how they split into pull requests and
 what each one risks for existing callers.
 
 ## 3. Rules every change follows
@@ -1354,9 +1358,59 @@ finding on a broken sample; `content.published` on a price list publish.
 **Done when** the console's cost service reads the platform's price lists and bindings instead of
 its bundled copy, by configuration (`console.cost.pricing.source=platform`).
 
+### P-23 Moving a registry record to another account
+
+**Why.** Teams reorganize, and a resource then belongs to another account of the same
+organization. The console moves it by re-import (hub decision 30): the state service makes the
+old wfrn a tombstone that names the new one for good, and opens the new wfrn in the other account
+with the same registry id. The platform's record still carries the old `wfrn` and `accountId`,
+which P-05 binds once, so the platform keeps counting the resource in the old account: its quotas
+(P-10), its caller-scoped reads (P-18), the context of the jobs that act on it (P-04) and its audit
+evidence (P-12). Until the record moves, the state service applies the platform's events about the
+old wfrn to the new one, so the console stays right, but the platform does not.
+
+**What changes.**
+
+1. `POST /api/v1/resources/{id}:rehome`, scope `resources:rehome` (the `console` preset of P-03
+   and admins), body `{ from, wfrn, accountId }`: `from` is the wfrn the caller moves the record
+   from (the state service's `transferredFrom`), `wfrn` and `accountId` where it goes. The record
+   takes the new wfrn and account; its region stays (a move between regions is a new resource, not
+   a move). The wfrn's account segment must be `accountId` and its type the record's type, else 400.
+   A record moves as often as the console moves it (A to B, then B to C): each move names the wfrn
+   it starts from.
+2. The old wfrn joins a new `previousWfrns` list on the record, and `GET /resources/by-wfrn`
+   (P-05) answers the record for an old wfrn too, with `Content-Location` naming the current one,
+   so a job or a caller holding the old name still finds it.
+3. It is idempotent: a record whose wfrn is already `wfrn` answers 200 and changes nothing (it
+   also honours `Idempotency-Key`, P-21). A record whose wfrn is neither `from` nor `wfrn` answers
+   409 `resource.rehomed` with the current wfrn: the request is stale, or another move went first.
+   A record a running job holds answers 409 `resource.busy`, because that job's context names the
+   old account; a `wfrn` another record holds answers 409 `wfrn.taken`.
+4. The move emits `resource.registered` again, in the P-01 envelope, with the new `wfrn` and
+   `accountId` in `data` and the old wfrn in `data.previousWfrn`, so feed consumers read it as a
+   registration: no new event type. The state service finds the new wfrn already open and records
+   nothing new.
+5. Its audit record (P-12) names both accounts and the console user the BFF acts for (P-02).
+
+**Who calls it.** The BFF, right after the state service's `POST /v1/wfrn/{wfrn}:transfer` answers
+the new wfrn: for a person with `X-On-Behalf-Of` (P-02), for an org admin's whole-account move
+with the BFF's service account, once per moved resource (the state service's account-wide answer
+lists each move with its registry id).
+
+**Compatibility.** Nothing changes for a record nobody moves. Lineage is by registry id, so the
+resources built from a moved one keep their links.
+
+**Tests.** A rehome changes the wfrn and account and keeps the id and lineage; the old wfrn still
+reads the record with `Content-Location`; the same body twice is one change; a second move from the
+new wfrn works and keeps both old wfrns; a `from` that is not the current wfrn is 409; a record
+under a running job is 409; the event carries both wfrns; quotas count it in the new account.
+
+**Done when** a resource the console moved shows under its new account everywhere on the platform,
+and its old name still finds it.
+
 ## 5. Order of work and pull requests
 
-A suggested split for the platform team, when they take the changes on: thirteen pull requests against
+A suggested split for the platform team, when they take the changes on: fourteen pull requests against
 the platform's `main`. Each is reviewable alone, keeps CI green and changes nothing for existing
 callers. The lanes show what can run in parallel. The console team opens none of them.
 
@@ -1375,10 +1429,11 @@ callers. The lanes show what can run in parallel. The console team opens none of
 | 11 | P-19 (publishing resource types) | 1 | A | 120 | 3 |
 | 12 | P-20 (job retention, global job stream) | 2 | C | 105 | 2 |
 | 13 | P-22 (price lists over the API, the `cost` block and its checks) | 1, 11 | A | 60 | 7 |
+| 14 | P-23 (moving a registry record to another account) | 5 | B | 60 | 7 |
 
 P-17 rides with each PR. PR 10 should go first in lane D after PR 4, because it closes a data
 exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 720 minutes. With
-four lanes the whole set is about 2,125 minutes of work done in roughly 900 minutes of elapsed
+four lanes the whole set is about 2,185 minutes of work done in roughly 900 minutes of elapsed
 working time.
 
 ## 6. Compatibility: what existing callers see
@@ -1590,13 +1645,14 @@ workflow:
 
 ## 11. Building the console against the target API
 
-Decided 2026-10-23: the console assumes all twenty-two changes are rolled out. Every console
+Decided 2026-10-23: the console assumes all twenty-three changes are rolled out. Every console
 service is written against the platform as this document describes it, not against today's API:
 the event feed on Kafka (P-01), delegation (P-02), console service accounts (P-03), job context
 and cursors (P-04), wfrns, collision-safe keys and paging in the registry (P-05), ResourceType
 blocks (P-06), regions (P-07), the verb conventions (P-08), observe and list reads (P-09),
 account quotas (P-10), caller-scoped reads (P-18), published resource types (P-19), the global
-job stream (P-20), idempotency for every verb (P-21) and readable price lists with a type's price binding (P-22). There are no interim adapters, no
+job stream (P-20), idempotency for every verb (P-21), readable price lists with a type's price binding (P-22)
+and moving a registry record to another account (P-23). There are no interim adapters, no
 workarounds and no pilot limits; the scale targets apply from the first release.
 
 How that works while the platform team builds the changes:

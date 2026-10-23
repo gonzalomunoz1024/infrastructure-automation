@@ -54,7 +54,9 @@ info:
     with the failure in `data`. A succeeded delete job is recorded as `Deleted` alone, never as a
     `ProvisioningSucceeded` first: `Deleted` is the tombstone (`GET /v1/wfrn/{wfrn}` answers 410
     for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete job or the platform retiring
-    the resource; `Imported` opens a resource straight in `active`;
+    the resource; `Imported` opens a resource straight in `active`; `Transferred` moves an `active`
+    resource to another account, `deleted` here for good with `transferredTo` naming the wfrn that
+    opens there with `Imported` (`source: transfer`, `transferredFrom`);
     `Observed`, `DriftDetected`, `DriftResolved` and `Tagged` change the resource's observed truth,
     drift flag and tags without changing its state. `data.state` on every event is the state after
     it, so a consumer never needs the table above.
@@ -89,6 +91,7 @@ channels:
       deleted: { $ref: '#/components/messages/deleted' }
       imported: { $ref: '#/components/messages/imported' }
       retryRequested: { $ref: '#/components/messages/retryRequested' }
+      transferred: { $ref: '#/components/messages/transferred' }
     bindings:
       kafka:
         topic: state.resources
@@ -386,6 +389,18 @@ components:
             properties:
               type: { const: RetryRequested }
               data: { $ref: '#/components/schemas/RetryRequestedData' }
+    transferred:
+      name: Transferred
+      title: The resource moved to another account
+      summary: 'The wfrn becomes a tombstone that names the wfrn it became, for good; the new wfrn opens in the other account with Imported (source: transfer)'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Transferred }
+              data: { $ref: '#/components/schemas/TransferredData' }
     deleted:
       name: Deleted
       title: The resource is gone
@@ -887,6 +902,10 @@ components:
             registryId: { type: string, description: The platform's registry id }
             providerId: { type: string }
             attributes: { type: object, additionalProperties: true }
+            builtFrom:
+              type: array
+              description: The registry ids of what the resource was built from, as the job that registered it recorded them (P-02); absent when the registry names none
+              items: { type: string }
     ProvisioningFailedData:
       allOf:
         - $ref: '#/components/schemas/JobData'
@@ -956,11 +975,28 @@ components:
         jobId: { type: string }
         registryId: { type: string }
         tombstoneUntil: { type: string, format: date-time, description: 'Until when GET /v1/wfrn/{wfrn} answers 410' }
+    TransferredData:
+      type: object
+      required: [transferredTo, toAccountId]
+      properties:
+        transferredTo: { $ref: '#/components/schemas/Wfrn', description: The wfrn it became }
+        toAccountId: { $ref: '#/components/schemas/AccountId' }
+        registryId: { type: string }
+        reason: { type: string }
     ImportedData:
       type: object
       required: [source, registryId, attributes]
       properties:
-        source: { type: string, enum: [backfill, discover] }
+        source: { type: string, enum: [backfill, discover, transfer] }
         registryId: { type: string }
         providerId: { type: string }
         attributes: { type: object, additionalProperties: true }
+        transferredFrom: { $ref: '#/components/schemas/Wfrn', description: 'With source transfer: the wfrn it was in the other account' }
+        tags:
+          type: object
+          description: With source transfer, the tags it carried
+          additionalProperties: { type: string }
+        builtFrom:
+          type: array
+          description: The registry ids of what the resource was built from, when the registry or the import names them
+          items: { type: string }
