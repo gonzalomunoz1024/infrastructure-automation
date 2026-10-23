@@ -54,7 +54,7 @@ export function FailureExplainer({ jobId, status, retry, fallback, className }: 
   const x = q.data
   const attention = status === 'needs-attention'
   const step = x?.failedStep?.id ?? fallback?.step
-  const body = retryBodyOf(x?.fix)
+  const body = retryBodyOf(x?.fix, x?.source)
   const decision: Decision = x?.retry ? { allowed: x.retry.allowed, denied: x.retry.denied } : { allowed: true }
   const label = body?.input ? 'Retry with fix' : attention ? 'Retry the step' : 'Retry'
   const ask = () => copilot.open({ intent: 'ask', message: `Why did request ${jobId} ${attention ? 'stop' : 'fail'}, and how do I fix it?`, context: { path: `/requests/${jobId}` } })
