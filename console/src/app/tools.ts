@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations'
+export type ToolSectionId = 'tags' | 'operations' | 'automation' | 'compliance'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -34,6 +34,8 @@ export interface ConsoleTool {
 export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'tags', title: 'Resource groups and tags', icon: 'tag', subtitle: 'Across every resource type' },
   { id: 'operations', title: 'Operations', icon: 'pulse', subtitle: 'Drift, discovery, alarms and rightsizing' },
+  { id: 'automation', title: 'Automation', icon: 'workflow', subtitle: 'Blueprints, stacks and event subscriptions' },
+  { id: 'compliance', title: 'Compliance', icon: 'shield', subtitle: 'Scorecards and the rules they check' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -44,6 +46,11 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'unmanaged', section: 'operations', label: 'Unmanaged resources', icon: 'eye', hint: 'What the providers have that no account manages', keywords: 'discovery shadow infrastructure import assign owner', routes: ['unmanaged'] },
   { route: 'alarms', section: 'operations', label: 'Alarms', icon: 'bell', hint: 'Metric alarms on the account’s resources', keywords: 'monitoring metrics cpu memory disk thresholds', routes: ['alarms'] },
   { route: 'rightsizing', section: 'operations', label: 'Rightsizing', icon: 'chart', hint: 'Idle and oversized resources, and what resizing saves', keywords: 'idle oversized savings cost optimisation resize', routes: ['rightsizing'] },
+  { route: 'blueprints', section: 'automation', label: 'Blueprints', icon: 'layers', hint: 'Stacks of resources launched and torn down as one', keywords: 'blueprints templates stacks launch catalog', routes: ['blueprints', 'blueprint', 'blueprint-launch'] },
+  { route: 'stacks', section: 'automation', label: 'Stacks', icon: 'resource', hint: 'What was launched from a blueprint, and where it is', keywords: 'stacks teardown resume', routes: ['stacks', 'stack'] },
+  { route: 'subscriptions', section: 'automation', label: 'Event subscriptions', icon: 'bell', hint: 'Send resource events to a webhook, Kafka or Slack', keywords: 'events webhook kafka slack notify subscribe', routes: ['subscriptions'] },
+  { route: 'compliance', section: 'compliance', label: 'Scorecard', icon: 'shield', hint: 'How the account scores against each rule pack', keywords: 'compliance scorecard rules packs score remediate', routes: ['compliance', 'compliance-rule'] },
+  { route: 'compliance-org', section: 'compliance', label: 'Organization', icon: 'chart', hint: 'Every account’s score by pack', keywords: 'heat map organization accounts compliance', routes: ['compliance-org'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

@@ -14,6 +14,7 @@ import { invalidate, useQuery } from '../../lib/queries'
 import { useSubmissionKey } from '../../lib/submission'
 import type { CommandAccepted, CommandInput, ConsoleResourceDetail } from '../../lib/types'
 import { HeldButton } from './HeldButton'
+import { ResourceRisk } from '../risk/RiskCard'
 
 /*
  * Edit configuration (WP 4.1): the type's update workflow (P-08) as a form that starts from what
@@ -303,7 +304,10 @@ function EditForm({ type, action, wfrn, name, detail, onClose, onAccepted }: Edi
             {preview.loading || !preview.data ? (
               preview.error ? <FailureNote failure={explain(preview.error, 'Preview this change')} compact onRetry={() => void preview.refetch()} /> : <SkeletonRows n={2} rowClassName="h-16" />
             ) : (
-              <PreviewCard preview={preview.data} compact title="What will happen" />
+              <>
+                <PreviewCard preview={preview.data} compact title="What will happen" />
+                <ResourceRisk type={type} wfrn={wfrn} verb="update" destructive={false} preview={preview.data} compact className="mt-4" />
+              </>
             )}
             {policy === 'deny' && <p className="mt-2 text-caption text-critical">Policy refuses this change as it stands, so it cannot be sent. Change the fields above, or ask the account’s admins.</p>}
           </section>

@@ -34,6 +34,15 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'blueprints'
+  | 'blueprint'
+  | 'blueprint-launch'
+  | 'stacks'
+  | 'stack'
+  | 'compliance'
+  | 'compliance-org'
+  | 'compliance-rule'
+  | 'subscriptions'
   | 'settings'
   | 'not-found'
 
@@ -76,6 +85,16 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // automation and compliance (phase 7): blueprints and their stacks, scorecards, event subscriptions
+  { name: 'blueprints', pattern: '/blueprints', title: 'Blueprints' },
+  { name: 'blueprint', pattern: '/blueprints/:name', title: 'Blueprint' },
+  { name: 'blueprint-launch', pattern: '/blueprints/:name/launch', title: 'Launch a stack' },
+  { name: 'stacks', pattern: '/stacks', title: 'Stacks' },
+  { name: 'stack', pattern: '/stacks/:wfrn', title: 'Stack' },
+  { name: 'compliance', pattern: '/compliance', title: 'Scorecard' },
+  { name: 'compliance-org', pattern: '/compliance/organization', title: 'Organization heat map' },
+  { name: 'compliance-rule', pattern: '/compliance/:pack/:rule', title: 'Failing resources' },
+  { name: 'subscriptions', pattern: '/event-subscriptions', title: 'Event subscriptions' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 

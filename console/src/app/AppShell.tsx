@@ -45,6 +45,15 @@ const DriftPage = lazy(() => import('../pages/operations/DriftPage'))
 const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
+const BlueprintsPage = lazy(() => import('../pages/blueprints/BlueprintsPage'))
+const BlueprintPage = lazy(() => import('../pages/blueprints/BlueprintsPage').then((m) => ({ default: m.BlueprintPage })))
+const LaunchPage = lazy(() => import('../pages/blueprints/LaunchPage'))
+const StacksPage = lazy(() => import('../pages/blueprints/StacksPage'))
+const StackPage = lazy(() => import('../pages/blueprints/StacksPage').then((m) => ({ default: m.StackPage })))
+const ScorecardPage = lazy(() => import('../pages/compliance/ScorecardPage'))
+const HeatmapPage = lazy(() => import('../pages/compliance/ScorecardPage').then((m) => ({ default: m.HeatmapPage })))
+const FailingPage = lazy(() => import('../pages/compliance/FailingPage'))
+const SubscriptionsPage = lazy(() => import('../pages/subscriptions/EventSubscriptionsPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
@@ -81,6 +90,15 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   unmanaged: UnmanagedPage,
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
+  blueprints: BlueprintsPage,
+  blueprint: BlueprintPage,
+  'blueprint-launch': LaunchPage,
+  stacks: StacksPage,
+  stack: StackPage,
+  compliance: ScorecardPage,
+  'compliance-org': HeatmapPage,
+  'compliance-rule': FailingPage,
+  subscriptions: SubscriptionsPage,
   settings: SettingsPage,
   'not-found': NotFoundPage,
 }

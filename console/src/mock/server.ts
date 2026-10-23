@@ -9,6 +9,9 @@ import { jobRoutes, stepsOf } from './jobs'
 import { tagRoutes } from './tags'
 import { driftRoutes } from './drift'
 import { monitoringRoutes } from './monitoring'
+import { blueprintRoutes } from './blueprints'
+import { scorecardRoutes } from './scorecards'
+import { subscriptionRoutes } from './subscriptions'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -566,6 +569,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* findings, discovery and unmanaged resources; metrics, alarms and rightsizing (phase 5) */
     const drifted = driftRoutes(data, routeCtx, path, params, method) ?? monitoringRoutes(data, routeCtx, path, params, method)
     if (drifted) return drifted
+
+    /* blueprints and stacks, compliance scorecards and event subscriptions (phase 9) */
+    const planned = blueprintRoutes(data, routeCtx, path, params, method) ?? scorecardRoutes(data, routeCtx, path, params, method) ?? subscriptionRoutes(data, routeCtx, path, params, method)
+    if (planned) return planned
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)

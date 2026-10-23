@@ -14,6 +14,7 @@ import { nameOf } from '../../lib/resourceList'
 import { cleanInput, useSubmissionKey } from '../../lib/submission'
 import type { BatchAccepted, BatchPreview, ConsoleResource } from '../../lib/types'
 import { BlastRadiusCard } from '../resource/BlastRadius'
+import { BulkRisk } from '../risk/RiskCard'
 import { startValue } from '../resource/ActionDrawer'
 import { batchBodyOf, chosenRollout, confirmTextOf, ownInputsOf, plannedRollout, rowInputOf, unrunnableOf, wavesLine, type RolloutPreset } from './bulk'
 
@@ -226,6 +227,7 @@ export function BulkDrawer({ type, action, rows, onClose, onAccepted }: BulkDraw
                 )}
                 {affected && affected.total > 0 && <BlastRadiusCard radius={affected} noun={noun} name={these} verb={action.verb} compact />}
                 <PolicyLines policy={judged.policy} hideDenials={unrunnable.length > 0} />
+                <BulkRisk verb={action.verb} destructive={action.destructive} rows={kept} affected={judged.affected} policy={judged.policy} />
               </div>
             ) : null}
           </section>

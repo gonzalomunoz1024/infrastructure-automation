@@ -66,7 +66,7 @@ describe('the defaults over the raw samples', () => {
   })
 
   it('keeps the default tabs and marks nothing as hinted', () => {
-    expect(byName('vm').tabs).toEqual(['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'])
+    expect(byName('vm').tabs).toEqual(['Configuration', 'Drift', 'Compliance', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'])
     expect(composed.every((t) => !t.hinted)).toBe(true)
   })
 
