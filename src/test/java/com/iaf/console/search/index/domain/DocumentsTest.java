@@ -57,5 +57,7 @@ class DocumentsTest {
     void whatIsNotAResourceIsNull() {
         assertThat(Documents.fromState(StateResource.of(Json.object().put("wfrn", "not-a-name")), null, null)).isNull();
         assertThat(Documents.fromState(StateResource.of(Json.object().put("wfrn", Fixtures.VM).put("state", "purple")), null, null)).isNull();
+        assertThat(Documents.fromState(StateResource.of(Json.object().put("wfrn", Fixtures.VM).put("state", "active")
+                .put("accountId", Fixtures.OTHER_ACCOUNT)), null, null)).as("an account the wfrn does not name").isNull();
     }
 }

@@ -18,7 +18,8 @@ import com.iaf.console.wfrn.Wfrn;
  * a tombstone needs nothing but the envelope. So is {@code Transferred} (hub decision 30): the
  * resource moved to another account, its old wfrn is a tombstone with no end, as the state service
  * keeps a moved resource's name for good, and the new wfrn opens with an ordinary {@code Imported}
- * in the other account.
+ * in the other account. That tombstone keeps only the name, type and dates: the old account no
+ * longer owns the resource, so its tags and fields leave with it.
  */
 public final class ResourceEvents {
 
@@ -106,6 +107,10 @@ public final class ResourceEvents {
                 // a transfer carries none: the old name answers where the resource went for good
                 b.tombstoneUntil(Json.instant(data, "tombstoneUntil"));
                 b.drift(false).driftFindingId(null).driftSeverity(null);
+                if ("Transferred".equals(event.type())) {
+                    b.tags.clear();
+                    b.fields.clear();
+                }
             }
             default -> {
                 // ProvisioningStarted, ProvisioningFailed, Observed, DeleteRequested and any later type: the state and the job say it all

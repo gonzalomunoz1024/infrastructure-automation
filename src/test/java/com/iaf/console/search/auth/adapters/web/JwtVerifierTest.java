@@ -12,7 +12,9 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.search.auth.domain.ConsolePrincipal;
+import com.iaf.console.search.auth.domain.InternalCallers;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -32,7 +34,8 @@ class JwtVerifierTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     private final ECKey key = generate("bff-1");
-    private final JwtVerifier verifier = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-search-indexer", "console"), CLOCK);
+    private final JwtVerifier verifier = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-search-indexer"),
+            InternalCallers.DEFAULT, CLOCK);
 
     private static ECKey generate(String kid) {
         try {
@@ -72,10 +75,27 @@ class JwtVerifierTest {
 
     @Test
     void aServiceTokenWithoutAnAccountIsInternal() {
-        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().subject("svc:console-bff").claim("acct", null).audience(List.of("console"))
-                .build())).block();
+        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().subject("svc:console-bff").claim("acct", null).build())).block();
         assertThat(p.internal()).isTrue();
         assertThat(p.accountId()).isNull();
+    }
+
+    @Test
+    void aCountingServiceMayOnlyCountAcrossAccounts() {
+        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().subject("svc:console-drift-service").claim("acct", null)
+                .claim("svc", "console-drift-service").build())).block();
+        assertThat(p.internal()).isFalse();
+        assertThat(p.access()).isEqualTo(ConsolePrincipal.Access.COUNTS);
+        assertThat(p.countScope("123456789012", "global").accountId()).isEqualTo("123456789012");
+        assertThatThrownBy(() -> p.scope("123456789012", "global")).isInstanceOf(NotFoundException.class);
+        assertThatThrownBy(() -> p.scope(null, "global")).isInstanceOf(NotFoundException.class);
+    }
+
+    @Test
+    void aPersonCountsOnlyTheirOwnAccount() {
+        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().build())).block();
+        assertThat(p.countScope(null, "global").accountId()).isEqualTo("123456789012");
+        assertThatThrownBy(() -> p.countScope("999999999999", "global")).isInstanceOf(NotFoundException.class);
     }
 
     @Test
@@ -86,6 +106,11 @@ class JwtVerifierTest {
     @Test
     void whatIsRefused() {
         assertInvalid(sign(key, "bff-1", claims().audience(List.of("console-drift-service")).build()), "audience");
+        // decision 35: the shared audience is gone, and a token for two services is for neither
+        assertInvalid(sign(key, "bff-1", claims().audience(List.of("console")).build()), "audience");
+        assertInvalid(sign(key, "bff-1", claims().audience(List.of("console-search-indexer", "console")).build()), "audience");
+        assertInvalid(sign(key, "bff-1", claims().claim("acct", null).claim("svc", null).build()), "neither acct nor svc");
+        assertInvalid(sign(key, "bff-1", claims().claim("acct", null).claim("svc", "console-state-service").build()), "may not call as itself");
         assertInvalid(sign(key, "bff-1", claims().issuer("someone-else").build()), "issuer");
         assertInvalid(sign(key, "bff-1", claims().expirationTime(Date.from(NOW.minus(Duration.ofSeconds(31)))).build()), "expired");
         assertInvalid(sign(key, "bff-1", claims().notBeforeTime(Date.from(NOW.plus(Duration.ofMinutes(5)))).build()), "not yet valid");

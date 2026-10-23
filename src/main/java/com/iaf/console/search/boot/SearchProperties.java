@@ -6,6 +6,8 @@ import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import com.iaf.console.search.auth.domain.InternalCallers;
+
 /** Every setting of the service under {@code console.*}; each one has a default that runs the demo. */
 @ConfigurationProperties(prefix = "console")
 public record SearchProperties(
@@ -27,7 +29,7 @@ public record SearchProperties(
         identity = identity == null ? new IdentitySettings(null, null) : identity;
         rebuild = rebuild == null ? new RebuildSettings(null, null, null) : rebuild;
         ingest = ingest == null ? new IngestSettings(null, null, null) : ingest;
-        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null, null) : auth;
+        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null, null, null, null) : auth;
         index = index == null ? new IndexSettings(null) : index;
     }
 
@@ -131,22 +133,25 @@ public record SearchProperties(
     }
 
     /**
-     * How callers are authenticated (the BFF's JWKS, its issuer, the audiences this service answers
-     * to, the dev headers switch), and how this service gets its own tokens from the BFF (hub
+     * How callers are authenticated (the BFF's JWKS, its issuer, the audience this service answers
+     * to, the dev headers switch, the services that may call as themselves: {@code services} for
+     * everything, {@code countingServices} for counts across accounts only, hub decision 35), and how this service gets its own tokens from the BFF (hub
      * decision 23): the token endpoint and how long one request to it may take, and the client
      * assertion, either the projected service-account token's file or this service's own private EC JWK.
      */
     public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, String tokenUrl,
-            Duration tokenTimeout, String clientAssertionFile, String clientKey) {
+            Duration tokenTimeout, String clientAssertionFile, String clientKey, List<String> services, List<String> countingServices) {
         public AuthSettings {
             jwksUri = jwksUri == null ? "http://localhost:18081/.well-known/jwks.json" : jwksUri;
             issuer = issuer == null ? "console-bff" : issuer;
-            audiences = audiences == null || audiences.isEmpty() ? List.of("console-search-indexer", "console") : List.copyOf(audiences);
+            audiences = audiences == null || audiences.isEmpty() ? List.of("console-search-indexer") : List.copyOf(audiences);
             devHeaders = devHeaders != null && devHeaders;
             tokenUrl = tokenUrl == null || tokenUrl.isBlank() ? "http://localhost:18081/internal/v1/token" : tokenUrl.trim();
             tokenTimeout = tokenTimeout == null ? Duration.ofSeconds(5) : tokenTimeout;
             clientAssertionFile = clientAssertionFile == null || clientAssertionFile.isBlank() ? null : clientAssertionFile.trim();
             clientKey = clientKey == null || clientKey.isBlank() ? null : clientKey;
+            services = services == null ? List.copyOf(InternalCallers.DEFAULT.services()) : List.copyOf(services);
+            countingServices = countingServices == null ? List.copyOf(InternalCallers.DEFAULT.counting()) : List.copyOf(countingServices);
         }
     }
 

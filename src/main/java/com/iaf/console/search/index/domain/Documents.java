@@ -12,7 +12,8 @@ public final class Documents {
     }
 
     /**
-     * The document of a resource the state service serves; null when the JSON is not a resource.
+     * The document of a resource the state service serves; null when the JSON is not a resource, or
+     * names an account its wfrn does not (the wfrn's account is the one the document is filed under).
      * A tombstone (the 410 body, or a resource in {@code deleted}) keeps what the index held before,
      * when it held anything, so its name stays findable until the tombstone expires.
      */
@@ -23,6 +24,10 @@ public final class Documents {
             return null;
         }
         Wfrn name = Wfrn.parse(wfrn);
+        String accountId = Json.text(json, "accountId");
+        if (accountId != null && !accountId.equals(name.account())) {
+            return null;
+        }
         if (resource.tombstone()) {
             IndexedResource.Builder b = previous != null ? previous.toBuilder()
                     : IndexedResource.builder().wfrn(wfrn).accountId(name.account()).region(name.region()).type(name.type())
@@ -42,7 +47,7 @@ public final class Documents {
         String type = Json.text(json, "type") != null ? Json.text(json, "type") : name.type();
         IndexedResource.Builder b = IndexedResource.builder()
                 .wfrn(wfrn)
-                .accountId(Json.text(json, "accountId") != null ? Json.text(json, "accountId") : name.account())
+                .accountId(name.account())
                 .region(Json.text(json, "region") != null ? Json.text(json, "region") : name.region())
                 .type(type)
                 .service(Json.text(json, "service") != null ? Json.text(json, "service") : hints != null ? hints.service() : name.service())
