@@ -39,6 +39,7 @@ getEvidenceRecord
 getImage
 getJob
 getMe
+getPriceList
 getQuota
 getRegion
 getRegionAvailability
@@ -57,6 +58,7 @@ listEnvironments
 listEvents
 listImages
 listJobs
+listPriceLists
 listRegions
 listResourceTypes
 listResources

@@ -52,6 +52,7 @@ import com.iaf.console.platform.model.ObserveListRequest;
 import com.iaf.console.platform.model.ObserveResult;
 import com.iaf.console.platform.model.PlatformError;
 import com.iaf.console.platform.model.Preview;
+import com.iaf.console.platform.model.PriceList;
 import com.iaf.console.platform.model.Quota;
 import com.iaf.console.platform.model.QuotaUpdate;
 import com.iaf.console.platform.model.Region;
@@ -86,6 +87,8 @@ public final class PlatformClient implements PlatformPort {
     private static final ParameterizedTypeReference<List<ServiceAccount>> SERVICE_ACCOUNTS = new ParameterizedTypeReference<>() {
     };
     private static final ParameterizedTypeReference<List<ResourceType>> RESOURCE_TYPES = new ParameterizedTypeReference<>() {
+    };
+    private static final ParameterizedTypeReference<List<PriceList>> PRICE_LISTS = new ParameterizedTypeReference<>() {
     };
     private static final ParameterizedTypeReference<List<CatalogEntry>> CATALOG = new ParameterizedTypeReference<>() {
     };
@@ -237,6 +240,16 @@ public final class PlatformClient implements PlatformPort {
     @Override
     public Mono<Conditional<List<ResourceType>>> listResourceTypes(String etag) {
         return conditional(PlatformOperation.LIST_RESOURCE_TYPES, Map.of(), etag, RESOURCE_TYPES);
+    }
+
+    @Override
+    public Mono<Conditional<List<PriceList>>> listPriceLists(String etag) {
+        return conditional(PlatformOperation.LIST_PRICE_LISTS, Map.of(), etag, PRICE_LISTS);
+    }
+
+    @Override
+    public Mono<PriceList> getPriceList(String name) {
+        return get(PlatformOperation.GET_PRICE_LIST, Map.of("name", name), Map.of(), PriceList.class);
     }
 
     @Override

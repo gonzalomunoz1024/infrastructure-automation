@@ -70,6 +70,7 @@ import com.iaf.console.platform.model.ObserveListRequest;
 import com.iaf.console.platform.model.ObserveResult;
 import com.iaf.console.platform.model.PlatformError;
 import com.iaf.console.platform.model.Preview;
+import com.iaf.console.platform.model.PriceList;
 import com.iaf.console.platform.model.PreviewStep;
 import com.iaf.console.platform.model.Quota;
 import com.iaf.console.platform.model.QuotaUpdate;
@@ -302,6 +303,25 @@ public abstract class PlatformContractTest {
         Conditional<ResourceType> one = block(console().getResourceType("vm", null));
         assertThat(one.body().name()).isEqualTo("vm");
         assertThat(failure(console().getResourceType("no-such-type", null)).isNotFound()).isTrue();
+    }
+
+    @Test
+    void priceListsAreReadableAndTypesNameTheirPrice() {
+        PlatformClient reader = feedReader();
+        Conditional<List<PriceList>> lists = block(reader.listPriceLists(null));
+        assertThat(lists.notModified()).isFalse();
+        assertThat(lists.etag()).isNotBlank();
+        assertThat(lists.body()).isNotEmpty().allMatch(l -> l.name() != null && l.currency() != null && l.version() != null && l.prices() != null);
+        assertThat(block(reader.listPriceLists(lists.etag())).notModified()).isTrue();
+
+        ResourceType vm = block(reader.getResourceType("vm", null)).body();
+        assertThat(vm.cost()).as("the vm type's price binding").isNotNull();
+        PriceList list = block(reader.getPriceList(vm.cost().priceList()));
+        PriceList.Price price = list.price(vm.cost().provider(), vm.cost().action());
+        assertThat(price).as("the bound price").isNotNull();
+        assertThat(price.by()).isEqualTo(vm.cost().by());
+        assertThat(vm.fields()).contains(vm.cost().by());
+        assertThat(failure(reader.getPriceList("no-such-list")).isNotFound()).isTrue();
     }
 
     @Test

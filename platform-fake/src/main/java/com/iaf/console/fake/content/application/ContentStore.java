@@ -37,23 +37,29 @@ public final class ContentStore {
 
     /** Where the fake's content lives on the classpath. */
     public static final String DEFAULT_BASE = "platform-fake";
+    /** The price list previews charge from, the sample content's only one. */
+    public static final String PREVIEW_PRICES = "list-prices";
 
     private final Map<String, ResourceTypeDef> types;
     private final Map<String, WorkflowDef> workflows;
     private final Map<String, ProviderDef> providers;
     private final Map<String, RegionDef> regions;
     private final PriceList prices;
+    private final Map<String, PriceList> priceLists;
+    private final String priceListsEtag;
     private final List<ObjectNode> catalog;
     private final String typesEtag;
     private final JsonNode openApi;
 
     private ContentStore(Map<String, ResourceTypeDef> types, Map<String, WorkflowDef> workflows, Map<String, ProviderDef> providers,
-            Map<String, RegionDef> regions, PriceList prices, JsonNode openApi) {
+            Map<String, RegionDef> regions, Map<String, PriceList> priceLists, JsonNode openApi) {
         this.types = types;
         this.workflows = workflows;
         this.providers = providers;
         this.regions = regions;
-        this.prices = prices;
+        this.priceLists = priceLists;
+        this.prices = priceLists.getOrDefault(PREVIEW_PRICES, priceLists.isEmpty() ? PriceList.empty() : priceLists.values().iterator().next());
+        this.priceListsEtag = "\"" + Json.hash(priceLists.values().stream().map(PriceList::hash).toList()) + "\"";
         this.openApi = openApi;
         List<ObjectNode> entries = new ArrayList<>();
         for (WorkflowDef workflow : workflows.values()) {
@@ -74,7 +80,7 @@ public final class ContentStore {
         Map<String, JsonNode> typeFiles = new TreeMap<>();
         Map<String, WorkflowDef> workflows = new TreeMap<>();
         Map<String, ProviderDef> providers = new TreeMap<>();
-        PriceList prices = PriceList.empty();
+        Map<String, PriceList> priceLists = new TreeMap<>();
         for (JsonNode document : documents(resolver, "classpath*:" + base + "/content/**/*.yaml")) {
             String kind = document.path("kind").asText();
             String name = document.path("metadata").path("name").asText();
@@ -82,7 +88,7 @@ public final class ContentStore {
                 case "ResourceType" -> typeFiles.put(name, document);
                 case "Workflow" -> workflows.put(name, new WorkflowDef((ObjectNode) document));
                 case "Provider" -> providers.put(name, new ProviderDef((ObjectNode) document));
-                case "PriceList" -> prices = new PriceList(document);
+                case "PriceList" -> priceLists.put(name, new PriceList(document));
                 default -> {
                 }
             }
@@ -114,7 +120,7 @@ public final class ContentStore {
             regions.put(region.name(), region);
         }
         JsonNode openApi = readFirst(resolver, "classpath*:" + base + "/contracts/openapi-target.yaml");
-        return new ContentStore(types, workflows, providers, regions, prices, openApi);
+        return new ContentStore(types, workflows, providers, regions, priceLists, openApi);
     }
 
     private static List<JsonNode> documents(PathMatchingResourcePatternResolver resolver, String pattern) {
@@ -186,8 +192,23 @@ public final class ContentStore {
                 .orElseGet(() -> regions.values().iterator().next());
     }
 
+    /** The price list previews charge from. */
     public PriceList prices() {
         return prices;
+    }
+
+    /** Every published price list, by name (P-22). */
+    public List<PriceList> priceLists() {
+        return List.copyOf(priceLists.values());
+    }
+
+    public Optional<PriceList> priceList(String name) {
+        return Optional.ofNullable(priceLists.get(name));
+    }
+
+    /** Changes when any price list does. */
+    public String priceListsEtag() {
+        return priceListsEtag;
     }
 
     /** The catalog entries, optionally of one noun. */

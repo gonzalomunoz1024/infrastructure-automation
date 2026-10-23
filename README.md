@@ -73,6 +73,15 @@ demo console accounts, `123456789012` owned by `team-compute` and `210987654321`
 `team-data`, and a handful of images, VMs, databases, volumes and an environment built by running
 the workflows, plus one job waiting for an approval and one needing attention.
 
+With the `kafka` profile (`SPRING_PROFILES_ACTIVE=kafka`, broker in `spring.kafka.bootstrap-servers`,
+`localhost:9092` by default) the application also serves the Kafka half of the P-01 feed: every
+event, the demo seed's included, goes unchanged to `platform.jobs`, `platform.resources`,
+`platform.content` or `platform.audit` with the channel's partition key (job id; wfrn, else
+registry id; content name; record id), and the topics are created when the broker lacks them.
+The fake serves P-22's price lists (`GET /api/v1/price-lists`, with an ETag) and the vm and
+database types' `cost` bindings, and its provider world remembers what a create asked for, so a
+read of a VM the fake made answers its own CPU and memory.
+
 ```sh
 curl -H 'X-User: gonzalo' localhost:18090/api/v1/regions
 curl -H 'X-User: gonzalo' localhost:18090/api/v1/catalog

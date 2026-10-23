@@ -6,6 +6,8 @@ description = "The fake platform as a runnable application."
 
 dependencies {
     implementation(project(":platform-fake"))
+    // the Kafka half of the P-01 feed, under the kafka profile
+    implementation(libs.kafka.clients)
 }
 
 springBoot {

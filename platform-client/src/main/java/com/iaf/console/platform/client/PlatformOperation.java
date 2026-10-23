@@ -27,6 +27,8 @@ public enum PlatformOperation {
 
     // catalog and regions
     LIST_CATALOG("listCatalog", HttpMethod.GET, "/api/v1/catalog"),
+    LIST_PRICE_LISTS("listPriceLists", HttpMethod.GET, "/api/v1/price-lists"),
+    GET_PRICE_LIST("getPriceList", HttpMethod.GET, "/api/v1/price-lists/{name}"),
     LIST_REGIONS("listRegions", HttpMethod.GET, "/api/v1/regions"),
     GET_REGION("getRegion", HttpMethod.GET, "/api/v1/regions/{name}"),
     GET_REGION_AVAILABILITY("getRegionAvailability", HttpMethod.GET, "/api/v1/regions/{name}/availability"),

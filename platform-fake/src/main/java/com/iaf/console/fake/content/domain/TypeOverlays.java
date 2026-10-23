@@ -49,6 +49,9 @@ public final class TypeOverlays {
             if (overlay.path("observe").isObject()) {
                 out.set("observe", overlay.path("observe").deepCopy());
             }
+            if (overlay.path("cost").isObject()) {
+                out.set("cost", overlay.path("cost").deepCopy());
+            }
             mergeSchema(schema, overlay.path("schema"));
         }
         return out;

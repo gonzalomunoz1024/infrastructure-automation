@@ -71,6 +71,11 @@ public final class RecordedWorld {
         } else {
             out = Expressions.render(sample, scope);
         }
+        if (key == null && "create".equals(effect) && idOf(out) != null) {
+            // a create names its object only in its answer; reads of it then answer what the create asked for
+            key = provider.name() + ":" + idOf(out);
+            changed.put(key, remembered(input));
+        }
         if (key != null && out.isObject()) {
             ObjectNode object = (ObjectNode) out;
             if ("delete".equals(effect)) {
@@ -84,13 +89,21 @@ public final class RecordedWorld {
                 overlay.properties().forEach(e -> object.set(e.getKey(), e.getValue().deepCopy()));
             }
             if ("change".equals(effect) && input != null && input.isObject()) {
-                ObjectNode remembered = changed.computeIfAbsent(key, k -> NODES.objectNode());
-                input.properties().forEach(e -> {
-                    if (!"id".equals(e.getKey())) {
-                        remembered.set(e.getKey(), e.getValue().deepCopy());
-                    }
-                });
+                changed.computeIfAbsent(key, k -> NODES.objectNode()).setAll(remembered(input));
             }
+        }
+        return out;
+    }
+
+    /** An input's fields but its id, as reads of the object it names will answer them. */
+    private static ObjectNode remembered(JsonNode input) {
+        ObjectNode out = NODES.objectNode();
+        if (input != null && input.isObject()) {
+            input.properties().forEach(e -> {
+                if (!"id".equals(e.getKey())) {
+                    out.set(e.getKey(), e.getValue().deepCopy());
+                }
+            });
         }
         return out;
     }

@@ -18,6 +18,7 @@ import com.iaf.console.fake.common.ApiException;
 import com.iaf.console.fake.common.Http;
 import com.iaf.console.fake.common.Json;
 import com.iaf.console.fake.content.application.ContentStore;
+import com.iaf.console.fake.content.domain.PriceList;
 import com.iaf.console.fake.content.domain.RegionDef;
 import com.iaf.console.fake.content.domain.ResourceTypeDef;
 import com.iaf.console.fake.content.domain.WorkflowDef;
@@ -26,7 +27,7 @@ import com.iaf.console.fake.identity.application.Callers;
 
 import reactor.core.publisher.Mono;
 
-/** The content routes: resource types with ETags, the catalog, the regions and the OpenAPI document. */
+/** The content routes: resource types with ETags, the catalog, the regions, the price lists (P-22) and the OpenAPI document. */
 public final class ContentRoutes {
 
     private final ContentStore content;
@@ -42,6 +43,8 @@ public final class ContentRoutes {
                 .andRoute(GET("/api/v1/regions"), this::listRegions)
                 .andRoute(GET("/api/v1/regions/{name}"), this::getRegion)
                 .andRoute(GET("/api/v1/regions/{name}/availability"), this::availability)
+                .andRoute(GET("/api/v1/price-lists"), this::listPriceLists)
+                .andRoute(GET("/api/v1/price-lists/{name}"), this::getPriceList)
                 .andRoute(GET("/api/v1/openapi.json"), this::openApi);
     }
 
@@ -67,6 +70,27 @@ public final class ContentRoutes {
             return ServerResponse.status(304).header(HttpHeaders.ETAG, etag).build();
         }
         return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).header(HttpHeaders.ETAG, etag).bodyValue(type.document());
+    }
+
+    /** P-22: every published price list, one page, with an ETag that changes when any does. */
+    private Mono<ServerResponse> listPriceLists(ServerRequest request) {
+        Access.requireScope(Callers.of(request), "registry:read");
+        String etag = content.priceListsEtag();
+        if (matches(request, etag)) {
+            return ServerResponse.status(304).header(HttpHeaders.ETAG, etag).build();
+        }
+        List<ObjectNode> lists = new ArrayList<>();
+        for (PriceList list : content.priceLists()) {
+            lists.add(list.document());
+        }
+        return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).header(HttpHeaders.ETAG, etag).bodyValue(lists);
+    }
+
+    private Mono<ServerResponse> getPriceList(ServerRequest request) {
+        Access.requireScope(Callers.of(request), "registry:read");
+        String name = request.pathVariable("name");
+        PriceList list = content.priceList(name).orElseThrow(() -> ApiException.notFound("price list", name));
+        return Http.ok(list.document());
     }
 
     private static boolean matches(ServerRequest request, String etag) {

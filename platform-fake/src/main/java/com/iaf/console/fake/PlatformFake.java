@@ -1,8 +1,8 @@
 package com.iaf.console.fake;
 
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.random.RandomGenerator;
 
 import org.springframework.http.codec.json.Jackson2JsonDecoder;
 import org.springframework.http.codec.json.Jackson2JsonEncoder;
@@ -164,7 +164,7 @@ public final class PlatformFake implements AutoCloseable {
 
     private PlatformFake(Builder b) {
         this.clock = new FakeClock(b.clock);
-        this.ids = new Ids(b.clock, RandomGenerator.getDefault());
+        this.ids = new Ids(b.clock, new SecureRandom());
         this.seed = b.seed;
         this.content = ContentStore.load(b.contentBase);
         this.serviceAccounts = new ServiceAccounts(clock, ids);

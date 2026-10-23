@@ -91,6 +91,8 @@ tags:
     description: Every published workflow as the console draws its buttons from it (P-08)
   - name: Regions
     description: kind Region (P-07)
+  - name: Price lists
+    description: kind PriceList, readable (P-22)
   - name: Resources
     description: The registry, with wfrns, accounts and paging (P-05) and caller-scoped reads (P-18)
   - name: Observe
@@ -380,6 +382,43 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RegionAvailability' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/price-lists:
+    get:
+      operationId: listPriceLists
+      summary: List price lists
+      description: 'P-22: every published kind PriceList, the prices previews charge and the console''s cost service accrues. Small; one page.'
+      tags: [ Price lists ]
+      x-scopes: [ registry:read ]
+      x-platform-change: [ P-22 ]
+      responses:
+        '200':
+          description: The price lists
+          headers:
+            ETag: { schema: { type: string }, description: 'Changes when any price list is published' }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PriceList' }
+  /api/v1/price-lists/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[a-z0-9-]{1,64}$' }
+    get:
+      operationId: getPriceList
+      summary: Get a price list
+      tags: [ Price lists ]
+      x-scopes: [ registry:read ]
+      x-platform-change: [ P-22 ]
+      responses:
+        '200':
+          description: The price list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PriceList' }
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/resources:
     get:
@@ -5431,6 +5470,9 @@ components:
         observe:
           $ref: '#/components/schemas/ObserveSpec'
           x-platform-change: [ P-06 ]
+        cost:
+          $ref: '#/components/schemas/CostBinding'
+          x-platform-change: [ P-22 ]
         version:
           type: integer
           description: 'P-19: the published version of the type'
@@ -5439,6 +5481,41 @@ components:
           type: string
           description: 'P-19: the hash of the published file, also the ETag'
           x-platform-change: [ P-19 ]
+    CostBinding:
+      type: object
+      description: 'P-22: which price prices a resource of the type: a price of a kind PriceList, and the attribute whose value picks it'
+      required: [ priceList, provider, action ]
+      properties:
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The resource attribute looked up in the price's per-value map }
+    PriceList:
+      type: object
+      description: 'P-22: a kind PriceList as published'
+      required: [ name, currency, prices, version ]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        owner: { type: string }
+        description: { type: string }
+        currency: { type: string }
+        version: { type: integer, description: 'P-19: the published version' }
+        hash: { type: string }
+        prices:
+          type: array
+          items:
+            type: object
+            required: [ provider, action, monthly ]
+            properties:
+              provider: { type: string }
+              action: { type: string }
+              by: { type: string }
+              monthly:
+                oneOf:
+                  - type: number
+                  - type: object
+                    additionalProperties: { type: number }
     ConsoleBlock:
       type: object
       description: 'P-06: how the console shows the type; every key optional, defaults drawn from the schema and the workflows'

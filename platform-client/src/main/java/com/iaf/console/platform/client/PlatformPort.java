@@ -33,6 +33,7 @@ import com.iaf.console.platform.model.ObserveListPage;
 import com.iaf.console.platform.model.ObserveListRequest;
 import com.iaf.console.platform.model.ObserveResult;
 import com.iaf.console.platform.model.Preview;
+import com.iaf.console.platform.model.PriceList;
 import com.iaf.console.platform.model.Quota;
 import com.iaf.console.platform.model.QuotaUpdate;
 import com.iaf.console.platform.model.Region;
@@ -80,6 +81,19 @@ public interface PlatformPort {
     Mono<Conditional<List<ResourceType>>> listResourceTypes(String etag);
 
     Mono<Conditional<ResourceType>> getResourceType(String name, String etag);
+
+    /**
+     * P-22: the published price lists; with the ETag of the copy held, {@code notModified} when it is current.
+     * The default fails, so stand-ins written before P-22 keep compiling.
+     */
+    default Mono<Conditional<List<PriceList>>> listPriceLists(String etag) {
+        return Mono.error(new UnsupportedOperationException("listPriceLists"));
+    }
+
+    /** P-22: one price list by name. */
+    default Mono<PriceList> getPriceList(String name) {
+        return Mono.error(new UnsupportedOperationException("getPriceList"));
+    }
 
     /** One page of a type's paged read (P-09). */
     Mono<ObserveListPage> observeList(String typeName, ObserveListRequest request);
