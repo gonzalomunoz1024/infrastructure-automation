@@ -54,11 +54,10 @@ class MockEventSource extends EventTarget {
     }, 40)
   }
 
+  /** Named after its type, as the platform's stream names its events (`event: job.started`), so only a listener for that name hears it. */
   private emit(e: { id: string; type: string }) {
     if (this.readyState !== MockEventSource.OPEN) return
-    const msg = new MessageEvent('message', { data: JSON.stringify(e), lastEventId: e.id })
-    this.onmessage?.(msg)
-    this.dispatchEvent(msg)
+    this.dispatchEvent(new MessageEvent(e.type, { data: JSON.stringify(e), lastEventId: e.id }))
   }
 
   close() {

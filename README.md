@@ -97,7 +97,10 @@ rows. It is the only UI dependency outside Atlas and it never enters `packages/u
 ## The contracts pin
 
 `contracts.lock` names the commit of the `console-root` hub the contracts were copied from and
-the sha256 of each copy (`packages/wfrn/SPEC.md`, `packages/wfrn/fixtures.json`).
+the sha256 of each copy (`packages/wfrn/SPEC.md`, `packages/wfrn/fixtures.json`, and
+`contracts/platform/asyncapi-target.yaml`, the platform's event catalogue, which
+`console/src/lib/events.ts` lists the types of: the stream names each server-sent event after its
+type, so the feed must subscribe to every one).
 `npm run contracts:verify` checks the copies still match; moving the pin is a commit of its own.
 
 ## Decisions

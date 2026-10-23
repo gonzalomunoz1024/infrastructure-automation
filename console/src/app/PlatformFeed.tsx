@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, Drawer, EmptyState, Icon, JsonView, OverlayBody, OverlayHeader, StatusDot, Tag, cx, relativeTime, type DotKind } from '@iaf/ui'
 import { WfrnText } from '@iaf/console-kit'
 import { api } from '../lib/api'
-import { openStream, type StreamState } from '../lib/sse'
+import { openPlatformStream } from '../lib/events'
+import type { StreamState } from '../lib/sse'
 import type { PlatformEvent } from '../lib/types'
 
 /*
  * The platform feed, for developers: GET /api/v1/events/stream over SSE, every event as it
  * happens, newest first, with the connection's state and a pause for reading. Resumes after the
- * last event seen when the stream drops.
+ * last event seen when the stream drops. The platform names each event after its type, so the
+ * stream is opened with the contract's whole list of types (lib/events.ts).
  */
 
 const MAX_EVENTS = 200
@@ -31,7 +33,7 @@ export function PlatformFeed({ onClose }: { onClose: () => void }) {
   const buffer = useRef<PlatformEvent[]>([])
 
   useEffect(() => {
-    const stream = openStream<PlatformEvent>(
+    const stream = openPlatformStream<PlatformEvent>(
       api.eventsStreamUrl(),
       (event) => {
         if (!event || typeof event !== 'object' || typeof event.type !== 'string') return

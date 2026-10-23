@@ -131,6 +131,29 @@ test.describe('the console shell in mock mode', () => {
     await expectNoSeriousA11y(page, 'request')
   })
 
+  test('the platform feed shows the platform\'s events as they happen', async ({ page }) => {
+    await signInAsGonzalo(page)
+    await page.getByRole('button', { name: 'Platform feed' }).click()
+    const drawer = page.getByRole('dialog', { name: 'Platform feed' })
+    await expect(drawer).toBeVisible()
+    await expect(drawer.getByText('Live', { exact: true })).toBeVisible()
+    // the platform names every server-sent event after its type; the drawer hears them all and shows the type
+    const events = drawer.getByRole('list', { name: 'Events' })
+    const items = events.getByRole('listitem')
+    await expect(items.first()).toBeVisible()
+    await expect(items.first().getByText(/^(job|batch|resource|resource-type|workflow|provider|region|content|release|audit)\./)).toBeVisible()
+    const before = await items.count()
+    await expect.poll(() => items.count(), { timeout: 10_000, message: 'a live event arrives' }).toBeGreaterThan(before)
+    // paused, the list holds still; an event opens to its envelope
+    await drawer.getByRole('button', { name: 'Pause' }).click()
+    const first = items.first()
+    await first.getByRole('button').first().click()
+    await expect(first.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true')
+    await expect(first.getByText('specVersion')).toBeVisible()
+    await page.screenshot({ path: shot('feed-desktop'), fullPage: true })
+    await expectNoSeriousA11y(page, 'feed')
+  })
+
   test('signing out returns to the door and remembers where you were going', async ({ page }) => {
     await signInAsGonzalo(page)
     await page.goto('/#/iam')

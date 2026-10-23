@@ -10,6 +10,10 @@
     "packages/wfrn/SPEC.md": {
       "source": "contracts/wfrn/SPEC.md",
       "sha256": "a948a77142289a1f72c926c16977f36a093d394db24c26d1f8cce3cced00914e"
+    },
+    "contracts/platform/asyncapi-target.yaml": {
+      "source": "contracts/platform/asyncapi-target.yaml",
+      "sha256": "e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23"
     }
   }
 }
