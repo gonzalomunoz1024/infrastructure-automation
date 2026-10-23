@@ -52,13 +52,14 @@ class SessionDecisionsEndpointTest extends DemoApp {
 
     @Test
     void anOperatorReadsOnlyTheirOwnRequests() {
-        Console.Signed mateo = console.signIn("mateo");
-        JsonNode decisions = mateo.view().path("decisions");
+        Console.Signed ana = console.signIn("ana");
+        assertEquals(DATA, ana.accountId());
+        JsonNode decisions = ana.view().path("decisions");
         assertFalse(decisions.path("access-request:list").path("allowed").asBoolean(true), decisions.toString());
         assertEquals("auditor", decisions.path("access-request:list").path("denied").path("suggestedRole").asText());
         assertFalse(decisions.path("access-request:decide").path("allowed").asBoolean(true));
         assertTrue(decisions.path("access-request:create").path("allowed").asBoolean());
-        assertEquals(403, console.get("/console/v1/access-requests?requester=~someone-else", mateo).status(), "the decision agrees with the queue");
+        assertEquals(403, console.get("/console/v1/access-requests?requester=~someone-else", ana).status(), "the decision agrees with the queue");
     }
 
     @Test
