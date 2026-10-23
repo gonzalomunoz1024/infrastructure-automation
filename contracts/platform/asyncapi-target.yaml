@@ -462,7 +462,7 @@ components:
         dataVersion: { type: integer, minimum: 1, description: 'The version of this event type''s data schema' }
         id: { type: string, description: 'Random (evt_...), for tracing only; never the identity' }
         key: { type: string, description: 'The deterministic identity: consumers de-duplicate on it' }
-        seq: { type: integer, format: int64, description: The outbox sequence, one total order per installation }
+        seq: { type: integer, format: int64, description: "The outbox sequence, one total order per installation" }
         type: { type: string, description: An event type of this catalog }
         at: { type: string, format: date-time }
         aggregate: { type: string, enum: [job, resource, workflow, provider, resource-type, region, release, audit, content] }
@@ -474,7 +474,7 @@ components:
         context:
           $ref: '#/components/schemas/JobContext'
           x-platform-change: [P-04]
-        traceparent: { type: string, description: W3C trace context of the request that caused the event, when there was one }
+        traceparent: { type: string, description: "W3C trace context of the request that caused the event, when there was one" }
         data: { type: object, additionalProperties: true }
     Person:
       type: object
@@ -697,7 +697,7 @@ components:
         percent: { type: integer }
         size: { type: integer }
         status: { type: string }
-        reason: { type: string, description: Why the rollout stopped, when it did }
+        reason: { type: string, description: "Why the rollout stopped, when it did" }
         rows:
           type: array
           items: { type: integer }
@@ -757,9 +757,9 @@ components:
       properties:
         name: { type: string }
         version: { type: string }
-        strategy: { type: string, description: The release strategy of the change request (all, or a canary plan) }
+        strategy: { type: string, description: "The release strategy of the change request (all, or a canary plan)" }
         by: { type: string }
-        previous: { type: [string, 'null'], description: The version that was current before, null for a first version }
+        previous: { type: [string, 'null'], description: "The version that was current before, null for a first version" }
     WorkflowDeletedData:
       type: object
       required: [name, version, by]
@@ -817,7 +817,7 @@ components:
         releaseId: { type: string }
         workflow: { type: string }
         provider: { type: string }
-        from: { type: [string, 'null'], description: The version that was current, null for a first version }
+        from: { type: [string, 'null'], description: "The version that was current, null for a first version" }
         to: { type: string }
     ReleaseStartedData:
       allOf:
@@ -839,7 +839,7 @@ components:
       type: object
       required: [jobId, keyId]
       properties:
-        jobId: { type: string, description: The record, which is a job id }
+        jobId: { type: string, description: "The record, which is a job id" }
         keyId: { type: string, description: The signing key }
     AuditSharedData:
       type: object
