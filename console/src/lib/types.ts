@@ -120,6 +120,10 @@ export interface Denial {
   scope?: string
   /** the platform service account bound to the account (platform) */
   serviceAccount?: string
+  /** what in console IAM refused it: a policy, the role's permission boundary or a guardrail (phase 7) */
+  refusedBy?: 'policy' | 'boundary' | 'guardrail'
+  /** the guardrail that refused it (phase 7) */
+  guardrailId?: string
   /** Request access is offered */
   requestable: boolean
   /** the managed role that would allow it */
@@ -196,6 +200,8 @@ export interface IamRole {
   name: string
   description?: string
   policies?: string[]
+  /** the role's permission boundary: a policy id (phase 7) */
+  boundary?: string
   version: number
   builtIn?: boolean
 }

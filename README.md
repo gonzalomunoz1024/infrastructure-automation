@@ -50,6 +50,23 @@ Phase 7 tells people what happened:
   one confirmation; the linked ones are listed and unlinked there
 - weekly digests: each week of the account in words, its changes, drift, cost and access, with
   the numbers they were written from and links to what they name
+Phase 7 writes the account's own policies (WP 7.8):
+
+- Policies under Identity and access: the managed and custom policies, where each is used, its
+  statements in words and its JSON; the editor writes one visually (service and its actions from
+  the console's types and workflows, wfrn patterns with a helper that builds them, conditions on
+  tags, the region, the person and their groups) or as JSON, both views over one document, each
+  problem shown at its field and its JSON line; a save is a new version against the one read
+- a policy is attached to a custom role, or a role is created with it and granted by groups; its
+  delete is refused while a role holds it or is bounded by it, naming each role
+- the policy simulator: a person, a role or a set of groups, unsaved policies and a draft
+  boundary laid over the account, actions on wfrns or patterns (a picked resource brings its tags);
+  each answer says allowed or denied, the statement that decided and where it sits (a guardrail,
+  the role's permission boundary, a policy), drawn as the refusal draws its layers; the editor
+  opens it in a drawer over the unsaved document
+- permission boundaries on custom roles, shown on each role and, for a person, over every role
+  they hold; the organization's guardrails over the account, listed for everyone who reads IAM and
+  written by an organization admin
 
 Phase 5 decides on drift and finds what nobody manages:
 
@@ -661,6 +678,37 @@ type, so the feed must subscribe to every one).
     up in a line (latest, average, highest) and turns into a table; its plot is a slider whose
     arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
     chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
+85. **The simulator answers from the code that decides.** `mock/directory.ts` has one `decide`:
+    the guardrails first (any deny, then the allow-list), then the roles' denies, then the first
+    allow that its role's boundary also allows, then a bounded or a default deny. `authorize` and
+    `POST /console/v1/iam/policy-simulations` both call it, the simulation with its unsaved
+    policies held by a stand-in role and its draft boundary in place of the role's own, so what
+    the simulator says is what the next request gets. Nothing is written, and the answer carries
+    the authorization version it was decided at.
+86. **A tag condition reads the resource the request is about.** A statement's `tag.<name>`
+    condition matches the resource's tags, which the request's context carries (`context.tags`);
+    the mock's single-resource checks pass them, and the simulator sends a picked resource's tags
+    with each check. A check on a type, such as the Actions menu's, has no resource and so no tags:
+    the menu offers what the type allows, and the request on the VM is refused by the statement
+    that names its tag, as the restart-only-prod journey shows.
+87. **One document, two views, one list of problems.** The editor keeps a single policy document;
+    the JSON view is its text, read on each keystroke by a reader that keeps the line of every
+    value by its field path (`statements[1].actions[0]`), so the identity service's 400 problems
+    and the console's own checks (the same rules, ported) show at the field in the visual view and
+    at the line in the JSON one. While the JSON does not read, the visual view shows the last
+    document that did and says so; a save waits until it reads. Saves send `If-Match` with the
+    version read; a 409 offers to load the latest or keep yours.
+88. **Boundaries belong to roles; guardrails to the organization.** The identity contract bounds
+    roles only, so a person's page shows the boundary over each role they hold and links the
+    simulator rather than offering a boundary of their own. The account's guardrails
+    (`GET /console/v1/iam/guardrails`) are read by anyone who may list IAM; the organization's
+    (`/console/v1/org/guardrails`) are written by an organization admin only, through the BFF as
+    its internal principal, and a refusal past a boundary or a guardrail cannot be requested.
+89. **A custom policy decides nothing until a role carries it, and stays while one does.** A new
+    policy is offered for a role at once (attach, or create a role with it granted by groups); its
+    delete is refused with a 409 naming the roles that carry or are bounded by it, which the page
+    lists with links. Managed roles keep their policies, and Admin takes no boundary, so an
+    account always has someone who can change everything.
 
 90. **A review decides who keeps a group, and the due date decides what nobody did.** A campaign
     is the identity service's: everyone's memberships when it starts (who), one item per person
@@ -780,6 +828,8 @@ console/
                   tags, bulk, drift, monitoring), their helpers and screenshots; cli (the device
                   sign-in, CLI sign-ins, the console shell and the developer portal)
                   tags, bulk, drift, monitoring, notifications), their helpers and screenshots
+                  tags, bulk, drift, monitoring), their helpers and screenshots; policies (the
+                  policy editor, simulator, boundaries and guardrails)
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   NotificationsBell and notifications (the feed, the live stream, marking read),
@@ -806,6 +856,9 @@ console/
                   (scales, ticks, time labels and the keyboard's steps), notifications (the
                   notifications, settings, chat links and digests client, kinds and channels in
                   words, the defaults, and a notification's link read into a route)
+                  (scales, ticks, time labels and the keyboard's steps); policies (the
+                  policy, role, guardrail and simulator client, the glob rule, the action
+                  catalog, validation and the JSON reader that keeps lines)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
@@ -819,6 +872,10 @@ console/
                   with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews and elevations among them), src/pages/organization/ the accounts page,
+                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
+                  with the samples; policies (custom policies, roles and their boundaries,
+                  guardrails and the simulator, over the directory's `decide`)
+  src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
                   src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
                   src/pages/resource/ the resource page's tabs (DriftTab and the decisions it
@@ -833,6 +890,10 @@ console/
                   and Rightsizing pages and the alarm dialog, src/pages/notify/ the Notifications,
                   Notification settings, Linked chats and Weekly digests pages; the resource page's Monitoring tab
                   and its MetricChart sit with its other tabs
+                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
+                  and its MetricChart sit with its other tabs; src/pages/iam/policies/ the
+                  Policies, policy editor, Policy simulator and Guardrails pages and the role
+                  dialogs (create, attach, boundary)
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

@@ -3,6 +3,7 @@ import { idOfWfrn, serviceOf, titleOf } from '../lib/descriptors'
 import type { ActivityEntry, BlastRadius, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Dependent, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
 import type { MockData } from './data'
 import { APPROVER_ROLE, accountOf, authorize, quotaOf, type Decision } from './directory'
+import { resourceContextOf } from './policies'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
 import { applyJobCommand, settleBatches, type MockBatch } from './jobs'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
@@ -970,7 +971,8 @@ function policyDenied(preview: ConsolePreview): RouteAnswer | null {
 export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, params: URLSearchParams, method: string): RouteAnswer | null {
   const st = (data.console ??= emptyConsoleState())
   const s = ctx.session
-  const can = (action: string, resource: string) => authorize(data.directory, { accountId: s.accountId, userId: s.userId }, action, resource)
+  // a check on one resource carries its tags, so a statement's tag conditions decide (phase 7)
+  const can = (action: string, resource: string) => authorize(data.directory, { accountId: s.accountId, userId: s.userId }, action, resource, resourceContextOf(data, s, resource))
   const correlation = () => `mock-${idFrom(`${ctx.now}:${path}`, 8)}`
   const now = ctx.now
 

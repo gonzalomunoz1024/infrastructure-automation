@@ -37,6 +37,12 @@ const IamRolesPage = lazy(() => import('../pages/iam/RolesPage'))
 const IamRolePage = lazy(() => import('../pages/iam/RolesPage').then((m) => ({ default: m.IamRolePage })))
 const IamAccessKeysPage = lazy(() => import('../pages/iam/AccessKeysPage'))
 const IamAccessRequestsPage = lazy(() => import('../pages/iam/AccessRequestsPage'))
+const IamPoliciesPage = lazy(() => import('../pages/iam/policies/PoliciesPage'))
+const IamPolicyPage = lazy(() => import('../pages/iam/policies/PoliciesPage').then((m) => ({ default: m.IamPolicyPage })))
+const IamPolicyEditPage = lazy(() => import('../pages/iam/policies/PoliciesPage').then((m) => ({ default: m.IamPolicyEditPage })))
+const IamSimulatorPage = lazy(() => import('../pages/iam/policies/SimulatorPage'))
+const IamGuardrailsPage = lazy(() => import('../pages/iam/policies/GuardrailsPage'))
+const IamGuardrailPage = lazy(() => import('../pages/iam/policies/GuardrailsPage').then((m) => ({ default: m.IamGuardrailPage })))
 const IamAccessRequestPage = lazy(() => import('../pages/iam/AccessRequestsPage').then((m) => ({ default: m.IamAccessRequestPage })))
 const IamAccessReviewsPage = lazy(() => import('../pages/iam/AccessReviewsPage'))
 const IamAccessReviewPage = lazy(() => import('../pages/iam/AccessReviewsPage').then((m) => ({ default: m.IamAccessReviewPage })))
@@ -91,6 +97,14 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'iam-review': IamAccessReviewPage,
   'iam-elevations': IamElevationsPage,
   'org-accounts': OrganizationAccountsPage,
+  'iam-policies': IamPoliciesPage,
+  'iam-policy-new': IamPolicyEditPage,
+  'iam-policy': IamPolicyPage,
+  'iam-policy-edit': IamPolicyEditPage,
+  'iam-simulator': IamSimulatorPage,
+  'iam-guardrails': IamGuardrailsPage,
+  'iam-guardrail-new': IamGuardrailPage,
+  'iam-guardrail': IamGuardrailPage,
   groups: ResourceGroupsPage,
   group: ResourceGroupPage,
   'tag-editor': TagEditorPage,
