@@ -12,20 +12,24 @@ import org.springframework.web.server.ServerWebExchange;
 import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
 import com.iaf.console.bff.jobs.domain.JobView;
+import com.iaf.console.bff.resources.application.Resources;
+import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.kit.correlation.Correlation;
 import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
-/** {@code /console/v1/jobs}: the account's jobs, one job, cancel. */
+/** {@code /console/v1/jobs}: the account's jobs, one job, cancel and retry. */
 @RestController
 public class JobsController {
 
     private final Jobs jobs;
+    private final Resources resources;
 
-    public JobsController(Jobs jobs) {
+    public JobsController(Jobs jobs, Resources resources) {
         this.jobs = jobs;
+        this.resources = resources;
     }
 
     @GetMapping(path = "/console/v1/jobs", produces = "application/json")
@@ -51,5 +55,14 @@ public class JobsController {
         return CurrentSession.required(exchange)
                 .flatMap(session -> jobs.cancel(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
                 .thenReturn(ResponseEntity.accepted().<Void>build());
+    }
+
+    /** Runs a failed request again (WP 4.2): 202 with the job that now runs it, 409 {@code job.not-failed} for a job that did not fail. */
+    @PostMapping(path = "/console/v1/jobs/{jobId}:retry", produces = "application/json")
+    public Mono<ResponseEntity<CommandAccepted>> retry(@PathVariable("jobId") String jobId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange)
+                .flatMap(session -> resources.retry(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
+                .map(accepted -> ResponseEntity.accepted().body(accepted));
     }
 }

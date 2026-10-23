@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Configuration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.jobs.application.JobRetries;
+import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.ports.outbound.StatePort;
@@ -23,8 +25,8 @@ public class ResourcesConfiguration {
 
     @Bean
     public Resources resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, BlastRadii radii, ObjectMapper json) {
-        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, json);
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, ObjectMapper json) {
+        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, jobs, retries, json);
     }
 
     @Bean

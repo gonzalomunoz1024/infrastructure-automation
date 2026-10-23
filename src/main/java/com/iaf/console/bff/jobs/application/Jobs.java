@@ -18,7 +18,6 @@ import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.platform.client.JobFilter;
 import com.iaf.console.platform.model.JobDetail;
-import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
 
 import reactor.core.publisher.Mono;
@@ -38,14 +37,17 @@ public class Jobs {
     private final Trust trust;
     private final PlatformProperties platform;
     private final Approvals approvals;
+    private final JobRetries retries;
 
-    public Jobs(PlatformClients clients, Access access, Sessions sessions, Trust trust, PlatformProperties platform, Approvals approvals) {
+    public Jobs(PlatformClients clients, Access access, Sessions sessions, Trust trust, PlatformProperties platform, Approvals approvals,
+            JobRetries retries) {
         this.clients = clients;
         this.access = access;
         this.sessions = sessions;
         this.trust = trust;
         this.platform = platform;
         this.approvals = approvals;
+        this.retries = retries;
     }
 
     /** The filters of a list call. */
@@ -86,33 +88,59 @@ public class Jobs {
         });
     }
 
+    /**
+     * One job with its steps and approvals, and {@code can}: the commands the console serves on it
+     * that its state allows and the account's policies grant the person, {@code cancel} while it
+     * runs and {@code retry} once it failed (see {@link JobRetries}).
+     */
     public Mono<JobView> get(Session session, String jobId) {
-        return detail(session, jobId).zipWith(approvals.mayDecide(session)).map(tuple -> {
-            JobDetail job = tuple.getT1();
-            boolean policyAllows = tuple.getT2();
+        return detail(session, jobId).flatMap(job -> Mono.zip(approvals.mayDecide(session), can(session, job)).map(tuple -> {
+            boolean policyAllows = tuple.getT1();
             List<Object> approvals = job.approvals() == null ? null : new ArrayList<>(job.approvals().stream()
                     .map(a -> (Object) ApprovalView.of(a, session.currentAccount().groups(), policyAllows)).toList());
-            List<String> can = new ArrayList<>();
-            if (job.status() != null && !job.status().terminal()) {
-                can.add("cancel");
+            return JobView.detail(job, approvals, tuple.getT2());
+        }));
+    }
+
+    private Mono<List<String>> can(Session session, JobDetail job) {
+        boolean cancel = job.status() != null && !job.status().terminal();
+        boolean retry = JobRetries.retryable(job);
+        if (!cancel && !retry) {
+            return Mono.just(List.of());
+        }
+        Mono<JobRetries.Target> target = retry ? retries.target(session, job) : Mono.just(new JobRetries.Target(null, null, null, null, null, false));
+        return target.flatMap(t -> {
+            List<String> verbs = new ArrayList<>();
+            List<AccessCheck> checks = new ArrayList<>();
+            if (cancel) {
+                verbs.add("cancel");
+                checks.add(new AccessCheck(AccessCheck.action(SERVICE, "cancel"), cancelResource(session, job)));
             }
-            if (job.status() == JobStatus.NEEDS_ATTENTION) {
-                can.add("retry");
-                can.add("skip");
-                can.add("abort");
+            if (retry) {
+                verbs.add(JobRetries.VERB);
+                checks.add(new AccessCheck(t.actionName(), t.resource()));
             }
-            if (job.status() != null && job.status().terminal()) {
-                can.add("rerun");
-            }
-            return JobView.detail(job, approvals, can);
+            return access.decide(session, checks).map(decisions -> {
+                List<String> can = new ArrayList<>();
+                for (int i = 0; i < verbs.size(); i++) {
+                    if (decisions.get(i).allowed()) {
+                        can.add(verbs.get(i));
+                    }
+                }
+                return can;
+            });
         });
+    }
+
+    private String cancelResource(Session session, JobDetail job) {
+        return job.context() != null && job.context().wfrn() != null ? job.context().wfrn()
+                : AccessCheck.servicePattern(platform.partition(), SERVICE, session.region(), session.accountId());
     }
 
     /** Cancels after the policy check; 404 for another account's job, 409 when the platform refuses. */
     public Mono<Void> cancel(Session session, String jobId, String requestId, String idempotencyKey) {
         return detail(session, jobId).flatMap(job -> {
-            String resource = job.context() != null && job.context().wfrn() != null ? job.context().wfrn()
-                    : AccessCheck.servicePattern(platform.partition(), SERVICE, session.region(), session.accountId());
+            String resource = cancelResource(session, job);
             return access.require(session, AccessCheck.action(SERVICE, "cancel"), resource)
                     .then(sessions.requireFreshFor(session, AccessCheck.action(SERVICE, "cancel")))
                     .then(clients.forAccount(CurrentSession.scope(session)))
@@ -121,7 +149,8 @@ public class Jobs {
         });
     }
 
-    private Mono<JobDetail> detail(Session session, String jobId) {
+    /** The job, read with the account's client; 404 when it is another account's. */
+    public Mono<JobDetail> detail(Session session, String jobId) {
         return clients.forAccount(CurrentSession.scope(session)).flatMap(p -> p.getJob(jobId))
                 .onErrorResume(com.iaf.console.platform.client.PlatformException.class, e -> e.isNotFound() || e.isForbidden()
                         ? Mono.error(NotFoundException.of("job", jobId)) : Mono.error(e))

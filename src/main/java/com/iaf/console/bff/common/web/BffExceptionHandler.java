@@ -24,7 +24,7 @@ import org.springframework.web.server.ServerWebExchange;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.access.domain.DeniedException;
-import com.iaf.console.bff.resources.domain.DependentsExistException;
+import com.iaf.console.bff.common.errors.CodedConflictException;
 import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.domain.NoConsoleAccountException;
@@ -118,15 +118,15 @@ public class BffExceptionHandler {
                 .body(new Errors.Body("upstream service timed out", null, correlationId, null, null)));
     }
 
-    /** A refusal with a code, the sentence, problems and detail: 409 {@code dependents.exist} names the dependents. */
+    /** A refusal with a code, the sentence, problems and detail: 409 {@code dependents.exist} names the dependents, {@code job.not-failed} the job's status. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record CodedBody(String error, String message, List<Problem> problems, String correlationId, Object detail) {
     }
 
-    @ExceptionHandler(DependentsExistException.class)
-    public Mono<ResponseEntity<CodedBody>> dependents(DependentsExistException ex, ServerWebExchange exchange) {
-        return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(new CodedBody(DependentsExistException.CODE, ex.getMessage(),
-                List.of(Problem.error(DependentsExistException.CODE, null, ex.getMessage())), Correlation.of(exchange), ex.detail())));
+    @ExceptionHandler(CodedConflictException.class)
+    public Mono<ResponseEntity<CodedBody>> codedConflict(CodedConflictException ex, ServerWebExchange exchange) {
+        return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(new CodedBody(ex.code(), ex.getMessage(),
+                List.of(Problem.error(ex.code(), null, ex.getMessage())), Correlation.of(exchange), ex.detail())));
     }
 
     /** A deleted resource: 410 with its tombstone as the detail, so the page can say until when the name stays reserved. */

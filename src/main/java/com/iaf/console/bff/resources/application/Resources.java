@@ -19,7 +19,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.jobs.application.JobRetries;
+import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
+import com.iaf.console.bff.jobs.domain.JobNotFailedException;
 import com.iaf.console.bff.jobs.domain.JobView;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
@@ -68,11 +71,14 @@ import com.iaf.console.platform.client.PlatformPort;
 import com.iaf.console.platform.client.RequestOptions;
 import com.iaf.console.platform.model.BatchContext;
 import com.iaf.console.platform.model.CatalogEntry;
+import com.iaf.console.platform.model.JobDetail;
+import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.platform.model.Lineage;
 import com.iaf.console.platform.model.PolicyDecision;
 import com.iaf.console.platform.model.PolicyRule;
 import com.iaf.console.platform.model.Resource;
+import com.iaf.console.platform.model.RetryRequest;
 import com.iaf.console.platform.model.RolloutPolicy;
 import com.iaf.console.wfrn.Wfrn;
 import com.iaf.console.wfrn.WfrnException;
@@ -110,10 +116,12 @@ public class Resources {
     private final StatePort state;
     private final SearchPort search;
     private final BlastRadii radii;
+    private final Jobs jobs;
+    private final JobRetries retries;
     private final ObjectMapper json;
 
     public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, BlastRadii radii, ObjectMapper json) {
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, ObjectMapper json) {
         this.types = types;
         this.access = access;
         this.sessions = sessions;
@@ -123,6 +131,8 @@ public class Resources {
         this.state = state;
         this.search = search;
         this.radii = radii;
+        this.jobs = jobs;
+        this.retries = retries;
         this.json = json;
     }
 
@@ -592,6 +602,100 @@ public class Resources {
         return Flux.fromIterable(rows).flatMapSequential(row -> radii.direct(session, row.resource()), RADIUS_CONCURRENCY).collectList()
                 .flatMap(found -> found.stream().anyMatch(BlastRadius::hasDependents) ? Mono.<List<Row>>error(DependentsExistException.ofRows(found))
                         : Mono.just(rows));
+    }
+
+    // ---- retries (WP 4.2)
+
+    /**
+     * Runs a failed request again: the job's workflow with the job's input on the same resource, as
+     * the original action allows (a create's on the type's pattern; a delete also needs a fresh
+     * sign-in and still no live dependents). A failed or rolled-back job becomes a new job from its
+     * failed step, a paused one resumes, a finished batch runs its failed rows again. The state
+     * service hears of a retried update or delete as of the first one, after the platform took it.
+     */
+    public Mono<CommandAccepted> retry(Session session, String jobId, String requestId, String idempotencyKey) {
+        return jobs.detail(session, jobId).flatMap(job -> {
+            if (!JobRetries.retryable(job)) {
+                return Mono.error(new JobNotFailedException(jobId, job.status() == null ? "unknown" : job.status().id()));
+            }
+            return retries.target(session, job).flatMap(target -> access.require(session, target.actionName(), target.resource())
+                    .then(sessions.requireFreshFor(session, target.actionName()))
+                    .then(Mono.defer(() -> retrySubject(session, target, job.status() == JobStatus.NEEDS_ATTENTION)))
+                    .flatMap(subject -> retryOnPlatform(session, job, target, requestId, idempotencyKey)
+                            .flatMap(started -> retried(session, job, target, subject, started, requestId, idempotencyKey))));
+        });
+    }
+
+    /**
+     * The resource a retry runs on, as the state service holds it now, checked like the first
+     * request was; a paused job ({@code resume}) is still the resource's change underway, so its
+     * state is the one that job left (updating, deleting, pending).
+     */
+    private Mono<Optional<StateResource>> retrySubject(Session session, JobRetries.Target target, boolean resume) {
+        if (target.wfrn() == null || target.batch()) {
+            return Mono.just(Optional.empty());
+        }
+        return state.get(scope(session), caller(session), target.wfrn(), null).flatMap(answer -> {
+            StateResource r = answer.resource();
+            if (target.is("delete")) {
+                if (!resume) {
+                    requireState(r, null, StateResource.ACTIVE, StateResource.FAILED);
+                }
+                return refuseDependents(session, r).thenReturn(Optional.of(r));
+            }
+            if (target.is("update") && !resume) {
+                requireState(r, null, StateResource.ACTIVE, StateResource.FAILED);
+            } else if (!target.is("create") && !r.live()) {
+                throw new ConflictException("the resource is " + r.state(), Map.of("state", r.state()));
+            }
+            return Mono.just(Optional.of(r));
+        });
+    }
+
+    private Mono<Started> retryOnPlatform(Session session, JobDetail job, JobRetries.Target target, String requestId, String idempotencyKey) {
+        RequestOptions options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
+        if (target.wfrn() != null) {
+            options = options.withResourceWfrn(target.wfrn());
+        }
+        if (job.context() != null && job.context().labels() != null) {
+            for (Map.Entry<String, String> label : job.context().labels().entrySet()) {
+                options = options.withLabel(label.getKey(), label.getValue());
+            }
+        }
+        final RequestOptions chosen = options;
+        return clients.forAccount(scope(session))
+                .flatMap(p -> target.batch() ? p.retryFailedRows(job.id(), chosen) : p.retryJob(job.id(), new RetryRequest(null, null), chosen))
+                .map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
+    }
+
+    /** After the platform took the retry: a new update or delete job is recorded on the state service like the first. */
+    private Mono<CommandAccepted> retried(Session session, JobDetail job, JobRetries.Target target, Optional<StateResource> subject, Started started,
+            String requestId, String idempotencyKey) {
+        CommandAccepted answer = new CommandAccepted(target.wfrn(), started.jobId(), requestId,
+                target.action() == null ? approvalOf(started.status()) : approval(target.action(), started.status()));
+        boolean resumed = started.jobId().equals(job.id());
+        if (resumed || subject.isEmpty() || !(target.is("update") || target.is("delete"))) {
+            return Mono.just(answer);
+        }
+        StateCommands.Meta meta = new StateCommands.Meta(idempotencyKey, requestId);
+        Mono<StateResource> recorded;
+        if (target.is("update")) {
+            Map<String, Object> input = job.input() == null ? Map.of() : job.input();
+            recorded = state.requestUpdate(scope(session), caller(session), target.wfrn(), new StateCommands.Update(null, session.user().userId(),
+                    started.jobId(), job.workflow(), job.version(), json.valueToTree(changesOf(target.action(), input))), meta);
+        } else {
+            String reason = job.context() != null && job.context().labels() != null ? job.context().labels().get("reason") : null;
+            recorded = state.requestDelete(scope(session), caller(session), target.wfrn(), new StateCommands.Delete(null, session.user().userId(),
+                    started.jobId(), job.workflow(), job.version(), reason), meta);
+        }
+        return recorded.onErrorResume(ConflictException.class, e -> {
+            log.warn("retry job {} runs on {} but the state service refused to record it: {}", started.jobId(), target.wfrn(), e.getMessage());
+            return Mono.just(subject.get());
+        }).thenReturn(answer);
+    }
+
+    private static Boolean approvalOf(String status) {
+        return "waiting-approval".equals(status) || "waiting_approval".equals(status);
     }
 
     // ---- the pieces

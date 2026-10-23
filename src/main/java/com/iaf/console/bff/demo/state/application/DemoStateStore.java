@@ -397,6 +397,13 @@ public class DemoStateStore implements FeedListener {
                     event(row, "ProvisioningSucceeded", PLATFORM, jobId, requestId, json.createObjectNode());
                 }
                 case StateResource.DELETING -> end(row, jobId, requestId);
+                case StateResource.FAILED -> {
+                    // a retried create that went through
+                    row.lastError = null;
+                    row.state = StateResource.ACTIVE;
+                    bump(row);
+                    event(row, "ProvisioningSucceeded", PLATFORM, jobId, requestId, json.createObjectNode());
+                }
                 default -> { }
             }
             return;
@@ -483,8 +490,10 @@ public class DemoStateStore implements FeedListener {
         row.lastJobId = jobId != null ? jobId : row.lastJobId;
         ObjectNode data = json.createObjectNode();
         data.put("registryId", record.id());
-        if (StateResource.PENDING.equals(row.state) || StateResource.UPDATING.equals(row.state)) {
+        if (StateResource.PENDING.equals(row.state) || StateResource.UPDATING.equals(row.state) || StateResource.FAILED.equals(row.state)) {
+            // a failed create registers when its retry goes through, as the state service has it
             row.changes = null;
+            row.lastError = null;
             row.state = StateResource.ACTIVE;
             bump(row);
             event(row, "ProvisioningSucceeded", PLATFORM, jobId, requestId, data);
