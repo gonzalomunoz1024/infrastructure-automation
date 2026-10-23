@@ -1,0 +1,148 @@
+# console-search-indexer
+# Production runs the mongo and kafka profiles: Kafka carries state.resources and drift.findings in,
+# OpenSearch holds the index, MongoDB keeps the rebuild runs and the checkpoints. The demo profile is
+# for laptops.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/example/console-search-indexer
+  tag: ""          # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  # the BFF knows this service by its service account, system:serviceaccount:<namespace>:console-search-indexer
+  # (hub decision 23), so the name stays the service's whatever the release is called
+  name: console-search-indexer
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 18085
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 768Mi
+  limits:
+    memory: 1536Mi
+
+autoscaling:
+  enabled: false
+  # never more replicas than the topics have partitions: the extra consumers would idle
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Spring profiles beyond the defaults; mongo is always on in a cluster, kafka when ingest.kafka.enabled
+extraProfiles: []
+
+console:
+  region: global
+  search:
+    opensearch:
+      url: https://opensearch.opensearch.svc.cluster.local:9200
+      # the alias the service reads and writes; the index behind it is <index>-v<mapping version>
+      index: console-resources
+      # false: a write is searchable at the next refresh (1s); wait_for slows writes to make them visible at once
+      refresh: "false"
+      timeout: 10s
+    # each account's queries (search, suggest, counts) per second, and the burst it may spend at once
+    budget:
+      perSecond: 20
+      burst: 40
+  state:
+    url: http://console-state-service.console.svc.cluster.local
+    timeout: 30s
+  identity:
+    # the accounts a full rebuild walks; empty means console.rebuild.accounts
+    url: http://console-identity-service.console.svc.cluster.local
+  platform:
+    baseUrl: http://platform.platform.svc.cluster.local:8080
+    timeout: 30s
+    typesTtl: 60s
+  auth:
+    jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-search-indexer, console]
+    # this service's own tokens for the state and identity services come from the BFF (hub decision
+    # 23), asked for with the pod's projected service-account token: no secret holds them
+    tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
+    serviceAccountToken:
+      audience: console-bff
+      expirationSeconds: 3600
+  rebuild:
+    batchSize: 200
+    # an empty index (a new cluster, a lost index) is filled from the state service at startup
+    onEmpty: true
+    accounts: []
+  index:
+    housekeepingInterval: 1h
+
+ingest:
+  enabled: true
+  kafka:
+    enabled: true
+    bootstrapServers: kafka.kafka.svc.cluster.local:9092
+    groupId: console-search-indexer
+    topics: [state.resources, drift.findings]
+    # extra consumer properties, for example security.protocol
+    properties: {}
+
+mongodb:
+  # the service's own database (rebuild runs, checkpoints); the URI comes from a secret
+  database: console_search
+  existingSecret: console-search-indexer-mongodb
+  uriKey: CONSOLE_MONGO_URI
+
+opensearchCredentials:
+  # basic-auth credentials of OpenSearch, from a secret; leave existingSecret empty for none
+  existingSecret: console-search-indexer-opensearch
+  usernameKey: CONSOLE_OPENSEARCH_USERNAME
+  passwordKey: CONSOLE_OPENSEARCH_PASSWORD
+
+platformToken:
+  # the platform's internal service-account token, to read the resource types
+  existingSecret: console-search-indexer-platform
+  tokenKey: CONSOLE_PLATFORM_TOKEN
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+networkPolicy:
+  enabled: false
+  # who may call the API: the BFF and the console's own services
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: console
+
+env: []

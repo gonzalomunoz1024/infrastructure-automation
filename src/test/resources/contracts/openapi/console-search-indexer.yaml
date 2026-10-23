@@ -1,0 +1,477 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-search-indexer
+  version: 1.1.0
+  summary: Keeps a search index of every console resource from the state and drift events, and answers search, type-ahead and list counts for the BFF.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Account scope.** Every query runs as a console account, the `acct` claim of the caller's
+    internal JWT, and only that account's documents are searched; there is no cross-account hit,
+    so nothing of another account can be found, named or counted. The console-internal principal
+    may name an account with `accountId`; a person naming another account gets 404, never 403. The
+    index's own surface (`/v1/index:rebuild`, its runs, `/internal/sources`) is for the
+    console-internal principal only and answers 404 to a person's token.
+
+    **What is indexed.** One document per resource: wfrn, type, service, region, name, state, tags,
+    the fields the type marks `searchable` (P-06's `x-console`), the drift flag and the last job.
+    The indexer follows `state.resources` and `drift.findings`
+    (`contracts/asyncapi/console-events.yaml`) and is idempotent on each event's `key`; a rebuild
+    reads the state service's lists.
+
+    **Paging.** `GET /v1/search` answers `{ items, next }` with an opaque cursor; `limit` is 1 to
+    200, 50 by default. A cursor belongs to the `sort` it was made with; one from another sort is
+    a 400. Ties in every sort go by wfrn. Type-ahead answers at most 20 items and no cursor.
+
+    **Lists.** `GET /v1/counts` gives a list's header and state chips for the same filters as a
+    search, exactly (an account's documents share one shard). Tombstones (90 days after a delete)
+    are listed only with `state=deleted` or an exact wfrn in `q`.
+
+    **Highlights.** Each hit's `highlights` hold the matching text per field (`name`, or `text`
+    for a match in the id, the tags or the searchable fields), HTML-escaped, with the match in
+    `<em>`, so a page may render them as markup.
+
+    **Errors.** `{ error, problems?, correlationId? }`: 400 a query the parser refuses, 401 no
+    valid JWT, 404 unknown run or another account, 429 over the account's query budget (search,
+    suggest and counts share it), 503 the BFF's signing keys cannot be read now (with
+    `Retry-After`).
+
+    **Query syntax.** Free text over name, wfrn and searchable fields, plus `tag:<name>=<value>`,
+    `type:<type>`, `state:<state>`, `region:<region>` and `drift:true|false` terms; a wfrn pattern
+    is a term of its own. A query parameter and a term that disagree are a 400.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Search
+  - name: Index
+  - name: Health
+security:
+  - consoleJwt: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /v1/search:
+    get:
+      operationId: search
+      summary: Search the account's resources
+      tags: [Search]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/Q'
+        - $ref: '#/components/parameters/Type'
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/State'
+        - $ref: '#/components/parameters/Tag'
+        - $ref: '#/components/parameters/Drift'
+        - name: sort
+          in: query
+          description: >-
+            score (the default; relevance), name, -name, created, -created, updated or -updated. Ties
+            go by wfrn. A resource without a name sorts after every name with name and before them
+            with -name; a missing time sorts last both ways.
+          schema: { type: string, enum: [score, name, -name, created, -created, updated, -updated], default: score }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page of hits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchHit' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+                  total: { type: integer, description: The number of hits when it is cheap to count, absent otherwise }
+                  tookMs: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/counts:
+    get:
+      operationId: getCounts
+      summary: A list's numbers, for its header and state chips
+      description: >-
+        The filters of a search (`q` may be left out). `total` and `drift` apply every filter and,
+        like the list, leave tombstones out unless the state asked for is deleted; `byState`
+        applies every filter but the state, tombstones included, so each chip keeps its number
+        while another is picked. Within the account's query budget.
+      tags: [Search]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/Q'
+        - $ref: '#/components/parameters/Type'
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/State'
+        - $ref: '#/components/parameters/Tag'
+        - $ref: '#/components/parameters/Drift'
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCounts' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/suggest:
+    get:
+      operationId: suggest
+      summary: Type-ahead over names, wfrns, tags and types
+      tags: [Search]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 8 }
+      responses:
+        '200':
+          description: Suggestions, best first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Suggestion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/index/status:
+    get:
+      operationId: getIndexStatus
+      summary: How far the index is behind the events
+      description: >-
+        A person's `documents` are their own account's, tombstones included (another account's
+        `accountId` answers 404). The console-internal principal sees the whole index, or the
+        account it names. `lastEventAt` and `lagSeconds` describe the indexer itself.
+      tags: [Index]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '200':
+          description: The status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IndexStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/index:rebuild:
+    post:
+      operationId: rebuildIndex
+      summary: Rebuild the index from the state service
+      description: >-
+        Internal principal only (a person's token gets 404); one account, or every account when none
+        is given. The index keeps serving while it rebuilds; a repeated `Idempotency-Key` answers the
+        same run.
+      tags: [Index]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accountId: { $ref: '#/components/schemas/AccountId' }
+      responses:
+        '202':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RebuildRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/index/rebuilds/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getRebuild
+      summary: A rebuild run's progress
+      description: Internal principal only; a person's token gets 404.
+      tags: [Index]
+      responses:
+        '200':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RebuildRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/sources:
+    get:
+      operationId: listSources
+      summary: Where the events come from, for operators
+      description: Internal principal only; a person's token gets 404. The Kafka consumer, or the poller of the state service where Kafka is not there.
+      tags: [Index]
+      responses:
+        '200':
+          description: Every source of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SourceStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
+  parameters:
+    AccountId:
+      name: accountId
+      in: query
+      required: false
+      description: The account to search; a console account may only name its own, the internal principal any
+      schema: { $ref: '#/components/schemas/AccountId' }
+    Q:
+      name: q
+      in: query
+      required: false
+      description: Free text and terms; empty or absent lists every resource the other filters keep
+      schema: { type: string, maxLength: 256 }
+    Type:
+      name: type
+      in: query
+      required: false
+      schema: { type: string }
+    Region:
+      name: region
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/RegionName' }
+    State:
+      name: state
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/ResourceState' }
+    Tag:
+      name: tag.<name>
+      in: query
+      required: false
+      description: One parameter per tag, `tag.env=prod`; every one must match
+      schema: { type: string }
+      x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+    Drift:
+      name: drift
+      in: query
+      required: false
+      description: Only resources with (true) or without (false) an open drift finding; the same as the `drift:` term
+      schema: { type: boolean }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 255 }
+  responses:
+    BadRequest:
+      description: A query the parser refuses
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid JWT
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Unknown
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: A rebuild is already running
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: The BFF's signing keys cannot be read now; try again after `Retry-After` seconds
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: 'Over the account''s query budget'
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+    ResourceState:
+      type: string
+      enum: [pending, active, updating, deleting, deleted, failed]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              field: { type: string }
+              message: { type: string }
+        correlationId: { type: string }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    SearchHit:
+      type: object
+      required: [wfrn, type, service, region, state, score]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        service: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        drift: { type: boolean }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        score: { type: number }
+        highlights:
+          type: object
+          description: >-
+            Per field (`name`, or `text` for a match in the id, the tags or the searchable fields),
+            the matching text HTML-escaped (`&lt;`, `&amp;`, `&quot;`, `&#x27;`, `&#x2F;`) with the
+            match wrapped in `<em>`
+          additionalProperties: { type: string }
+        updatedAt: { type: string, format: date-time }
+    Suggestion:
+      type: object
+      required: [kind, value, label]
+      properties:
+        kind: { type: string, enum: [resource, type, tag, wfrn] }
+        value: { type: string, description: What to put in the query or the path }
+        label: { type: string }
+        type: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+    IndexStatus:
+      type: object
+      required: [documents, lagSeconds, lastEventAt]
+      properties:
+        documents: { type: integer, description: The caller's account's documents, or the whole index's for the console-internal principal }
+        lagSeconds: { type: number, description: How far the newest applied event is behind now; it grows while nothing changes }
+        lastEventAt: { type: [string, 'null'], format: date-time, description: The newest applied event; null before the first }
+        rebuilding: { type: boolean }
+    ResourceCounts:
+      type: object
+      required: [total, byState, drift, cappedAt]
+      properties:
+        total: { type: integer, description: What the list shows with every filter }
+        byState:
+          type: object
+          description: Every filter but the state, tombstones included (under deleted); every state is present, 0 when empty
+          required: [pending, active, updating, deleting, deleted, failed]
+          properties:
+            pending: { type: integer }
+            active: { type: integer }
+            updating: { type: integer }
+            deleting: { type: integer }
+            deleted: { type: integer }
+            failed: { type: integer }
+        drift: { type: integer, description: Of total, the resources with an open drift finding }
+        cappedAt: { type: [integer, 'null'], description: The cap a count stopped at; null when the counts are exact }
+    SourceStatus:
+      type: object
+      required: [kind, running, handled]
+      properties:
+        kind: { type: string, enum: [kafka, poll] }
+        running: { type: boolean }
+        lastEventAt: { type: [string, 'null'], format: date-time }
+        lastError: { type: [string, 'null'] }
+        handled: { type: integer, description: Documents or events handled since the start }
+    RebuildRun:
+      type: object
+      required: [runId, status, startedAt]
+      properties:
+        runId: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        status: { type: string, enum: [running, succeeded, failed] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        indexed: { type: integer }
+        error: { type: string }

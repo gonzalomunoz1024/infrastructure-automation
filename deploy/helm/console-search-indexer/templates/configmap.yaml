@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "console-search-indexer.fullname" . }}
+  labels:
+    {{- include "console-search-indexer.labels" . | nindent 4 }}
+data:
+  # the service's settings, read from SPRING_CONFIG_ADDITIONAL_LOCATION over the jar's own defaults;
+  # named application.yaml so it applies whatever the profiles (a profile-named file would need its profile)
+  application.yaml: |
+    server:
+      port: {{ .Values.service.targetPort }}
+    spring:
+      data:
+        mongodb:
+          database: {{ .Values.mongodb.database | quote }}
+    console:
+      region: {{ .Values.console.region | quote }}
+      search:
+        engine: opensearch
+        opensearch:
+          url: {{ .Values.console.search.opensearch.url | quote }}
+          index: {{ .Values.console.search.opensearch.index | quote }}
+          refresh: {{ .Values.console.search.opensearch.refresh | quote }}
+          timeout: {{ .Values.console.search.opensearch.timeout }}
+        budget:
+          per-second: {{ .Values.console.search.budget.perSecond }}
+          burst: {{ .Values.console.search.budget.burst }}
+      state:
+        url: {{ .Values.console.state.url | quote }}
+        timeout: {{ .Values.console.state.timeout }}
+        dev-headers: false
+      identity:
+        url: {{ .Values.console.identity.url | quote }}
+      platform:
+        base-url: {{ .Values.console.platform.baseUrl | quote }}
+        timeout: {{ .Values.console.platform.timeout }}
+        types-ttl: {{ .Values.console.platform.typesTtl }}
+      auth:
+        jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
+        issuer: {{ .Values.console.auth.issuer | quote }}
+        audiences: {{ toJson .Values.console.auth.audiences }}
+        dev-headers: false
+        token-url: {{ .Values.console.auth.tokenUrl | quote }}
+        client-assertion-file: /var/run/secrets/console/token
+      rebuild:
+        batch-size: {{ .Values.console.rebuild.batchSize }}
+        on-empty: {{ .Values.console.rebuild.onEmpty }}
+        {{- with .Values.console.rebuild.accounts }}
+        accounts: {{ toJson . }}
+        {{- end }}
+      index:
+        housekeeping-interval: {{ .Values.console.index.housekeepingInterval }}
+      ingest:
+        enabled: {{ .Values.ingest.enabled }}
+        kafka:
+          bootstrap-servers: {{ .Values.ingest.kafka.bootstrapServers | quote }}
+          group-id: {{ .Values.ingest.kafka.groupId | quote }}
+          topics: {{ toJson .Values.ingest.kafka.topics }}
+          {{- with .Values.ingest.kafka.properties }}
+          properties:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health, info, prometheus, metrics
+      endpoint:
+        health:
+          probes:
+            enabled: true

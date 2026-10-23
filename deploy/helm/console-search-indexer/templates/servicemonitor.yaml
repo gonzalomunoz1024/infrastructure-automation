@@ -1,0 +1,19 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "console-search-indexer.fullname" . }}
+  labels:
+    {{- include "console-search-indexer.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "console-search-indexer.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

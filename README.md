@@ -1,24 +1,167 @@
 # console-search-indexer
 
-The customer console's search: it follows the console's own events on Kafka (`state.resources`,
-`drift.findings`), keeps one OpenSearch document per resource, and answers the search, type-ahead
-and index operations the BFF uses for the header's global search and the filter bar over large
-lists.
+The customer console's search (work package 6.1). It follows the console's own events on Kafka
+(`state.resources`, `drift.findings`), keeps one OpenSearch document per resource, and answers the
+search, type-ahead and list counts the BFF uses for the header's global search and the filter bar
+over large lists, plus the index's status and rebuilds.
 
 This repository is one branch (`console-search-indexer`) of the console work until the services
 move to repositories of their own. It is shaped like that future repository: the Gradle root is
 the branch root, it carries its own CI, and it holds no platform files. What every service shares
 (decisions, contracts, the wfrn fixtures) lives on the hub branch, `console-root`, which this
-repository pins by commit in `contracts.lock`, and the shared code comes from `console-libs` as
-`com.iaf.console:*`.
+repository pins by commit in `contracts.lock` (hub `4e92bfb`), and the shared code comes from
+`console-libs` as `com.iaf.console:*`.
 
-## Build
+## Run it
 
-Java 21 and nothing else: the Gradle wrapper fetches Gradle.
+Java 21 is all the demo needs. Start the state service's demo first (branch
+`console-state-service`, `scripts/demo.sh`: the state service on 18082 and its fake platform on
+18090), then:
+
+```sh
+scripts/demo.sh            # this service on 18085, following the state service every 2 s
+scripts/demo.sh journey    # search, page, suggest, count, status, a rebuild
+```
+
+The demo keeps the index in memory. To use OpenSearch instead, run one and name it:
+
+```sh
+scripts/opensearch.sh      # OpenSearch 2.19 on 127.0.0.1:9200 without Docker (not as root)
+CONSOLE_SEARCH_ENGINE=opensearch CONSOLE_OPENSEARCH_URL=http://localhost:9200 scripts/demo.sh
+```
+
+With Docker, `deploy/compose/docker-compose.yaml` starts OpenSearch, Kafka and MongoDB, the same
+images CI uses. In a cluster, `deploy/helm/console-search-indexer` runs the `mongo` and `kafka`
+profiles; `Dockerfile` builds the image from `build/libs/console-search-indexer.jar`.
+
+## The API
+
+The hub's `contracts/openapi/console-search-indexer.yaml` 1.1.0, pinned under
+`src/test/resources/contracts/`; `contracts/additions.md` names anything served beyond it (nothing now).
+
+| Call | What it answers |
+|---|---|
+| `GET /v1/search?q=…` | One page of hits: `q` is free text plus `type:`, `state:`, `region:`, `tag:k=v`, `drift:` terms, wfrn patterns and quoted phrases; `type`, `region`, `state`, `tag.<name>`, `drift` parameters narrow further; `sort` is `score` (default), `name`, `-name`, `created`, `-created`, `updated` or `-updated`; `limit` 1 to 200 (50), `after` the cursor of the last page |
+| `GET /v1/suggest?q=…` | The type-ahead: resources by name, wfrns by id, types and tags, at most `limit` (8) |
+| `GET /v1/counts` | A list's numbers: `total`, `byState` (the chips), `drift`, `cappedAt` (null: exact) |
+| `GET /v1/index/status` | The caller's account's documents (the whole index for the console's own services), the newest event and how long ago it was, whether a rebuild runs |
+| `POST /v1/index:rebuild` | The console's own services: refill the index (one account or all) from the state service, idempotent on `Idempotency-Key`; 409 while one runs |
+| `GET /v1/index/rebuilds/{runId}` | A rebuild's progress |
+| `GET /internal/sources` | Where the events come from (Kafka or the poller) and how they flow |
+
+**Who calls.** The BFF's internal JWT (ES256 from its JWKS, issuer `console-bff`, audience
+`console-search-indexer` or `console`): a person's token (`acct`) reads its own account only, and
+another account's id answers 404, never 403. A console service's token (`svc`, no `acct`) names the
+account with `accountId`. The demo profile also takes the dev headers `X-Console-Account`,
+`X-Console-User`, `X-Console-Roles`, `X-Console-Region` and `X-Console-Service`. When the BFF's keys
+cannot be read, a token gets 503 with `Retry-After`, not 401.
+
+**Budget.** Each account may run 20 queries a second with bursts of 40
+(`console.search.budget.*`); beyond it, 429 with `Retry-After`.
+
+## How the index is kept
+
+- **One document per resource**, its id the wfrn, routed by account (an account lives on one shard,
+  so its counts and sorts are exact), written with the resource's version as an external version
+  (`external_gte`): a stale write is a no-op, and a finding may rewrite the document at the version
+  it holds.
+- **The events fold in order.** An event at the version held plus one applies; an older one is
+  ignored; a gap reads the resource again from the state service. `Deleted` always applies, and the
+  document becomes a tombstone for 90 days: hidden from lists and suggestions, found by
+  `state:deleted` or its exact wfrn. A finding opened, updated or closed marks the document's drift;
+  a finding on a resource not indexed yet reads the resource from the state service. Every event is
+  applied once (the service kit's `IdempotentConsumer`, keyed on the envelope's `key`).
+- **Never indexed.** A field the type marks sensitive, a field named like a secret, a value masked
+  as `***`. Only the fields the type marks searchable are indexed at all. The types come from the
+  platform (`GET /api/v1/resource-types`, cached for a minute).
+- **The events' sources.** Under the `kafka` profile a reactor-kafka consumer reads both topics
+  (group `console-search-indexer`); a record that is not an envelope is logged and skipped, never
+  blocking the partition. Without Kafka (the demo, a laptop) the service polls the state service's
+  lists every interval, per account, from a watermark. A rebuild walks the state service's lists
+  (live, then tombstones) in batches of 200 and then removes what it did not see; under `kafka`, an
+  empty index at startup (a new cluster, a lost index) is rebuilt on its own.
+- **OpenSearch.** The service reads and writes the alias `console-resources`, whose write index is
+  `console-resources-v1`, created with `opensearch/console-resources.json` when the alias is missing;
+  a new mapping is a new index, a rebuild into it and an alias swap. Every write sends
+  `require_alias`, so a deleted index is never recreated with a guessed mapping. The mapping is
+  strict: names get exact, word and prefix (edge n-gram) fields and a lowercase sort key, wfrns a
+  keyword and a `wildcard` field for patterns, tags a keyword list for filters and the searchable
+  values one `text` field; the tags and fields themselves are stored, not indexed. Highlights come
+  back HTML-escaped around the `<em>`.
+
+## Settings
+
+Everything is under `console.*` with defaults that run the demo (`application.yaml`,
+`application-demo.yaml`, `application-mongo.yaml`). The usual ones:
+
+| Variable | Setting | Default |
+|---|---|---|
+| `CONSOLE_SEARCH_ENGINE` | `console.search.engine` | `opensearch` (`memory` in the demo) |
+| `CONSOLE_OPENSEARCH_URL`, `_USERNAME`, `_PASSWORD` | `console.search.opensearch.*` | `http://localhost:9200` |
+| `CONSOLE_KAFKA_BOOTSTRAP` | `console.ingest.kafka.bootstrap-servers` | `localhost:9092` |
+| `CONSOLE_MONGO_URI` | `spring.data.mongodb.uri` (profile `mongo`: rebuild runs, checkpoints) | `mongodb://localhost:27017` |
+| `CONSOLE_STATE_URL` | `console.state.url` | `http://localhost:18082` |
+| `CONSOLE_AUTH_TOKEN_URL` | `console.auth.token-url`, where the BFF issues this service its tokens | `http://localhost:18081/internal/v1/token` |
+| `CONSOLE_AUTH_CLIENT_ASSERTION_FILE` or `CONSOLE_AUTH_CLIENT_KEY` | how this service proves itself to the BFF: the projected service-account token's file (a cluster), or its own private EC JWK with a `kid`, registered with the BFF (anywhere else) | none (the demo uses dev headers) |
+| `CONSOLE_IDENTITY_URL` | `console.identity.url`, the accounts a full rebuild walks | empty: `console.rebuild.accounts` |
+| `CONSOLE_PLATFORM_URL`, `CONSOLE_PLATFORM_TOKEN` | `console.platform.*`, the resource types | `http://localhost:18090` |
+
+### Calling the state and identity services
+
+The service reads the state service (whole resources, rebuilds) and the identity service (the
+accounts a full rebuild walks) as itself, with service tokens the BFF issues it (hub decision 23,
+`issueServiceToken` in `contracts/openapi/console-bff.yaml`). It asks `POST /internal/v1/token`
+with OAuth 2.0 client credentials and a JWT client assertion, one token per callee
+(`audience=console-state-service`, `audience=console-identity-service`), keeps each token for 80%
+of its five minutes, and asks once more when a callee answers 401. A request to the BFF is given
+up on after `console.auth.token-timeout` (5 s) and tried twice more; while the BFF cannot answer,
+the current token serves until shortly before it ends. The assertion is the pod's
+projected service-account token (audience `console-bff`, the chart mounts it and the BFF knows
+`system:serviceaccount:<namespace>:console-search-indexer`) or, outside a cluster, a one-minute JWT
+signed with `CONSOLE_AUTH_CLIENT_KEY`, whose public half the BFF registers for the client
+(`--console.trust.clients.console-search-indexer.jwks=…` on the BFF). No secret holds a token, and
+the BFF's signing key never leaves it.
+
+## Operate it
+
+- **Health** at `/actuator/health` (liveness and readiness probes, OpenSearch included), metrics
+  at `/actuator/prometheus`: `console_search_documents`, `console_search_lag_seconds`,
+  `console_search_events_total{type,outcome}`, `console_search_queries_total{kind,outcome}`,
+  `console_search_duration{what}`, `console_search_rebuilds_total{outcome}`,
+  `console_search_refetches_total`.
+- **Rebuild** one account or all: `POST /v1/index:rebuild` with `{"accountId": "…"}` or `{}` as a
+  console service; follow it at `/v1/index/rebuilds/{runId}`.
+- **Housekeeping** removes tombstones past their 90 days every hour.
+- **Timeouts**: a callee silent for its timeout is given up on, so none holds up a poll for good:
+  `console.search.opensearch.timeout` (10 s; a delete by query, answered only once it is done, has
+  10 minutes), `console.state.timeout` and `console.identity.timeout` (30 s), and the BFF's token
+  endpoint above.
+
+## Build and test
 
 ```sh
 ./gradlew build
 ```
 
-The service, its slices, profiles, API and decisions are described on the phase 6 branch, which
-lands here by pull request.
+The unit, application and in-memory API tests run anywhere. The adapter tests run against real
+servers when they are named, and skip otherwise; CI starts all three as service containers:
+
+```sh
+CONSOLE_TEST_OPENSEARCH_URL=http://localhost:9200 CONSOLE_TEST_KAFKA_BOOTSTRAP=localhost:9092 \
+CONSOLE_TEST_MONGO_URI=mongodb://localhost:27017 ./gradlew build
+```
+
+`SearchIndexContractTest` holds the in-memory twin and OpenSearch to the same behaviour (versions,
+scope, filters, scoring order, the seven sorts and their cursors, tombstones, counts, suggestions,
+highlights, sweeps); `SearchJourneyTest` runs the API as the BFF meets it on both engines, against a
+stub state service and the fake platform; `RoutesMatchContractTest` holds the handlers to the pinned
+contract and `contracts/additions.md`; `ArchitectureTest` holds the slices to the hexagonal rules.
+
+## Layout
+
+`com.iaf.console.search.index` is the slice: `domain` (documents, the event folds, the query
+language, pure Java), `ports.outbound` (the index, the state service, the types, the accounts, the
+stores), `application` (indexing, the poller, rebuilds, queries, housekeeping) and `adapters`
+(`opensearch`, `memory`, `kafka`, `state`, `platform`, `identity`, `mongo`, `web`, and `tokens`,
+the BFF's service tokens for the state and identity calls). `com.iaf.console.search.auth` checks
+the callers; `com.iaf.console.search.boot` wires it all.

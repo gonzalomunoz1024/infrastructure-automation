@@ -1,0 +1,5 @@
+grant {
+  // reindex from a remote cluster connects with the REST client
+  permission java.net.SocketPermission "*", "connect";
+  permission java.net.NetPermission "getProxySelector";
+};
