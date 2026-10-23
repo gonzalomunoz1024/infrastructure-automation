@@ -87,7 +87,9 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
   loses the session (401); a re-read that fails answers 503. No internal token outlives the roles
   it carries.
 * **The session** is an opaque random id in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie; the
-  server keeps the memberships, the current account and region, and `authTime`. Switching account
+  server keeps the memberships, the current account and region, and `authTime`, under the
+  SHA-256 of the id (the id itself is never stored); only the sign-in inserts a session, so a
+  request in flight never brings back one that was logged out. Switching account
   or region is `PUT /console/v1/session`.
 * **CSRF**: every write under `/console/` and the logout need `X-Csrf-Token`, an HMAC of the
   session id, which `GET /console/v1/session` hands out; when the browser sends an `Origin` it

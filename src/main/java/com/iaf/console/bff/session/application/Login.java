@@ -87,7 +87,7 @@ public class Login {
         return resolver.resolve(user).flatMap(resolved -> {
             Session session = newSession(user, resolved, now);
             log.info("sign-in user={} account={} issuer={}", session.user().userId(), session.accountId(), user.issuer());
-            return sessions.save(session).thenReturn(new Completed(session, ticket.returnTo(), true));
+            return sessions.create(session).thenReturn(new Completed(session, ticket.returnTo(), true));
         });
     }
 
@@ -101,7 +101,9 @@ public class Login {
                     }
                     Session refreshed = session.reauthenticatedAt(user.authTime() == null ? now : user.authTime());
                     log.info("step-up user={} account={}", refreshed.user().userId(), refreshed.accountId());
-                    return sessions.save(refreshed).thenReturn(new Completed(refreshed, ticket.returnTo(), false));
+                    // a session logged out meanwhile is not brought back: the step-up signs in afresh
+                    return sessions.update(refreshed).flatMap(written -> written ? Mono.just(new Completed(refreshed, ticket.returnTo(), false))
+                            : open(ticket, user, now));
                 });
     }
 

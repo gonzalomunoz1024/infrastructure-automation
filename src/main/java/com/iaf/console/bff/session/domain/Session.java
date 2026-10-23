@@ -89,6 +89,12 @@ public record Session(
         return rolesUntil == null || !now.isBefore(rolesUntil);
     }
 
+    /** The same session under another id: a store keeps it under the id's hash. */
+    public Session withId(String otherId) {
+        return new Session(otherId, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
+                rolesResolvedAt, rolesUntil);
+    }
+
     public Session switchedTo(String otherAccountId, String otherRegion) {
         return new Session(id, user, accounts, otherAccountId, otherRegion, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
                 rolesResolvedAt, rolesUntil);

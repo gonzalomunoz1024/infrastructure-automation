@@ -80,7 +80,7 @@ public class Sessions {
             }
             if (session.lastSeenAt().plus(TOUCH_INTERVAL).isBefore(now)) {
                 Session seen = session.seenAt(now);
-                return store.save(seen).thenReturn(seen);
+                return updated(seen);
             }
             return Mono.just(session);
         });
@@ -123,7 +123,7 @@ public class Sessions {
                 return Mono.error(new IllegalArgumentException("unknown region " + chosenRegion));
             }
             Session switched = session.switchedTo(nextAccount, chosenRegion);
-            return store.save(switched).thenReturn(switched);
+            return updated(switched).switchIfEmpty(Mono.error(CurrentSession.NoSessionException::new));
         });
     }
 
@@ -149,12 +149,17 @@ public class Sessions {
                     }
                     Session refreshed = session.withAccounts(resolved.user(), resolved.accounts(), now,
                             rolesUntil(now, resolved.accounts(), properties.rolesRefreshInterval()));
-                    return store.save(refreshed).thenReturn(refreshed);
+                    return updated(refreshed);
                 })
                 .onErrorResume(NoConsoleAccountException.class, e -> {
                     log.info("user={} belongs to no account any more; ending the session", session.user().userId());
                     return store.delete(session.id()).then(Mono.empty());
                 });
+    }
+
+    /** The session as written, or empty when it ended meanwhile (a logout): no write brings a session back. */
+    private Mono<Session> updated(Session session) {
+        return store.update(session).flatMap(written -> written ? Mono.just(session) : Mono.empty());
     }
 
     /** Errors with {@link StepUpRequiredException} when the action is guarded and the session's authentication is too old. */

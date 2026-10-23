@@ -135,6 +135,16 @@ class SessionRereadTest {
         assertEquals(0, resolves.get());
     }
 
+    @Test
+    void aRequestInFlightDoesNotReviveALoggedOutSession() {
+        Session session = signedIn(membership(COMPUTE, "operator", null), membership(DATA, "viewer", null));
+        Session inFlight = sessions.find(session.id()).block();
+        sessions.logout(inFlight).block();
+        assertThrows(CurrentSession.NoSessionException.class, () -> sessions.switchTo(inFlight, DATA, null).block());
+        clock.set(T0.plus(Duration.ofMinutes(2)));
+        assertFalse(stored.containsKey(session.id()), "the switch wrote nothing");
+    }
+
     private Session signedIn(AccountMembership... accounts) {
         List<AccountMembership> list = List.of(accounts);
         Session session = new Session("s_" + resolves.get() + "_" + stored.size(), DANA, list, list.get(0).accountId(), "global", T0, T0, T0,
@@ -165,8 +175,13 @@ class SessionRereadTest {
             }
 
             @Override
-            public Mono<Void> save(Session session) {
+            public Mono<Void> create(Session session) {
                 return Mono.fromRunnable(() -> stored.put(session.id(), session));
+            }
+
+            @Override
+            public Mono<Boolean> update(Session session) {
+                return Mono.fromSupplier(() -> stored.computeIfPresent(session.id(), (k, old) -> session) != null);
             }
 
             @Override
