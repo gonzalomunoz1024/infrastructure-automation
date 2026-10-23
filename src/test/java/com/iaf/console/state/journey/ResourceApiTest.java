@@ -36,7 +36,7 @@ class ResourceApiTest extends DemoServiceTest {
 
     @Test
     void anAccountSeesOnlyItsOwnResources() {
-        JsonNode mine = body(as(ACCOUNT, "dana").get().uri("/v1/resources?limit=500").exchange().expectStatus().isOk());
+        JsonNode mine = body(as(ACCOUNT, "dana").get().uri("/v1/resources?limit=200").exchange().expectStatus().isOk());
         assertThat(mine.get("items")).as("the demo seed was imported at boot").isNotEmpty();
         for (JsonNode r : mine.get("items")) {
             assertThat(r.get("accountId").asText()).isEqualTo(ACCOUNT);
@@ -55,7 +55,7 @@ class ResourceApiTest extends DemoServiceTest {
             assertThat(r.get("type").asText()).isEqualTo("vm");
         }
         as(ACCOUNT, "dana").get().uri("/v1/resources?limit=0").exchange().expectStatus().isBadRequest();
-        as(ACCOUNT, "dana").get().uri("/v1/resources?limit=501").exchange().expectStatus().isBadRequest();
+        as(ACCOUNT, "dana").get().uri("/v1/resources?limit=201").exchange().expectStatus().isBadRequest();
         as(ACCOUNT, "dana").get().uri("/v1/resources?state=purple").exchange().expectStatus().isBadRequest();
         as(ACCOUNT, "dana").get().uri("/v1/resources?wfrn=not a pattern").exchange().expectStatus().isBadRequest();
     }
@@ -85,7 +85,16 @@ class ResourceApiTest extends DemoServiceTest {
         assertThat(events.get("items")).hasSize(1);
         assertThat(events.get("items").get(0).get("type").asText()).isEqualTo("ResourceRequested");
         assertThat(events.get("items").get(0).get("key").asText()).isEqualTo("ResourceRequested:" + wfrn + ":1");
-        assertThat(events.get("items").get(0).get("version").asLong()).isEqualTo(1);
+        JsonNode entry = events.get("items").get(0);
+        assertThat(entry.get("id").asText()).startsWith("evt_");
+        assertThat(entry.get("specVersion").asText()).isEqualTo("1.0");
+        assertThat(entry.get("aggregate").asText()).isEqualTo("resource");
+        assertThat(entry.get("aggregateId").asText()).isEqualTo(wfrn);
+        assertThat(entry.get("context").get("accountId").asText()).isEqualTo(ACCOUNT);
+        assertThat(entry.get("context").get("wfrn").asText()).isEqualTo(wfrn);
+        assertThat(entry.get("data").get("version").asLong()).isEqualTo(1);
+        assertThat(entry.get("data").get("state").asText()).isEqualTo("pending");
+        assertThat(entry.get("data").get("resourceType").asText()).isEqualTo("vm");
 
         ObjectNode tag = json.createObjectNode();
         tag.putObject("set").put("env", "dev");
@@ -129,7 +138,7 @@ class ResourceApiTest extends DemoServiceTest {
     }
 
     @Test
-    void secretsAreMaskedUnlessRevealed() {
+    void secretsAreMaskedUnlessRevealedToAnAdminOrAService() {
         JsonNode minted = mint(as(OTHER_ACCOUNT, "lee"), mintBody("database", "db-" + UUID.randomUUID()), null);
         String wfrn = minted.get("wfrn").asText();
         assertThat(minted.get("attributes").get("secret").asText()).isEqualTo("***");
@@ -137,8 +146,14 @@ class ResourceApiTest extends DemoServiceTest {
         assertThat(getResource(as(OTHER_ACCOUNT, "lee"), wfrn).get("attributes").get("secret").asText()).isEqualTo("***");
         JsonNode events = body(as(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "/events")).exchange().expectStatus().isOk());
         assertThat(events.get("items").get(0).get("data").get("input").get("secret").asText()).isEqualTo("***");
-        JsonNode revealed = body(as(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
+        JsonNode ignored = body(as(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
+        assertThat(ignored.get("attributes").get("secret").asText()).isEqualTo("***");
+        JsonNode revealed = body(asAdmin(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
         assertThat(revealed.get("attributes").get("secret").asText()).isEqualTo("hunter2");
+        JsonNode toService = body(asService("console-bff").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
+        assertThat(toService.get("attributes").get("secret").asText()).isEqualTo("hunter2");
+        JsonNode log = body(asAdmin(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "/events?reveal=sensitive")).exchange().expectStatus().isOk());
+        assertThat(log.get("items").get(0).get("data").get("input").get("secret").asText()).isEqualTo("hunter2");
         JsonNode listed = body(as(OTHER_ACCOUNT, "lee").get().uri("/v1/resources?type=database&name=db-").exchange().expectStatus().isOk());
         for (JsonNode r : listed.get("items")) {
             assertThat(r.get("attributes").get("secret").asText()).isEqualTo("***");
@@ -162,8 +177,11 @@ class ResourceApiTest extends DemoServiceTest {
             assertThat(r.get("accountId").asText()).isEqualTo(ACCOUNT);
         }
         asService("console-bff").get().uri("/v1/resources").exchange().expectStatus().isBadRequest();
-        JsonNode imported = body(asService("console-bff").post().uri("/internal/import").bodyValue(Map.of("accountId", ACCOUNT, "region", "global"))
-                .exchange().expectStatus().isOk());
+        JsonNode imported = body(asService("console-bff").post().uri("/internal/import")
+                .bodyValue(Map.of("accountId", ACCOUNT, "region", "global", "owner", fake.demo().compute().team())).exchange().expectStatus().isOk());
         assertThat(imported.get("seen").asLong()).isGreaterThan(0);
+        JsonNode withoutBackfill = body(asService("console-bff").post().uri("/internal/import").bodyValue(Map.of("accountId", ACCOUNT, "region", "global"))
+                .exchange().expectStatus().isOk());
+        assertThat(withoutBackfill.get("seen").asLong()).isEqualTo(imported.get("seen").asLong());
     }
 }

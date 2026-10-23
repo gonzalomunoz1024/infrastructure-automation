@@ -100,17 +100,17 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 
 | Call | Answer |
 | --- | --- |
-| `GET /v1/resources` | The account's live resources, newest first; filters `type`, `state`, `name` (prefix), `tag.<name>`, `wfrn` (pattern), `updatedAfter`, `drift`; `sort` (`-updatedAt`, `updatedAt`, `-createdAt`, `createdAt`, `name`, `-name`); `limit` 1 to 500 (50), `after` the cursor of the last page |
+| `GET /v1/resources` | The account's live resources, newest first; filters `type`, `state`, `name` (prefix), `tag.<name>`, `wfrn` (pattern), `updatedAfter`, `drift`; `sort` (`-updatedAt`, `updatedAt`, `-createdAt`, `createdAt`, `name`, `-name`); `limit` 1 to 200 (50), `after` the cursor of the last page |
 | `POST /v1/resources:mint` | 201, a `pending` resource with a fresh wfrn (`<type>-<ulid>`), before the platform knows of it |
 | `POST /v1/resources:import` | 201, an `active` resource the platform already had (`source` `backfill` or `discover`) |
-| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version; `?reveal=sensitive` the secrets; 410 with a `Tombstone` body after deletion |
-| `GET /v1/wfrn/{wfrn}/events` | Its events in order; `after` is a version, `limit` a page |
+| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for the console's own services and a BFF call made for an account admin, ignored for anyone else; 410 with a `Tombstone` body after deletion |
+| `GET /v1/wfrn/{wfrn}/events` | Its log in order, each entry the `state.resources` envelope (`id`, `key`, `type`, `at`, `context`, `data` with `version` and `state`), the same event under the same `id` as on the topic; `after` is a version, `limit` a page, `reveal` as on the resource |
 | `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes` |
 | `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting` |
 | `POST /v1/wfrn/{wfrn}:tag` | `set` and `removed` tags; names `[a-z0-9-]{1,32}`, values up to 256, 50 tags |
 | `POST /v1/wfrn/{wfrn}:record-observation` | What a provider showed (`found`, `not_found`, `error`); `not_found` on a type whose `observe.notFound` is `deleted` tombstones it |
 | `POST /v1/wfrn/{wfrn}:record-drift`, `:resolve-drift` | One open finding at a time; `accepted` writes the observed values into the attributes |
-| `POST /internal/import` | For services: backfills an account's wfrns (when the platform allows this service to) and takes its resources under management |
+| `POST /internal/import` | For services: `{accountId, region, owner}`; with an `owner` (the team whose resources get names) the platform's backfill mints the missing wfrns first (the console-internal service account holds `resources:backfill`; a token without it, or a call without an owner, imports what already carries a wfrn), then the account's resources are taken under management |
 | `POST /internal/rebuild`, `/internal/reap`, `/internal/accounts/{id}:shred`, `GET /internal/feed` | Operations: rebuild from the snapshot, run the reaper now, destroy an account's data key, the feed's status |
 
 Commands take `expectedVersion` (409 `version.mismatch` with the current version when it moved),
@@ -155,8 +155,9 @@ between the log and the projection heals on the next read.
 
 The platform's `resource.registered` carries no attributes (hub decision 17's target contract), so
 every platform event is a cue to read: a registration of a wfrn this service knows and whose
-lifecycle class is `active` becomes `ProvisioningSucceeded` with the registry record; one it does
-not know becomes `Imported` (source `backfill`); `resource.retired` becomes `Deleted`;
+lifecycle class is `active` becomes `ProvisioningSucceeded` with the registry record (nothing while
+the resource is deleting: only its delete job's end can finish a delete, hub decision 20); one it
+does not know becomes `Imported` (source `backfill`); `resource.retired` becomes `Deleted`;
 `job.finished` is applied through the job's outcome (a succeeded delete tombstones, a succeeded
 create without a registration fails as `console.noRegistration`, a failed job fails the request).
 Lifecycle classes come from the type's `console.lifecycle` map (`building` → pending, `ready` →
@@ -184,7 +185,9 @@ matches `password|passwd|secret|token|credential|private-key|api-key`. Such valu
 AES-256-GCM under a per-account data key (`account_keys`, wrapped by the master key with the account
 as associated data), serialized as `{"$enc": "<nonce+ciphertext>", "k": 1}`. The log, the
 projection and the idempotency store only ever hold sealed values; Kafka, the trail and every
-answer show `***`; `GET /v1/wfrn/{wfrn}?reveal=sensitive` decrypts (and is logged). Destroying the
+answer show `***`; `?reveal=sensitive` on the resource or its log decrypts for the console's own
+services and for an account's admins (the BFF names the identity service's `account-admin` role among
+the caller's `groups`), is ignored for anyone else, and is logged. Destroying the
 account's data key (`identity.changes` or `POST /internal/accounts/{id}:shred`) is the crypto-shred:
 every copy, in every store and backup, is unreadable from then on, and a later seal for the same
 account gets a new key.
@@ -235,12 +238,12 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 3 | The feed is a cue, the registry the truth | `resource.registered` carries no attributes; reading the record on every registration keeps the two in step and costs one read per change, not per resource |
 | 4 | No-op commands write no event | Hourly observations of 10 million resources would otherwise be 10 million events an hour; the log stays proportional to change |
 | 5 | Sealing at the command boundary, masking by default | Secrets never reach the log or Kafka in clear; one `reveal` path to audit |
-| 6 | Tombstones for 90 days, configurable | The plan's number; the contract text says 30 (flagged on the hub); `console.state.tombstone-ttl` decides |
-| 7 | Page limit 500 (the contract) over the kit's 200 | `ResourceQuery.limitOf` follows the service's contract; the kit's constant is a default, not a rule |
-| 8 | Additive API extensions | `sort`, `asOf`, `reveal`, the `Idempotent-Replay` header and the extra `Resource` fields (`changes`, `observedStatus`, `lastError`, `source`, `deletedAt`, `tombstoneUntil`); all optional, proposed to the hub for the next contract revision |
-| 9 | `ProvisioningStarted` on updating and deleting resources, `ProvisioningFailed` returns them to active | The contract has one `JobData` event; a failed update or delete leaves the resource as it was |
-| 10 | A forbidden backfill does not fail an import | The platform's backfill is an admin operation; what already carries a wfrn is still taken under management |
-| 11 | The demo fake is retried when its seed races | The fake's demo seed decides approvals while jobs run and can race under a short step delay; a fresh fake is cheaper than a flaky boot |
+| 6 | Tombstones for 90 days, configurable | The plan's and the contract's number (hub `025e8c7`); `console.state.tombstone-ttl` decides |
+| 7 | Page limit 200, the kit's `CursorPaging.MAX_PAGE_SIZE` | Every console API pages 1 to 200 (default 50); `ResourceQuery.limitOf` follows the kit |
+| 8 | The log's entries are the `state.resources` envelopes | The contract's `ResourceEvent` is the P-01 envelope since hub `025e8c7`, as are `sort`, `asOf`, `reveal`, the `Idempotent-Replay` header and the `Resource` fields `changes`, `observedStatus`, `lastError`, `source`, `deletedAt`, `tombstoneUntil`; an event gets its `id` when it is decided, so the topic and the log name it the same |
+| 9 | One set of job events whatever the job (hub decision 20) | `ProvisioningStarted` keeps the state it finds; `ProvisioningSucceeded` ends a create or update in `active`; a delete job's success is recorded as `Deleted`, the tombstone; `ProvisioningFailed` leaves a create `failed` and returns an update or delete to `active`; a registration during a delete is no event |
+| 10 | A forbidden backfill does not fail an import | The console-internal service account holds `resources:backfill` (console-libs `f44213a`); a deployment whose token lacks it still takes what already carries a wfrn under management |
+| 11 | `reveal=sensitive` is honored for services and account admins only | The contract names the console-internal principal and a BFF call for an account admin; the BFF puts the identity service's `account-admin` role in `groups`, and anyone else is answered masked, not refused |
 
 ## CI and release
 

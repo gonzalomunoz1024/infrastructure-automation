@@ -42,28 +42,20 @@ public class PlatformConfiguration {
 
         @Bean(destroyMethod = "close")
         public PlatformFake platformFake(StateProperties properties) {
-            // the fake seeds its demo world on start; the seed decides its own approvals while the
-            // jobs run, which can race under a very short step delay, so a failed seed is retried
-            // on a fresh fake rather than failing the boot
-            RuntimeException failure = null;
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                PlatformFake fake = PlatformFake.builder()
-                        .stepDelay(properties.demo().stepDelay())
-                        .seed(properties.demo().seed())
-                        .demo(true)
-                        .build();
-                try {
-                    fake.start(properties.demo().platformPort());
-                    log.info("demo: the fake platform listens on {} with accounts {} and {}", fake.baseUrl(), fake.demo().compute().accountId(),
-                            fake.demo().data().accountId());
-                    return fake;
-                } catch (RuntimeException e) {
-                    failure = e;
-                    log.warn("demo: the fake platform's seed failed on attempt {}: {}", attempt, e.toString());
-                    fake.close();
-                }
+            PlatformFake fake = PlatformFake.builder()
+                    .stepDelay(properties.demo().stepDelay())
+                    .seed(properties.demo().seed())
+                    .demo(true)
+                    .build();
+            try {
+                fake.start(properties.demo().platformPort());
+            } catch (RuntimeException e) {
+                fake.close();
+                throw e;
             }
-            throw new IllegalStateException("the fake platform could not seed its demo", failure);
+            log.info("demo: the fake platform listens on {} with accounts {} and {}", fake.baseUrl(), fake.demo().compute().accountId(),
+                    fake.demo().data().accountId());
+            return fake;
         }
 
         @Bean

@@ -53,7 +53,7 @@ public final class Transitions {
             }
             case PROVISIONING_SUCCEEDED -> switch (current) {
                 case PENDING, UPDATING, ACTIVE, FAILED -> ACTIVE;
-                default -> throw new ConflictException("resource.deleting: a deleting resource cannot be provisioned");
+                default -> throw new ConflictException("resource.deleting: a delete job's success is recorded as Deleted, not as a provisioning");
             };
             case PROVISIONING_FAILED -> switch (current) {
                 case PENDING, FAILED -> FAILED;

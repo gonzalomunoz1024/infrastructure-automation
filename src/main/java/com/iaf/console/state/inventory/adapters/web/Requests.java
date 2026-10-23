@@ -74,6 +74,7 @@ public final class Requests {
         }
     }
 
+    /** {@code owner} is the team whose resources the platform's backfill names (P-05); without it, no backfill runs. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ImportAccountRequest(String accountId, String region, String owner) {
     }

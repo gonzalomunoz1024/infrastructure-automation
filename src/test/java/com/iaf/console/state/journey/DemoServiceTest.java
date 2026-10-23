@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.fake.PlatformFake;
 import com.iaf.console.fake.demo.DemoSeed;
 import com.iaf.console.state.auth.adapters.web.ConsoleAuthWebFilter;
+import com.iaf.console.state.auth.domain.ConsolePrincipal;
 
 /**
  * The service as the demo runs it: in-memory stores, the fake platform in the same JVM on a free
@@ -57,6 +58,12 @@ public abstract class DemoServiceTest {
     }
 
     /** A client acting as another console service. */
+    /** A caller of an account whom the BFF marks as one of its admins. */
+    protected WebTestClient asAdmin(String accountId, String user) {
+        return web.mutate().defaultHeader(ConsoleAuthWebFilter.ACCOUNT_HEADER, accountId).defaultHeader(ConsoleAuthWebFilter.USER_HEADER, user)
+                .defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, ConsolePrincipal.ACCOUNT_ADMIN).build();
+    }
+
     protected WebTestClient asService(String service) {
         return web.mutate().defaultHeader(ConsoleAuthWebFilter.SERVICE_HEADER, service).build();
     }

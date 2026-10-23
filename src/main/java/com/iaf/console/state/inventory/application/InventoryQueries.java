@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.iaf.console.kit.errors.NotFoundException;
+import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.state.inventory.domain.Resource;
@@ -54,8 +55,11 @@ public final class InventoryQueries {
                 .flatMap(r -> view(scope, r, reveal));
     }
 
-    /** The resource's log after a version, oldest first; 404 when the wfrn has no log in the scope. */
-    public Mono<Page<ResourceEvent>> events(AccountScope scope, String wfrn, long afterVersion, int limit, boolean reveal) {
+    /**
+     * The resource's log after a version, oldest first, each entry as the contract's {@code ResourceEvent}
+     * (the {@code state.resources} envelope); 404 when the wfrn has no log in the scope.
+     */
+    public Mono<Page<EventEnvelope>> events(AccountScope scope, String wfrn, long afterVersion, int limit, boolean reveal) {
         ResourceIdentity id = identity(wfrn);
         if (!scope.covers(id.accountId(), id.region())) {
             return Mono.error(NotFoundException.of("resource", wfrn));
@@ -64,7 +68,7 @@ public final class InventoryQueries {
         return page.collectList().flatMap(list -> {
             if (list.isEmpty()) {
                 if (afterVersion > 0) {
-                    return projection.find(scope, wfrn).map(r -> Page.<ResourceEvent>last(List.of()))
+                    return projection.find(scope, wfrn).map(r -> Page.<EventEnvelope>last(List.of()))
                             .switchIfEmpty(Mono.error(() -> NotFoundException.of("resource", wfrn)));
                 }
                 return Mono.error(NotFoundException.of("resource", wfrn));
@@ -76,7 +80,7 @@ public final class InventoryQueries {
             if (reveal) {
                 log.info("sensitive values of {} revealed in its log to {}", wfrn, scope.principal());
             }
-            return shown.collectList().map(items -> new Page<>(items, next));
+            return shown.map(e -> ResourceEventPublisher.envelope(e, null)).collectList().map(items -> new Page<>(items, next));
         });
     }
 

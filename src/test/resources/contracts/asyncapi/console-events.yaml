@@ -42,13 +42,17 @@ info:
     are in order. Nothing is ordered across resources or accounts.
 
     **The resource state machine** (`ResourceState`, the lifecycle classes of P-06): `ResourceRequested`
-    opens a resource in `pending`; `ProvisioningStarted` keeps it `pending`; `ProvisioningSucceeded`
-    makes it `active`; `ProvisioningFailed` makes it `failed`; `UpdateRequested` makes it `updating`
-    and the job's `ProvisioningSucceeded` or `ProvisioningFailed` ends the update; `DeleteRequested`
-    makes it `deleting`; `Deleted` makes it `deleted` (a tombstone, `GET /v1/wfrn/{wfrn}` answers 410
-    for 30 days); `Imported` opens a resource straight in `active`; `Observed`, `DriftDetected`,
-    `DriftResolved` and `Tagged` change the resource's observed truth, drift flag and tags without
-    changing its state.
+    opens a resource in `pending`; `UpdateRequested` makes it `updating`; `DeleteRequested` makes it
+    `deleting`. The three job events are the same types whatever the job: `ProvisioningStarted`
+    keeps the state it finds (`pending`, `updating` or `deleting`); `ProvisioningSucceeded` makes a
+    created or updated resource `active` and a deleted one `deleted`; `ProvisioningFailed` makes a
+    created resource `failed` and returns an updated or deleted one to `active` (the resource is
+    still there as it was), with the failure in `data`. `Deleted` is the tombstone (`GET
+    /v1/wfrn/{wfrn}` answers 410 for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete
+    job or the platform retiring the resource; `Imported` opens a resource straight in `active`;
+    `Observed`, `DriftDetected`, `DriftResolved` and `Tagged` change the resource's observed truth,
+    drift flag and tags without changing its state. `data.state` on every event is the state after
+    it, so a consumer never needs the table above.
 
     **wfrns** travel in the envelope (`context.wfrn`, and `aggregateId` on `state.resources`),
     never in the Kafka key alone, and are the partition key verbatim.

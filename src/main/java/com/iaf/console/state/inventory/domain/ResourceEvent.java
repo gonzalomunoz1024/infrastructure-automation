@@ -5,16 +5,20 @@ import java.util.Objects;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.wfrn.Ulid;
 
 /**
- * One entry of a resource's log, the contract's {@code ResourceEvent}: what happened, to which
- * resource, the version it produced and the state the resource is in after it. The key is
- * deterministic ({@code <type>:<wfrn>:<version>}), so a re-emitted event is the same event.
- * {@code data} holds the per-type fields of {@code console-events.yaml}; a sensitive field in it is
- * an {@code {"$enc": ...}} value once stored.
+ * One entry of a resource's log: what happened, to which resource, the version it produced and the
+ * state the resource is in after it. It is shown and published as the contract's {@code ResourceEvent},
+ * the platform's P-01 envelope (see {@code ResourceEventPublisher}), so it carries the envelope's
+ * {@code id} from the moment it is decided: the log and the {@code state.resources} topic name the
+ * same event. The key is deterministic ({@code <type>:<wfrn>:<version>}), so a re-emitted event is
+ * the same event. {@code data} holds the per-type fields of {@code console-events.yaml}; a sensitive
+ * field in it is an {@code {"$enc": ...}} value once stored.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ResourceEvent(
+        String id,
         ResourceEventType type,
         String wfrn,
         String accountId,
@@ -38,6 +42,7 @@ public record ResourceEvent(
         if (version < 1) {
             throw new IllegalArgumentException("a resource event's version starts at 1, was " + version);
         }
+        id = id == null ? "evt_" + Ulid.next() : id;
         key = key == null ? keyOf(type, wfrn, version) : key;
     }
 
@@ -47,6 +52,6 @@ public record ResourceEvent(
     }
 
     public ResourceEvent withData(ObjectNode newData) {
-        return new ResourceEvent(type, wfrn, accountId, region, version, key, at, state, actor, jobId, requestId, newData);
+        return new ResourceEvent(id, type, wfrn, accountId, region, version, key, at, state, actor, jobId, requestId, newData);
     }
 }

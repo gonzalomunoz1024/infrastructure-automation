@@ -196,9 +196,15 @@ public final class ResourceDecider {
         return Optional.of(event(current, null, ResourceEventType.PROVISIONING_STARTED, now, command.meta(), command.jobId(), data));
     }
 
-    /** Empty when the registration says nothing new about an active resource. */
+    /**
+     * Empty when the registration says nothing new about an active resource, and for a resource on its
+     * way out: a registration cannot end a delete, only the delete job's end can (hub decision 20).
+     */
     public static Optional<ResourceEvent> registered(Resource current, Commands.Registration command, Instant now) {
         requireExists(current);
+        if (current.state() == ResourceState.DELETING) {
+            return Optional.empty();
+        }
         ObjectNode attributes = Json.orEmpty(command.attributes());
         if (current.state() == ResourceState.ACTIVE && Objects.equals(command.registryId(), current.registryId())
                 && Objects.equals(attributes, Json.orEmpty(current.attributes()))
@@ -248,7 +254,7 @@ public final class ResourceDecider {
         String accountId = current == null ? id.accountId() : current.accountId();
         String region = current == null ? id.region() : current.region();
         Instant at = current != null && current.updatedAt() != null && now.isBefore(current.updatedAt()) ? current.updatedAt() : now;
-        return new ResourceEvent(type, wfrn, accountId, region, version, null, at, after, meta == null ? null : meta.actor(), jobId,
+        return new ResourceEvent(null, type, wfrn, accountId, region, version, null, at, after, meta == null ? null : meta.actor(), jobId,
                 meta == null ? null : meta.requestId(), data);
     }
 

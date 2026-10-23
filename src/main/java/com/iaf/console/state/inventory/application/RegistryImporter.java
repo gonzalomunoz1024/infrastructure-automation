@@ -65,21 +65,31 @@ public final class RegistryImporter {
         });
     }
 
-    /** Backfills wfrns for an account's resources (of one owner, or all) and takes them under management. */
+    /**
+     * Takes an account's resources under management. With an {@code owner} (the team whose resources
+     * get names, which the platform's backfill requires, P-05) the platform first mints wfrns for that
+     * team's resources that have none; without one, and when the platform refuses the backfill, what
+     * already carries a wfrn is imported.
+     */
     public Mono<Report> importAccount(String accountId, String region, String owner) {
         Counters c = new Counters();
-        return platform.backfillWfrns(new BackfillRequest(accountId, region, owner), RequestOptions.none())
-                .doOnNext(result -> log.info("backfill for account {}: {} minted, {} skipped", accountId, result.minted(), result.skipped()))
-                .onErrorResume(PlatformException.class, e -> {
-                    if (e.status() == 403) {
-                        // the backfill is the platform's admin operation; without it the account's
-                        // resources that already carry a wfrn are still taken under management
-                        log.warn("backfill for account {} is not permitted to this service ({}); importing what already has a wfrn", accountId,
-                                e.getMessage());
-                        return Mono.empty();
-                    }
-                    return Mono.error(e);
-                })
+        Mono<Void> backfill = owner == null || owner.isBlank()
+                ? Mono.fromRunnable(() -> log.info("import of account {}: no owner named, so no backfill; importing what already has a wfrn", accountId))
+                : platform.backfillWfrns(new BackfillRequest(accountId, region, owner), RequestOptions.none())
+                        .doOnNext(result -> log.info("backfill for account {} ({}): {} minted, {} skipped", accountId, owner, result.minted(),
+                                result.skipped()))
+                        .onErrorResume(PlatformException.class, e -> {
+                            if (e.status() == 403) {
+                                // the console-internal service account holds resources:backfill; a token
+                                // without it still takes what already carries a wfrn under management
+                                log.warn("backfill for account {} is not permitted to this service ({}); importing what already has a wfrn",
+                                        accountId, e.getMessage());
+                                return Mono.empty();
+                            }
+                            return Mono.error(e);
+                        })
+                        .then();
+        return backfill
                 .then(listPages(ResourceFilter.all().withAccount(accountId).withLimit(PAGE), c))
                 .then(Mono.fromSupplier(c::report))
                 .doOnSuccess(r -> log.info("import of account {}: {}", accountId, r));

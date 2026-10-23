@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import com.iaf.console.kit.paging.Cursor;
+import com.iaf.console.kit.paging.CursorPaging;
 
 /**
  * A list query over an account's resources, the filters of {@code GET /v1/resources} plus a sort:
@@ -25,7 +26,7 @@ public record ResourceQuery(
         Cursor after) {
 
     /** The most items one page may hold, the contract's maximum. */
-    public static final int MAX_LIMIT = 500;
+    public static final int MAX_LIMIT = CursorPaging.MAX_PAGE_SIZE;
     /** The page size when the caller names none. */
     public static final int DEFAULT_LIMIT = 50;
 

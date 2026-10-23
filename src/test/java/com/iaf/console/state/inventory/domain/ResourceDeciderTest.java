@@ -153,6 +153,30 @@ class ResourceDeciderTest {
     }
 
     @Test
+    void anEventIsNamedForItsEnvelopeWhenItIsDecided() {
+        Resource p = pending();
+        ResourceEvent requested = ResourceDecider.mint(Fixtures.vm(), new Commands.Mint("vm", "global", "web-04", "create-vm", Fixtures.input("web-04"),
+                by("dana")), t(0));
+        assertThat(requested.id()).startsWith("evt_");
+        assertThat(requested.id()).isNotEqualTo(ResourceDecider.mint(Fixtures.vm(), new Commands.Mint("vm", "global", "web-05", "create-vm",
+                Fixtures.input("web-05"), by("dana")), t(0)).id());
+        assertThat(p.version()).isEqualTo(1);
+        assertThat(requested.withData(Json.object()).id()).isEqualTo(requested.id());
+        assertThat(requested.key()).isEqualTo("ResourceRequested:" + requested.wfrn() + ":1");
+    }
+
+    @Test
+    void aRegistrationDuringADeleteIsNoEvent() {
+        Resource a = active();
+        Resource deleting = ResourceFold.apply(a, ResourceDecider.requestDelete(a, new Commands.RequestDelete("job_9", "delete-vm", null, "done with it",
+                by("dana")), t(20)));
+        assertThat(ResourceDecider.registered(deleting, new Commands.Registration("job_1", "create-vm", "2.0.1", "vm-7", "vm-7", "web-03",
+                Fixtures.attributes("web-03", 4, 8), by("platform")), t(21))).isEmpty();
+        assertThat(ResourceDecider.registered(a, new Commands.Registration("job_1", "create-vm", "2.0.1", "vm-7", "vm-7", "web-03",
+                Fixtures.attributes("web-03", 4, 8), by("platform")), t(21))).isPresent();
+    }
+
+    @Test
     void aDeleteEndsInATombstoneThatRefusesEverything() {
         Resource a = active();
         Resource deleting = ResourceFold.apply(a, ResourceDecider.requestDelete(a, new Commands.RequestDelete("job_9", "delete-vm", null, "done with it",

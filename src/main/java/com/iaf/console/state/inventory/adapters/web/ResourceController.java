@@ -22,6 +22,7 @@ import org.springframework.web.server.ServerWebExchange;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
+import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
@@ -32,7 +33,6 @@ import com.iaf.console.state.inventory.application.InventoryQueries;
 import com.iaf.console.state.inventory.application.InventoryService;
 import com.iaf.console.state.inventory.domain.Json;
 import com.iaf.console.state.inventory.domain.Resource;
-import com.iaf.console.state.inventory.domain.ResourceEvent;
 import com.iaf.console.state.inventory.domain.ResourceIdentity;
 import com.iaf.console.state.inventory.domain.ResourceQuery;
 import com.iaf.console.state.inventory.domain.ResourceState;
@@ -152,7 +152,7 @@ public final class ResourceController {
             @RequestParam(required = false) String reveal,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {
         AccountScope scope = scopeOf(exchange, wfrn);
-        return queries.get(scope, wfrn, asOf, "sensitive".equals(reveal)).map(r -> {
+        return queries.get(scope, wfrn, asOf, revealing(exchange, reveal)).map(r -> {
             if (r.deleted() && asOf == null) {
                 return ResponseEntity.status(HttpStatus.GONE).<Object>body(r.tombstone());
             }
@@ -164,7 +164,7 @@ public final class ResourceController {
     }
 
     @GetMapping("/v1/wfrn/{wfrn}/events")
-    public Mono<Listing<ResourceEvent>> events(ServerWebExchange exchange, @PathVariable String wfrn,
+    public Mono<Listing<EventEnvelope>> events(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) String after,
             @RequestParam(required = false) String reveal) {
@@ -177,7 +177,7 @@ public final class ResourceController {
                 throw new IllegalArgumentException("after is a version number on a resource's log");
             }
         }
-        return queries.events(scope, wfrn, afterVersion, ResourceQuery.limitOf(limit), "sensitive".equals(reveal)).map(Listing::of);
+        return queries.events(scope, wfrn, afterVersion, ResourceQuery.limitOf(limit), revealing(exchange, reveal)).map(Listing::of);
     }
 
     @PostMapping("/v1/wfrn/{wfrn}:request-update")
@@ -260,6 +260,14 @@ public final class ResourceController {
         ConsolePrincipal principal = principal(exchange);
         ResourceIdentity id = ResourceIdentity.of(wfrn);
         return principal.scope(id.accountId(), id.region());
+    }
+
+    /**
+     * {@code reveal=sensitive} counts for the console's own services and for a call the BFF makes for an
+     * account admin; for anyone else it is ignored and the answer is masked, as the contract says.
+     */
+    private static boolean revealing(ServerWebExchange exchange, String reveal) {
+        return "sensitive".equals(reveal) && principal(exchange).mayReveal();
     }
 
     static ConsolePrincipal principal(ServerWebExchange exchange) {

@@ -21,9 +21,17 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
         groups = groups == null ? List.of() : List.copyOf(groups);
     }
 
+    /** The identity service's role of an account's admins; the BFF names it among a caller's {@code groups}. */
+    public static final String ACCOUNT_ADMIN = "account-admin";
+
     /** A principal that acts for no account: one of the console's own services. */
     public boolean internal() {
         return accountId == null;
+    }
+
+    /** Whether {@code reveal=sensitive} is honored for this caller: the console's own services, and an account's admins. */
+    public boolean mayReveal() {
+        return internal() || groups.contains(ACCOUNT_ADMIN);
     }
 
     /**

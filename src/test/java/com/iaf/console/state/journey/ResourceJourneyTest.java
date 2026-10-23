@@ -69,7 +69,7 @@ class ResourceJourneyTest extends DemoServiceTest {
         List<String> types = new ArrayList<>();
         events.get("items").forEach(e -> types.add(e.get("type").asText()));
         assertThat(types).startsWith("ResourceRequested", "ProvisioningStarted", "ProvisioningSucceeded");
-        assertThat(events.get("items").get(1).get("jobId").asText()).isEqualTo(create.jobId());
+        assertThat(events.get("items").get(1).get("data").get("jobId").asText()).isEqualTo(create.jobId());
 
         JsonNode listed = body(dana.get().uri("/v1/resources?type=vm&name=" + name).exchange().expectStatus().isOk());
         assertThat(listed.get("items")).hasSize(1);
