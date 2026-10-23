@@ -105,6 +105,21 @@ public class Sessions {
 
     /** Switches account and/or region; an account the user is not in answers 404, an unknown region 400. */
     public Mono<Session> switchTo(Session session, String accountId, String region) {
+        // no write brings back a session logged out meanwhile
+        return switched(session, accountId, region)
+                .flatMap(switched -> updated(switched).switchIfEmpty(Mono.error(CurrentSession.NoSessionException::new)));
+    }
+
+    /**
+     * The session in another account and/or region, checked as a switch is (an account the user is
+     * not in is a 404, an unknown region a 400) but not saved: a bearer call names its own per
+     * call (decision 31).
+     */
+    public Mono<Session> switched(Session session, String accountId, String region) {
+        return Mono.defer(() -> switchedNow(session, accountId, region));
+    }
+
+    private Mono<Session> switchedNow(Session session, String accountId, String region) {
         String nextAccount = accountId == null || accountId.isBlank() ? session.accountId() : accountId.trim();
         AccountMembership membership = session.membership(nextAccount).orElseThrow(() -> NotFoundException.of("account", nextAccount));
         String nextRegion;
@@ -122,8 +137,7 @@ public class Sessions {
             if (!names.contains(chosenRegion)) {
                 return Mono.error(new IllegalArgumentException("unknown region " + chosenRegion));
             }
-            Session switched = session.switchedTo(nextAccount, chosenRegion);
-            return updated(switched).switchIfEmpty(Mono.error(CurrentSession.NoSessionException::new));
+            return Mono.just(session.switchedTo(nextAccount, chosenRegion));
         });
     }
 

@@ -89,6 +89,16 @@ console:
       actions: ["*:delete"]         # <service>:<verb> patterns that need a fresh authentication
   organization:
     admin-groups: []                # identity provider groups whose members are organization admins (decision 34); empty: nobody
+  clients:                          # the CLI and SDK sign-in with the device grant (decision 31)
+    verification-uri: http://localhost:5173/#/device   # the web app's page where a person approves a code
+    device-code-ttl: 10m            # how long a device code waits for the person's decision
+    interval: 5s                    # the least time between two polls; each slow_down adds 5s
+    grants-per-minute: 10           # sign-ins one address may start a minute (429 slow_down past it)
+    access-token-ttl: 15m           # how long an access token lives
+    session-ttl: 12h                # an API session ends this long after its approval, whatever the refreshes
+    idle-timeout: 8h                # and this long after its last refresh
+    session-check: 1m               # how stale a bearer call's view of its API session may be
+    proxy-hops: 0                   # proxies in front that add to X-Forwarded-For; 0 reads the connection's address
   identity:
     url: http://localhost:18083     # the identity service; empty means the in-process demo stand-in under /demo-identity (demo profile)
     service-name: console-identity-service

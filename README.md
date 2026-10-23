@@ -77,6 +77,10 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.session.roles-refresh-interval` | How long a session uses the memberships `principals:resolve` answered before its next request reads them again (5 minutes); never past the earliest `accounts[].elevations[].until`, and sooner after an identity change |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
 | `console.organization.admin-groups` | The identity provider groups whose members are organization admins (decision 34), read from the sign-in's groups claim; empty by default (nobody), `console-org-admins` in the demo |
+| `console.clients.verification-uri` | The web app's page where a person approves a CLI or SDK sign-in (`http://localhost:5173/#/device`); the CLI shows it with the user code |
+| `console.clients.device-code-ttl`, `interval`, `grants-per-minute` | How long a device code waits for the person (10 minutes), the least time between two polls (5 s; each `slow_down` adds 5 s), and how many sign-ins one address may start a minute (10) |
+| `console.clients.access-token-ttl`, `session-ttl`, `idle-timeout`, `session-check` | A CLI's access token lives 15 minutes; its API session ends 12 h after the approval or 8 h after the last refresh; a bearer call reads its API session again at most once a minute |
+| `console.clients.proxy-hops` | How many proxies in front of the BFF add to `X-Forwarded-For`; the client's address is that many entries from its right. With 0 it is the connection's address, which on Kubernetes Spring Boot already takes from the header's first entry, one the client writes itself: set it to 1 behind the ingress |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
 | `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
@@ -137,6 +141,10 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 * **Service tokens** (hub decision 23): a console service that calls another on its own gets a
   token from `POST /internal/v1/token`, never a copy of the signing key or a static token. See
   Service tokens below.
+* **The CLI and the SDKs** (decision 31) sign in with the device grant and call with a bearer
+  token the BFF signs with its trust key (`typ: at+jwt`, `aud: console-api`), which no other
+  service accepts and in whose place the BFF accepts no internal token. A bearer call reads no
+  cookie, so it needs no CSRF token. See API clients below.
 * **Every refusal names its layer**: a 403 carries `denied` with `layer` `console-iam` (the
   account's policies: action, resource pattern, role, policy, statement, suggested role,
   requestable) or `platform` (the service account's missing scope).
@@ -150,6 +158,9 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | Path | What |
 | --- | --- |
 | `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` | The sign-in |
+| `POST /auth/device`, `POST /auth/token`, `POST /auth/revoke` | The CLI and SDK sign-in (decision 31): start a device grant, redeem it or refresh, sign out; form-encoded, with RFC 6749's error bodies |
+| `GET /console/v1/device-grants/{userCode}`, `POST …:approve`, `POST …:deny` | The web app's `#/device` page: the grant a user code names, and the person's decision on it (browser only; approving needs a fresh sign-in) |
+| `GET /console/v1/api-sessions`, `DELETE /console/v1/api-sessions/{apiSessionId}` | The person's open CLI and SDK sign-ins, newest first, and signing one out |
 | `GET, PUT /console/v1/session`, `GET /console/v1/accounts`, `GET /console/v1/regions` | The session (with `decisions` on the account's IAM writes, quota and access requests), the memberships, the regions |
 | `GET /console/v1/types`, `GET /console/v1/types/{key}` | The descriptors, with `ETag` and `If-None-Match`, every action with `allowed` and `denied` |
 | `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch`, `POST …:batch:preview` | The account's resources of a type (`q` through the search index, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create with its required tags, its preview, a batch in waves, the batch's preview with each row's problems and what the rows reach |
@@ -519,6 +530,61 @@ requestable and suggests no role, so the web offers no Request access for it. An
 role held for a while (an elevation or break-glass access) gave is `elevated: true` in the
 session's `decisions` and is not cached.
 
+## API clients (decision 31, the BFF's side)
+
+The console CLI and the SDKs sign in with OAuth's device grant (RFC 8628); the BFF is the
+authorization server of its own API, so no new client of the identity provider is needed.
+
+1. The CLI posts `client_id=console-cli` (or `console-sdk`) to `POST /auth/device` and shows the
+   person `user_code` (eight letters from `BCDFGHJKLMNPQRSTVWXZ`, `XXXX-XXXX`) and
+   `verification_uri_complete`, the web app's `#/device` page with the code filled in. It keeps
+   `device_code`, 32 random bytes, to itself.
+2. The page reads the grant (`GET /console/v1/device-grants/{userCode}`: the client, where it asked
+   from, when it expires) and the person approves or denies it in their signed-in browser.
+   Approving needs a sign-in as fresh as a delete does (`console.auth.step-up.max-age`); a grant
+   is decided once and never after its ten minutes.
+3. Meanwhile the CLI polls `POST /auth/token` with the device code every `interval` seconds:
+   `authorization_pending`, `slow_down` when sooner (which adds 5 s to that grant's interval),
+   `access_denied`, `expired_token`, and once approved the tokens. A device code is redeemed once;
+   brought back after that, it ends the API session it opened.
+
+The tokens are a 15-minute access token and a refresh token, in an **API session** of 12 hours
+from the approval (8 without a refresh). The access token is an ES256 JWT of the BFF's trust key,
+header `typ: at+jwt` (RFC 9068): `iss` the BFF, `aud` `console-api` alone, `sub` the person's
+subject, `sid` the API session (`aps_` and a ULID), `client_id`, `auth_time` (the browser sign-in
+that approved the grant), `iat`, `exp`, `jti`. The trust slice signs it and checks it against the
+current and the previous key; the key never leaves that slice. Every refresh answers a new refresh
+token and ends the old one; a rotated refresh token presented again revokes the whole API session
+(OAuth 2.1's reuse detection), and a refresh reads the person's memberships from the identity
+service again. `POST /auth/revoke` signs a CLI out, and the person sees and signs out their CLIs
+at `/console/v1/api-sessions`.
+
+**A bearer call** is `Authorization: Bearer <access token>` on `/console/v1/**`. Its session is
+the API session's person and memberships in the account `X-Console-Account` names and the region
+`X-Console-Region` names (else the API session's own; an account the person is not in is a 403
+`account.not-member`, an unknown region a 400). It reads no cookie and so needs no CSRF token; a
+call with both a bearer token and the session cookie is a 400 `auth.ambiguous`. A token that is
+expired, of a revoked or ended API session (read again at most once a `session-check`, at once on
+the instance that revoked it), or not the console API's own (another key, audience or type, or an
+internal token) is a 401 with `WWW-Authenticate: Bearer error="invalid_token"`. Signing in
+(`/auth/login`), switching the browser session (`PUT /console/v1/session`) and deciding device
+grants are browser-only: 403 `browser.only`. A bearer call's step-up time is its `auth_time`, so a
+delete more than `max-age` after the approval is the usual 403 `step-up.required`, with
+`detail.hint` "run `console login` again" instead of a login path.
+
+**What is kept**: only the SHA-256 of a device code or a refresh token, compared in constant time;
+no code or token is ever logged (the access log writes a user code as `{userCode}`). The stores
+are in memory, or with the `mongo` profile the `device_grants` and `api_sessions` collections, each
+with a TTL index (a grant ten minutes past its expiry, a session at its end). Ten sign-ins a minute
+from one address at most (`proxy-hops` says how to read the address behind proxies).
+
+**Limits**: a refresh resolves the person with their subject and the email, name and groups the
+identity service answered at the approval, since the identity provider is not asked again until
+the next `console login`; the identity service's own membership changes show at the next refresh. Two refreshes with one refresh
+token at the same moment let one through and refuse the other (`invalid_grant`) without ending the
+session, so the CLI should refresh one at a time: that token sent once more ends it. Automation
+keys (`grant_type=client_credentials` with the identity service's access keys) come next.
+
 ## Service tokens (hub decision 23)
 
 The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
@@ -570,7 +636,7 @@ demos keep their dev headers.
 
 ## Layout
 
-One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
+One slice per concern under `com.iaf.console.bff`: `session`, `clients`, `trust`, `access`, `types`,
 `resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `drift`,
 `assistant`, `iam` (with the organization pages), `preferences`, `platform`, `identity`, `demo`, and `common` for the error handling and the
 service pass-through (`common.relay`) shared by every slice. Each slice is `domain` (no Spring),
@@ -595,4 +661,6 @@ internal token and the MongoDB URI, and optionally the copilot's Devin API key
 with the `mongo` profile, and the `kafka` profile where the console's Kafka is reachable. Service
 tokens are on by default (`config.serviceTokens`): set `kubernetes.issuer` to the cluster's
 service-account issuer (`kubectl get --raw /.well-known/openid-configuration`) and give each
-client's pods a projected service-account token with audience `console-bff`.
+client's pods a projected service-account token with audience `console-bff`. For the CLI sign-in,
+set `CONSOLE_CLIENTS_VERIFICATION_URI` to the web app's `#/device` page and
+`CONSOLE_CLIENTS_PROXY_HOPS` to the proxies in front (1 behind the ingress) in `config.extraEnv`.
