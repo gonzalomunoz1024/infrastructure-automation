@@ -244,6 +244,44 @@ headroom, not the production numbers: those come from the same run against the l
 service needs `--console.search.budget.per-second=90 --console.search.budget.burst=180` to stand for
 three replicas.
 
+
+### The state side
+
+**`StateSimulation`** (`./gradlew gatlingRun --simulation com.iaf.console.search.load.StateSimulation`)
+is the same people against the state service, the rows behind every list:
+
+- They open a list, newest changes first, by name or newest created, and sometimes take the next
+  page. They filter one by tag, by state or by name prefix, open a resource from a list, read its
+  log, or read the account's trail.
+- Beside them, creations arrive at `load.creationsPerHour`, 10,000 an hour by default (the target).
+  Each one is a mint, as the BFF sends it.
+- The accounts are laid out as `Estate` lays them out. The state service's own
+  `./gradlew seedEstate` writes them, with the same `load.size`, `load.accounts`, `load.seed` and
+  `load.largestShare`, through the service's inventory into its MongoDB (on
+  `console-state-service--load`).
+- The state service takes only the BFF's tokens (hub decision 35), so the simulation plays the BFF.
+  It serves a JWKS on `load.jwksPort` (18999) and signs each person's token. Start the service with
+  that JWKS.
+- The assertions are the targets:
+  - every list, a resource and its log, and a mint: p95 under 300 ms;
+  - the trail: p95 under 1 s;
+  - every creation of the run accepted;
+  - under 1% failed.
+
+```sh
+# in the state service: the same estate into its MongoDB, through its own inventory
+./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.mongo=mongodb://mongo:27017
+# the service with ingestion off, the simulation's JWKS, the platform's resource types from the fake
+java -jar console-state-service.jar --spring.profiles.active=demo,mongo --console.auth.dev-headers=false \
+  --console.ingest.enabled=false --console.auth.jwks-uri=http://gatling-host:18999/.well-known/jwks.json
+# here: 1,000 people for 15 minutes, with 10,000 creations an hour
+./gradlew gatlingRun --simulation com.iaf.console.search.load.StateSimulation -Pload.size=10000000 -Pload.accounts=2000 \
+  -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M -Pload.stateUrl=http://console-state-service:18082
+```
+
+A smoke run against the in-memory demo (20 people for 30 seconds, mints at 36,000 an hour) passed
+every assertion with no failures. The 10-million-resource run needs the load environment's MongoDB.
+
 ## Build and test
 
 ```sh
