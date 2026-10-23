@@ -32,6 +32,7 @@ import com.iaf.console.fake.identity.domain.RequestContext;
 import com.iaf.console.fake.providers.domain.RecordedWorld;
 import com.iaf.console.fake.quotas.application.Quotas;
 import com.iaf.console.fake.registry.application.Registry;
+import com.iaf.console.fake.registry.domain.ResourceRecord;
 import com.iaf.console.fake.runs.domain.ApprovalRecord;
 import com.iaf.console.fake.runs.domain.BatchState;
 import com.iaf.console.fake.runs.domain.Job;
@@ -657,6 +658,25 @@ public final class Jobs {
                 .filter(job -> sees(caller, job) && job.updatedNs() > updatedAfterNs)
                 .sorted(Comparator.comparingLong(Job::updatedNs).thenComparing(Job::id))
                 .toList();
+    }
+
+    /** Whether a running job holds a resource: its context names the resource's wfrn, or its input names the resource (P-23's resource.busy). */
+    public boolean holds(ResourceRecord record) {
+        for (Job job : jobs.values()) {
+            if (job.finished()) {
+                continue;
+            }
+            JobContext context = job.context();
+            if (context != null && record.wfrn() != null && record.wfrn().equals(context.wfrn())) {
+                return true;
+            }
+            for (JsonNode value : job.input()) {
+                if (value.isTextual() && (record.answersTo(value.asText()) || value.asText().equals(record.wfrn()))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public List<Job> all() {

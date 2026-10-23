@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -22,6 +23,7 @@ import com.iaf.console.fake.content.domain.RegionDef;
 import com.iaf.console.fake.content.domain.ResourceTypeDef;
 import com.iaf.console.fake.events.application.EventFeed;
 import com.iaf.console.fake.identity.domain.Caller;
+import com.iaf.console.fake.identity.domain.Delegation;
 import com.iaf.console.fake.identity.domain.ReadScopes;
 import com.iaf.console.fake.registry.domain.Registration;
 import com.iaf.console.fake.registry.domain.ResourceRecord;
@@ -32,7 +34,9 @@ import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.kit.events.EventKeys;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.wfrn.MintedIds;
+import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
+import com.iaf.console.wfrn.WfrnException;
 
 /**
  * The resource registry with P-05's rules: collision-safe keys, wfrns bound from the job's context
@@ -40,6 +44,9 @@ import com.iaf.console.wfrn.Wfrn;
  * by id, lineage, the backfill and the collision report.
  */
 public final class Registry {
+
+    /** The job id of the registration a re-home emits: no job wrote it. */
+    private static final String REHOME = "rehome";
 
     /** The most resources one page holds. */
     public static final int MAX_LIMIT = 500;
@@ -71,6 +78,10 @@ public final class Registry {
         public static Filter none() {
             return new Filter(null, null, null, null, null, null);
         }
+    }
+
+    /** What a re-home did: the record, and whether it moved (false for the same body again). */
+    public record Rehomed(ResourceRecord record, boolean moved) {
     }
 
     /** One page of resources and the cursor of the next, null on the last. */
@@ -214,6 +225,11 @@ public final class Registry {
     }
 
     private void emitRegistered(ResourceRecord record, Registrar by, boolean created, Instant at) {
+        emitRegistered(record, by, created, at, null);
+    }
+
+    /** {@code resource.registered}; {@code previousWfrn} names the wfrn a re-home moved the record from (P-23). */
+    private void emitRegistered(ResourceRecord record, Registrar by, boolean created, Instant at, String previousWfrn) {
         ObjectNode data = Json.object();
         data.put("id", record.id());
         data.put("type", record.type());
@@ -226,6 +242,7 @@ public final class Registry {
         putIf(data, "accountId", record.accountId());
         putIf(data, "region", record.region());
         putIf(data, "providerId", record.providerId());
+        putIf(data, "previousWfrn", previousWfrn);
         emit("resource.registered", record, by, data, at);
     }
 
@@ -453,6 +470,75 @@ public final class Registry {
         out.put("minted", minted);
         out.put("skipped", skipped);
         return out;
+    }
+
+    /**
+     * Moves a record to another account under a new wfrn (P-23). The wfrn's account segment must be
+     * {@code accountId}, its type and region the record's; the same body again changes nothing. 409
+     * {@code resource.rehomed} once the record moved to another wfrn, {@code resource.busy} while
+     * {@code busy} says a running job holds it.
+     */
+    public synchronized Rehomed rehome(String id, String wfrn, String accountId, Caller caller, Predicate<ResourceRecord> busy) {
+        Wfrn target;
+        try {
+            target = Wfrn.parse(wfrn);
+        } catch (WfrnException e) {
+            throw ApiException.badRequest("wfrn.invalid: " + e.getMessage());
+        }
+        if (accountId == null || !AccountScope.isAccountId(accountId)) {
+            throw ApiException.badRequest("accountId must be a 12-digit account id");
+        }
+        ResourceRecord record = find(id).filter(r -> seesForRehome(caller, r)).orElseThrow(() -> ApiException.notFound("resource", id));
+        String formatted = target.format();
+        if (formatted.equals(record.wfrn()) && accountId.equals(record.accountId())) {
+            return new Rehomed(record, false);
+        }
+        if (!target.account().equals(accountId)) {
+            throw ApiException.badRequest("the wfrn's account " + target.account() + " is not accountId " + accountId);
+        }
+        if (!target.type().equals(record.type())) {
+            throw ApiException.badRequest("the wfrn names a " + target.type() + ", the record is a " + record.type());
+        }
+        if (record.wfrn() == null) {
+            throw ApiException.badRequest("resource " + record.id() + " has no wfrn to move from; backfill it first");
+        }
+        if (!target.region().equals(record.region())) {
+            throw ApiException.badRequest("the wfrn's region " + target.region() + " is not the record's " + record.region()
+                    + "; a move between regions is a new resource");
+        }
+        if (!record.previousWfrns().isEmpty()) {
+            throw new ApiException(409, "resource.rehomed: the record already moved to " + record.wfrn(), Map.of("wfrn", record.wfrn()), null);
+        }
+        String holder = byWfrn.get(formatted);
+        if (holder != null && !holder.equals(record.id())) {
+            throw ApiException.conflict("wfrn.taken: " + formatted + " names resource " + holder);
+        }
+        if (busy.test(record)) {
+            throw ApiException.conflict("resource.busy: a running job holds " + record.id() + " under " + record.wfrn());
+        }
+        long ns = clock.nanos();
+        Instant at = FakeClock.fromNanos(ns);
+        String from = record.wfrn();
+        record.rehome(formatted, accountId, at, ns);
+        byWfrn.put(formatted, record.id());
+        Delegation delegation = caller.delegation();
+        EventEnvelope.OnBehalfOf person = delegation == null ? null : new EventEnvelope.OnBehalfOf(delegation.userId(), delegation.name(),
+                delegation.email());
+        ObjectNode origin = record.createdBy();
+        Registrar by = new Registrar(REHOME, origin == null ? REHOME : origin.path("workflow").asText(REHOME), origin == null ? "0"
+                : origin.path("version").asText("0"), caller.actor(), record.owner(), new JobContext(accountId, record.region(), formatted, null,
+                        Map.of()), person, null);
+        emitRegistered(record, by, false, at, from);
+        return new Rehomed(record, true);
+    }
+
+    /** A caller who saw the record before it moved still finds it, so the same body again answers 200 rather than 404. */
+    private static boolean seesForRehome(Caller caller, ResourceRecord record) {
+        if (sees(caller, record)) {
+            return true;
+        }
+        return record.previousWfrns().stream()
+                .anyMatch(old -> ReadScopes.seesResource(caller, record.owner(), record.visibility(), Wfrn.parse(old).account()));
     }
 
     /** The ids whose history shows an overwrite: two jobs through different providers wrote one id. */

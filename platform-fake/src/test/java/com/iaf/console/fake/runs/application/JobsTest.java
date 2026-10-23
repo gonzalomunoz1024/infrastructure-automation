@@ -235,6 +235,20 @@ class JobsTest {
     }
 
     @Test
+    void aJobWaitingOnAResourceHoldsItUntilItEnds() {
+        Job vmJob = start(console, "create-vm", vmInput("web-07", "small", "prod"));
+        await(vmJob, Job::finished);
+        var vm = fake.registry().find(vmJob.output().path("vmId").asText()).orElseThrow();
+        assertThat(jobs.holds(vm)).isFalse();
+        Job update = start(console, "update-vm", Json.object().put("vmId", vm.id()).put("cpu", 4).put("reason", "load"));
+        await(update, j -> j.status() == JobStatus.WAITING_APPROVAL);
+        assertThat(jobs.holds(vm)).isTrue();
+        jobs.cancel(update, DevUsers.byName("gonzalo"));
+        await(update, Job::finished);
+        assertThat(jobs.holds(vm)).isFalse();
+    }
+
+    @Test
     void aFailedCreateIsCompensatedAndTheCatchRuns() {
         fake.world().mutate(Json.read("{\"provider\":\"dns-records\",\"action\":\"record.create\",\"match\":{\"id\":\"*\"},"
                 + "\"fail\":{\"class\":\"zone_not_found\",\"message\":\"no zone\",\"retryable\":false,\"times\":10}}"));

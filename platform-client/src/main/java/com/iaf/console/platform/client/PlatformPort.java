@@ -38,6 +38,7 @@ import com.iaf.console.platform.model.QuotaUpdate;
 import com.iaf.console.platform.model.Region;
 import com.iaf.console.platform.model.RegionAvailability;
 import com.iaf.console.platform.model.RerunRequest;
+import com.iaf.console.platform.model.RehomeRequest;
 import com.iaf.console.platform.model.Resource;
 import com.iaf.console.platform.model.ResourceType;
 import com.iaf.console.platform.model.RetryRequest;
@@ -113,6 +114,14 @@ public interface PlatformPort {
     Mono<MetricsResult> getResourceMetrics(String id, MetricsRequest request);
 
     Mono<ObserveBatchResult> observeResources(ObserveBatchRequest request);
+
+    /**
+     * P-23: moves a registry record to another account under the wfrn the console gave it there.
+     * The default fails, so stand-ins written before P-23 keep compiling; {@link PlatformClient} calls the platform.
+     */
+    default Mono<Resource> rehomeResource(String id, RehomeRequest request, RequestOptions options) {
+        return Mono.error(new UnsupportedOperationException("rehomeResource"));
+    }
 
     Mono<BackfillResult> backfillWfrns(BackfillRequest request, RequestOptions options);
 

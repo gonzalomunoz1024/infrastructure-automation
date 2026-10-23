@@ -289,6 +289,15 @@ or the push's range, else the commits since `origin/main`). `publish` runs on a 
   `observe.map` and skips fields the provider did not answer; a type without a `list` block falls
   back to its `discover` action and answers the managed items; metrics answer 404
   `observe.notSupported` when the type has none.
+- **Re-home (P-23).** `POST /api/v1/resources/{id}:rehome` takes `{ wfrn, accountId }` from admins
+  or a service account holding `resources:rehome` (the `console` preset). The record keeps its id,
+  region and lineage, takes the new wfrn and account, and lists the old wfrn in `previousWfrns`;
+  `by-wfrn` still answers the old name with `Content-Location` naming the current one, and the move
+  emits `resource.registered` with `data.previousWfrn`. The same body again is a 200 that changes
+  nothing (the caller that moved it still finds it). A record that already moved answers 409
+  `resource.rehomed`; one an unfinished job holds (its context names the record's wfrn or its input
+  names the record) answers 409 `resource.busy`. The fake keeps no audit chain for a move, since its
+  chains belong to jobs.
 - **Evidence (P-12).** Every job opens a hash chain (`requested`, `policy`, `approval`,
   `decision`, `step`, `changed`, `closed`), sealed when the job ends, verified by `:verify`,
   exported as JSON or a small hand-written PDF; the evidence pack is a zip and, as the contract

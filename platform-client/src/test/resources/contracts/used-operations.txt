@@ -71,6 +71,7 @@ patchVm
 patchVmBatch
 patchVmPreview
 putQuota
+rehomeResource
 rejectApproval
 rerunJob
 restartVm

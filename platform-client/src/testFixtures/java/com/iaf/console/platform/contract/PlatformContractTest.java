@@ -75,6 +75,7 @@ import com.iaf.console.platform.model.Quota;
 import com.iaf.console.platform.model.QuotaUpdate;
 import com.iaf.console.platform.model.Region;
 import com.iaf.console.platform.model.RegionAvailability;
+import com.iaf.console.platform.model.RehomeRequest;
 import com.iaf.console.platform.model.RerunRequest;
 import com.iaf.console.platform.model.Resource;
 import com.iaf.console.platform.model.ResourceType;
@@ -87,6 +88,7 @@ import com.iaf.console.platform.model.ServiceAccountRotated;
 import com.iaf.console.platform.model.SkipRequest;
 import com.iaf.console.platform.model.StartJobRequest;
 import com.iaf.console.platform.model.Verification;
+import com.iaf.console.wfrn.Wfrn;
 
 import reactor.core.publisher.Mono;
 
@@ -444,6 +446,57 @@ public abstract class PlatformContractTest {
         assertThat(backfill.minted()).isGreaterThanOrEqualTo(0);
         assertThat(backfill.items()).hasSize(backfill.minted());
         assertThat(backfill.items()).allMatch(i -> i.wfrn() != null && i.wfrn().contains(platform.accountId()));
+    }
+
+    @Test
+    void aRecordMovesToAnotherAccountAndKeepsItsOldName() {
+        assumeTrue(platform.otherAccountId() != null, "no second account to move a resource to");
+        Accepted<JobAccepted> accepted = block(console().start(PlatformOperation.CREATE_VM, Map.of(), vmInput("ct-move-" + nonce(), "small", "dev"),
+                consoleOptions(null)));
+        JobDetail job = awaitFinished(console(), accepted.body().jobId());
+        assertThat(job.status()).as("the VM to move: %s", job).isEqualTo(JobStatus.SUCCEEDED);
+        Resource before = block(console().getResource((String) job.output().get("vmId")));
+        Wfrn from = Wfrn.parse(before.wfrn());
+        String to = new Wfrn(from.partition(), from.service(), from.region(), platform.otherAccountId(), from.type(), from.id()).format();
+        long high = block(feedReader().snapshotResources(null, null, 1)).highWaterSeq();
+
+        Resource moved = block(console().rehomeResource(before.id(), new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()));
+        assertThat(moved.id()).isEqualTo(before.id());
+        assertThat(moved.wfrn()).isEqualTo(to);
+        assertThat(moved.accountId()).isEqualTo(platform.otherAccountId());
+        assertThat(moved.region()).isEqualTo(before.region());
+        assertThat(moved.builtFrom()).isEqualTo(before.builtFrom());
+        assertThat(moved.previousWfrns()).containsExactly(before.wfrn());
+        Resource again = block(console().rehomeResource(before.id(), new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()));
+        assertThat(again.wfrn()).as("the same body again changes nothing").isEqualTo(to);
+        assertThat(again.updatedAt()).isEqualTo(moved.updatedAt());
+
+        Resource byOldName = block(admin().getResourceByWfrn(before.wfrn()));
+        assertThat(byOldName.id()).isEqualTo(before.id());
+        assertThat(byOldName.wfrn()).isEqualTo(to);
+        assertThat(block(admin().getResourceByWfrn(to)).id()).isEqualTo(before.id());
+        if (platform.otherConsole() != null) {
+            assertThat(block(platform.otherConsole().getResource(before.id())).accountId()).isEqualTo(platform.otherAccountId());
+            assertThat(failure(console().getResource(before.id())).isNotFound()).as("the old account no longer sees it").isTrue();
+        }
+
+        EventPage registered = block(feedReader().listEvents(high, 100, List.of("resource.registered")));
+        FeedEvent event = registered.items().stream().filter(e -> before.id().equals(e.aggregateId())).findFirst()
+                .orElseThrow(() -> new AssertionError("no resource.registered for the move"));
+        assertThat(event.data().path("wfrn").asText()).isEqualTo(to);
+        assertThat(event.data().path("accountId").asText()).isEqualTo(platform.otherAccountId());
+        assertThat(event.data().path("previousWfrn").asText()).isEqualTo(before.wfrn());
+        assertThat(registered.items()).filteredOn(e -> before.id().equals(e.aggregateId())).as("one move, one event").hasSize(1);
+
+        String elsewhere = new Wfrn(from.partition(), from.service(), from.region(), platform.accountId(), from.type(), from.id()).format();
+        PlatformException rehomed = failure(console().rehomeResource(before.id(), new RehomeRequest(elsewhere, platform.accountId()),
+                RequestOptions.none()));
+        assertThat(rehomed.isConflict()).isTrue();
+        assertThat(rehomed.errorText()).contains("resource.rehomed");
+        PlatformException wrongAccount = failure(admin().rehomeResource(vmId, new RehomeRequest(to, platform.accountId()), RequestOptions.none()));
+        assertThat(wrongAccount.isBadRequest()).as("the wfrn's account segment must be accountId").isTrue();
+        assertThat(failure(console().rehomeResource("vm-does-not-exist", new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()))
+                .isNotFound()).isTrue();
     }
 
     // jobs

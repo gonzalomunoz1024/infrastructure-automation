@@ -179,7 +179,7 @@ public final class PlatformFake implements AutoCloseable {
         this.jobs = new Jobs(clock, ids, content, registry, events, world, quotas, audit, b.stepDelay);
         RouterFunction<ServerResponse> all = new IdentityRoutes(serviceAccounts, commands).routes()
                 .and(new ContentRoutes(content).routes())
-                .and(new ResourceRoutes(registry, content, commands).routes())
+                .and(new ResourceRoutes(registry, content, commands, jobs::holds).routes())
                 .and(new ObserveRoutes(observer, registry, content).routes())
                 .and(new JobRoutes(jobs, content, commands, events).routes())
                 .and(new EventRoutes(events, registry, jobs).routes())

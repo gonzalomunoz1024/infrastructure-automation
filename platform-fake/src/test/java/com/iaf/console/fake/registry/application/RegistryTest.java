@@ -13,6 +13,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.fake.common.ApiException;
 import com.iaf.console.fake.common.FakeClock;
 import com.iaf.console.fake.common.Ids;
 import com.iaf.console.fake.common.Json;
@@ -23,6 +24,7 @@ import com.iaf.console.fake.identity.domain.DevUsers;
 import com.iaf.console.fake.registry.domain.ResourceRecord;
 import com.iaf.console.fake.runs.domain.JobContext;
 import com.iaf.console.fake.runs.domain.StepFailure;
+import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.wfrn.MintedIds;
 import com.iaf.console.wfrn.Wfrn;
 
@@ -30,6 +32,7 @@ class RegistryTest {
 
     private static final ContentStore CONTENT = ContentStore.load();
     private static final String ACCOUNT = "123456789012";
+    private static final String OTHER = "222222222222";
 
     private final FakeClock clock = new FakeClock(Clock.fixed(Instant.parse("2026-10-23T10:00:00Z"), ZoneOffset.UTC));
     private final Ids ids = Ids.seeded(clock.clock(), 11);
@@ -125,5 +128,91 @@ class RegistryTest {
         assertThat(rest.next()).isNull();
         assertThat(registry.visible("vm-6", console)).isEmpty();
         assertThat(registry.visible("vm-6", DevUsers.byName("gonzalo"))).isPresent();
+    }
+
+    @Test
+    void aRehomeMovesTheRecordAndKeepsItsOldNameAsAnAlias() {
+        JobContext context = new JobContext(ACCOUNT, "global", null, null, Map.of());
+        ResourceRecord image = registry.register(new Registry.Request("image", "img-7", null, Json.object().put("templateId", "tpl"), List.of()),
+                by("job-12", context), null).record();
+        ResourceRecord record = registry.register(new Registry.Request("vm", "vm-7001", null, attributes("web"), List.of(image.id())),
+                by("job-13", context), null).record();
+        String from = record.wfrn();
+        Wfrn old = Wfrn.parse(from);
+        String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
+        long seq = events.lastSeq();
+
+        Registry.Rehomed moved = registry.rehome(record.id(), to, OTHER, DevUsers.byName("gonzalo"), r -> false);
+        assertThat(moved.moved()).isTrue();
+        assertThat(record.wfrn()).isEqualTo(to);
+        assertThat(record.accountId()).isEqualTo(OTHER);
+        assertThat(record.region()).isEqualTo("global");
+        assertThat(record.builtFrom()).containsExactly(image.id());
+        assertThat(record.previousWfrns()).containsExactly(from);
+        assertThat(record.document().path("previousWfrns").get(0).asText()).isEqualTo(from);
+        assertThat(registry.byWfrn(from)).contains(record);
+        assertThat(registry.byWfrn(to)).contains(record);
+        assertThat(registry.list(new Registry.Filter(null, null, null, null, from, null), DevUsers.byName("gonzalo"))).isEmpty();
+
+        List<EventEnvelope> emitted = events.list(seq, 10, List.of("resource."), DevUsers.byName("gonzalo"));
+        assertThat(emitted).hasSize(1);
+        assertThat(emitted.get(0).type()).isEqualTo("resource.registered");
+        assertThat(emitted.get(0).data().path("wfrn").asText()).isEqualTo(to);
+        assertThat(emitted.get(0).data().path("accountId").asText()).isEqualTo(OTHER);
+        assertThat(emitted.get(0).data().path("previousWfrn").asText()).isEqualTo(from);
+        assertThat(emitted.get(0).data().path("created").asBoolean()).isFalse();
+        assertThat(emitted.get(0).context().accountId()).isEqualTo(OTHER);
+
+        Registry.Rehomed again = registry.rehome(record.id(), to, OTHER, DevUsers.byName("gonzalo"), r -> true);
+        assertThat(again.moved()).as("the same body again changes nothing, even while a job runs").isFalse();
+        assertThat(events.list(seq, 10, List.of("resource."), DevUsers.byName("gonzalo"))).hasSize(1);
+
+        String third = new Wfrn(old.partition(), old.service(), old.region(), "333333333333", old.type(), old.id()).format();
+        assertThatThrownBy(() -> registry.rehome(record.id(), third, "333333333333", DevUsers.byName("gonzalo"), r -> false))
+                .isInstanceOf(ApiException.class).hasMessageContaining("resource.rehomed")
+                .satisfies(e -> assertThat(((ApiException) e).status()).isEqualTo(409));
+    }
+
+    @Test
+    void aRehomeIsRefusedForABadNameOrWhileAJobHoldsTheRecord() {
+        JobContext context = new JobContext(ACCOUNT, "global", null, null, Map.of());
+        ResourceRecord record = registry.register(new Registry.Request("vm", "vm-7101", null, attributes("db"), List.of()), by("job-14", context), null)
+                .record();
+        Wfrn old = Wfrn.parse(record.wfrn());
+        String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
+        Caller admin = DevUsers.byName("gonzalo");
+        assertThat(status(() -> registry.rehome(record.id(), to, ACCOUNT, admin, r -> false))).as("account segment").isEqualTo(400);
+        String image = new Wfrn(old.partition(), old.service(), old.region(), OTHER, "image", old.id()).format();
+        assertThat(status(() -> registry.rehome(record.id(), image, OTHER, admin, r -> false))).as("type").isEqualTo(400);
+        assertThat(status(() -> registry.rehome(record.id(), "not-a-wfrn", OTHER, admin, r -> false))).as("malformed").isEqualTo(400);
+        assertThat(status(() -> registry.rehome("vm-nope", to, OTHER, admin, r -> false))).isEqualTo(404);
+        assertThatThrownBy(() -> registry.rehome(record.id(), to, OTHER, admin, r -> true)).hasMessageContaining("resource.busy");
+        assertThat(record.wfrn()).as("nothing moved").isEqualTo(old.format());
+        Caller elsewhere = new Caller("sa-2", "console", null, List.of("team-data"), List.of(), false, Caller.SERVICE, Set.of("resources:rehome"),
+                "210987654321", null);
+        assertThat(status(() -> registry.rehome(record.id(), to, OTHER, elsewhere, r -> false))).as("another account's caller").isEqualTo(404);
+    }
+
+    @Test
+    void theCallerThatMovedARecordStillFindsItToRepeatTheMove() {
+        JobContext context = new JobContext(ACCOUNT, "global", null, null, Map.of());
+        ResourceRecord record = registry.register(new Registry.Request("vm", "vm-7201", null, attributes("app"), List.of()), by("job-15", context), null)
+                .record();
+        Wfrn old = Wfrn.parse(record.wfrn());
+        String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
+        Caller console = new Caller("sa-1", "console", null, List.of("team-compute"), List.of(), false, Caller.SERVICE, Set.of("resources:rehome"),
+                ACCOUNT, null);
+        assertThat(registry.rehome(record.id(), to, OTHER, console, r -> false).moved()).isTrue();
+        assertThat(registry.visible(record.id(), console)).isEmpty();
+        assertThat(registry.rehome(record.id(), to, OTHER, console, r -> false).moved()).isFalse();
+    }
+
+    private static int status(Runnable call) {
+        try {
+            call.run();
+        } catch (ApiException e) {
+            return e.status();
+        }
+        throw new AssertionError("the call succeeded");
     }
 }

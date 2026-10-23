@@ -40,6 +40,7 @@ public enum PlatformOperation {
     OBSERVE_RESOURCE("observeResource", HttpMethod.POST, "/api/v1/resources/{id}:observe"),
     GET_RESOURCE_METRICS("getResourceMetrics", HttpMethod.POST, "/api/v1/resources/{id}:metrics"),
     OBSERVE_RESOURCES("observeResources", HttpMethod.POST, "/api/v1/resources:observe"),
+    REHOME_RESOURCE("rehomeResource", HttpMethod.POST, "/api/v1/resources/{id}:rehome"),
     BACKFILL_WFRNS("backfillWfrns", HttpMethod.POST, "/api/v1/resources:backfill-wfrn"),
     FIND_RESOURCE_COLLISIONS("findResourceCollisions", HttpMethod.POST, "/api/v1/resources:find-collisions"),
 

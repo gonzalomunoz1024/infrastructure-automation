@@ -4,9 +4,12 @@ import static org.springframework.web.reactive.function.server.RequestPredicates
 import static org.springframework.web.reactive.function.server.RequestPredicates.POST;
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,17 +36,19 @@ import com.iaf.console.wfrn.WfrnException;
 
 import reactor.core.publisher.Mono;
 
-/** The registry routes (P-05, P-18): list with filters and paging, get by id or wfrn, lineage, the backfill and the collision report, plus GET /api/v1/{plural}. */
+/** The registry routes (P-05, P-18, P-23): list with filters and paging, get by id or wfrn, lineage, the re-home, the backfill and the collision report, plus GET /api/v1/{plural}. */
 public final class ResourceRoutes {
 
     private final Registry registry;
     private final ContentStore content;
     private final Commands commands;
+    private final Predicate<ResourceRecord> heldByARunningJob;
 
-    public ResourceRoutes(Registry registry, ContentStore content, Commands commands) {
+    public ResourceRoutes(Registry registry, ContentStore content, Commands commands, Predicate<ResourceRecord> heldByARunningJob) {
         this.registry = registry;
         this.content = content;
         this.commands = commands;
+        this.heldByARunningJob = heldByARunningJob;
     }
 
     public RouterFunction<ServerResponse> routes() {
@@ -51,6 +56,7 @@ public final class ResourceRoutes {
                 .andRoute(GET("/api/v1/resources/by-wfrn"), this::byWfrn)
                 .andRoute(GET("/api/v1/resources/{id}"), request -> get(request, null))
                 .andRoute(GET("/api/v1/resources/{id}/lineage"), this::lineage)
+                .andRoute(POST("/api/v1/resources/{id}:rehome"), this::rehome)
                 .andRoute(POST("/api/v1/resources:backfill-wfrn"), this::backfill)
                 .andRoute(POST("/api/v1/resources:find-collisions"), this::collisions);
         for (ResourceTypeDef type : content.types()) {
@@ -105,6 +111,12 @@ public final class ResourceRoutes {
         Access.requireScope(caller, Scopes.REGISTRY_READ);
         String wfrn = wfrnParameter(request);
         ResourceRecord record = registry.byWfrn(wfrn).filter(r -> Registry.sees(caller, r)).orElseThrow(() -> ApiException.notFound("resource", wfrn));
+        if (!wfrn.equals(record.wfrn())) {
+            // an old wfrn of a record that moved to another account (P-23)
+            return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON)
+                    .header(HttpHeaders.CONTENT_LOCATION, "/api/v1/resources/by-wfrn?wfrn=" + URLEncoder.encode(record.wfrn(), StandardCharsets.UTF_8))
+                    .bodyValue(record.document());
+        }
         return Http.ok(record.document());
     }
 
@@ -124,6 +136,21 @@ public final class ResourceRoutes {
         String id = request.pathVariable("id");
         ResourceRecord record = registry.visible(id, caller).orElseThrow(() -> ApiException.notFound("resource", id));
         return Http.ok(registry.lineage(record, caller));
+    }
+
+    /** P-23: moves a record to another account under the wfrn the console gave it there. */
+    private Mono<ServerResponse> rehome(ServerRequest request) {
+        Caller caller = Callers.of(request);
+        Access.requireAdminOrScope(caller, Scopes.RESOURCES_REHOME);
+        String id = request.pathVariable("id");
+        return commands.handle(request, body -> {
+            String wfrn = body.path("wfrn").asText(null);
+            if (wfrn == null || wfrn.isBlank()) {
+                throw ApiException.badRequest("wfrn is required");
+            }
+            Registry.Rehomed rehomed = registry.rehome(id, wfrn, body.path("accountId").asText(null), caller, heldByARunningJob);
+            return CommandResult.ok(rehomed.record().document());
+        });
     }
 
     private Mono<ServerResponse> backfill(ServerRequest request) {

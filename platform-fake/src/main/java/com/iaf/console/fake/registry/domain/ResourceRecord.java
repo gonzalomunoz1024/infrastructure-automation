@@ -39,6 +39,7 @@ public final class ResourceRecord {
     private String region;
     private String minted;
     private final List<Registration> registrations = new ArrayList<>();
+    private final List<String> previousWfrns = new ArrayList<>();
 
     public ResourceRecord(String id, String type, String owner, String visibility, String provider, String wfrn, String accountId, String region,
             String providerId, String supersedes, Instant createdAt, long createdNs) {
@@ -81,7 +82,7 @@ public final class ResourceRecord {
         return provider;
     }
 
-    /** The wfrn given at birth, or the one a backfill minted later. */
+    /** The current wfrn: the one given at birth, or the one a backfill minted or a re-home gave later. */
     public synchronized String wfrn() {
         return minted != null ? minted : wfrn;
     }
@@ -208,6 +209,20 @@ public final class ResourceRecord {
         return true;
     }
 
+    /** The wfrns the record had before it moved to another account (P-23), oldest first. */
+    public synchronized List<String> previousWfrns() {
+        return List.copyOf(previousWfrns);
+    }
+
+    /** Moves the record to another account under a new wfrn (P-23); the current wfrn joins {@link #previousWfrns()}. */
+    public synchronized void rehome(String newWfrn, String newAccountId, Instant at, long nowNs) {
+        previousWfrns.add(wfrn());
+        this.minted = newWfrn;
+        this.accountId = newAccountId;
+        this.updatedAt = at;
+        this.updatedNs = nowNs;
+    }
+
     /** Whether the registrations show an overwrite: two jobs through different providers wrote this id. */
     public synchronized boolean overwritten() {
         for (Registration a : registrations) {
@@ -254,6 +269,10 @@ public final class ResourceRecord {
         }
         if (supersedes != null) {
             out.put("supersedes", supersedes);
+        }
+        if (!previousWfrns.isEmpty()) {
+            var previous = out.putArray("previousWfrns");
+            previousWfrns.forEach(previous::add);
         }
         return out;
     }
