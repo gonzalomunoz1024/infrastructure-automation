@@ -14,9 +14,18 @@ import com.iaf.console.drift.drift.adapters.mongo.MongoDiscoveryStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoFindingStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoIdempotencyKeys;
 import com.iaf.console.drift.drift.adapters.mongo.MongoWatchStore;
+import com.iaf.console.drift.monitoring.adapters.memory.InMemoryAlarmStore;
+import com.iaf.console.drift.monitoring.adapters.mongo.MongoAlarmStore;
+import com.iaf.console.drift.rightsizing.adapters.memory.InMemoryRecommendationStore;
+import com.iaf.console.drift.rightsizing.adapters.memory.InMemoryUtilisationStore;
+import com.iaf.console.drift.rightsizing.adapters.mongo.MongoRecommendationStore;
+import com.iaf.console.drift.rightsizing.adapters.mongo.MongoUtilisationStore;
 import com.iaf.console.kit.mongo.Mongo;
 
-/** Where findings, watches, idempotency keys and discovery live: MongoDB under the {@code mongo} profile, memory otherwise. */
+/**
+ * Where findings, watches, idempotency keys, discovery, alarms, recommendations and utilisation live:
+ * MongoDB under the {@code mongo} profile, memory otherwise.
+ */
 @Configuration(proxyBeanMethods = false)
 public class StoreConfiguration {
 
@@ -43,6 +52,21 @@ public class StoreConfiguration {
         public MongoDiscoveryStore discoveryStore(Mongo mongo) {
             return new MongoDiscoveryStore(mongo);
         }
+
+        @Bean
+        public MongoAlarmStore alarmStore(Mongo mongo) {
+            return new MongoAlarmStore(mongo);
+        }
+
+        @Bean
+        public MongoRecommendationStore recommendationStore(Mongo mongo) {
+            return new MongoRecommendationStore(mongo);
+        }
+
+        @Bean
+        public MongoUtilisationStore utilisationStore(Mongo mongo) {
+            return new MongoUtilisationStore(mongo);
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -67,6 +91,21 @@ public class StoreConfiguration {
         @Bean
         public InMemoryDiscoveryStore discoveryStore() {
             return new InMemoryDiscoveryStore();
+        }
+
+        @Bean
+        public InMemoryAlarmStore alarmStore() {
+            return new InMemoryAlarmStore();
+        }
+
+        @Bean
+        public InMemoryRecommendationStore recommendationStore() {
+            return new InMemoryRecommendationStore();
+        }
+
+        @Bean
+        public InMemoryUtilisationStore utilisationStore() {
+            return new InMemoryUtilisationStore();
         }
     }
 }
