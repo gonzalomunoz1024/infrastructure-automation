@@ -1,0 +1,7 @@
+# Sessions and preferences in MongoDB, for more than one instance. Pair with the main settings.
+spring:
+  autoconfigure:
+    exclude: ""
+  data:
+    mongodb:
+      uri: ${CONSOLE_MONGO_URI:mongodb://localhost:27017/console_bff}

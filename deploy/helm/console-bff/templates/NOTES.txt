@@ -1,0 +1,6 @@
+console-bff {{ .Chart.AppVersion }} is installed as {{ include "console-bff.fullname" . }}.
+
+It reads its secrets from the Secret "{{ .Values.secret.name }}" (session secret, trust key, OIDC
+client secret, platform internal token, MongoDB URI). The identity provider must allow the
+redirect URI {{ .Values.config.oidc.redirectUri }}. Health: /actuator/health; keys for the other
+console services: /.well-known/jwks.json.

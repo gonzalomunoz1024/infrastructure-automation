@@ -1,0 +1,6 @@
+# Console events from Kafka into the live stream and the authorization cache.
+console:
+  kafka:
+    bootstrap-servers: ${CONSOLE_KAFKA_BOOTSTRAP:localhost:9092}
+    group-id: console-bff
+    topics: [state.resources, drift.findings, identity.changes]

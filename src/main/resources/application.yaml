@@ -1,0 +1,125 @@
+# console-bff: the API the console's web app talks to.
+# Every setting here has a production-safe default; the demo profile (application-demo.yaml)
+# turns on the embedded platform, the demo identity provider and the demo identity stand-in.
+server:
+  port: 18081
+  shutdown: graceful
+spring:
+  autoconfigure:
+    # the stores are in memory unless the mongo profile is on (application-mongo.yaml clears this)
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositoriesAutoConfiguration
+      - org.springframework.boot.actuate.autoconfigure.data.mongo.MongoReactiveHealthContributorAutoConfiguration
+  application:
+    name: console-bff
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  codec:
+    max-in-memory-size: 16MB
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+console:
+  trust:
+    issuer: console-bff             # the iss of internal tokens and P-02 assertions, and the svc claim
+    platform-audience: platform     # the aud of P-02 assertions
+    token-lifetime: 60s             # internal JWTs
+    assertion-lifetime: 30s         # P-02 assertions (the platform allows at most 60s)
+    key: ""                         # the private EC JWK (kid, crv P-256, d, x, y) the vault injects; generated at boot when empty
+    previous-key: ""                # the key before a rotation, published in the JWKS while tokens signed by it live
+    # Service tokens for the console's other services, POST /internal/v1/token (hub decision 23)
+    service-token-lifetime: 5m      # how long a service token lives
+    client-assertion-max-lifetime: 5m   # the longest a client's own signed assertion may be (exp - iat)
+    kubernetes:                     # projected service-account tokens as client assertions; off while issuer is empty
+      issuer: ""                    # the cluster's service-account issuer (kubectl get --raw /.well-known/openid-configuration)
+      jwks-uri: ""                  # its keys, e.g. https://kubernetes.default.svc/openid/v1/jwks
+      jwks: ""                      # or the keys themselves, as JSON
+      ca-file: ""                   # the CA the jwks-uri's TLS is checked against
+      token-file: ""                # a bearer token to read jwks-uri with (the API server wants one)
+      max-token-lifetime: 1h        # the longest a service-account token may live (iat, or now, to exp)
+      single-use: true              # redeem each service-account token once (by jti, else by its hash) until it expires
+    rate-limit:                     # a token bucket per client of /internal/v1/token
+      burst: 10
+      per-minute: 30
+    clients:                        # who may ask, for which services, and how each proves who it is
+      console-search-indexer:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""         # <namespace>:<name> of its Kubernetes service account
+        jwks: ""                    # or the public keys it signs its own assertions with (a JWKS or one JWK, JSON)
+        jwks-uri: ""                # or where to read them
+      console-drift-service:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""
+        jwks: ""
+        jwks-uri: ""
+  oidc:
+    issuer: ""                      # the OpenID Connect issuer; discovery is <issuer>/.well-known/openid-configuration
+    client-id: console
+    client-secret: ""               # empty for a public client with PKCE
+    redirect-uri: http://localhost:18081/auth/callback
+    scopes: [openid, profile, email, groups]
+    groups-claim: groups
+    clock-skew: 30s
+  session:
+    cookie-name: console_session
+    ticket-cookie-name: console_login
+    ttl: 12h                        # absolute lifetime of a session
+    idle-timeout: 1h                # a session unused this long ends
+    ticket-ttl: 10m                 # how long a sign-in may take between redirect and callback
+    secure: true                    # Secure flag on cookies; off in the demo profile (plain http)
+    same-site: Lax
+    secret: ""                      # base64, at least 32 bytes; derives CSRF tokens and seals login tickets; generated at boot when empty
+  auth:
+    step-up:
+      max-age: 10m                  # a guarded action needs an authentication at most this old
+      actions: ["*:delete"]         # <service>:<verb> patterns that need a fresh authentication
+  identity:
+    url: http://localhost:18083     # the identity service; empty means the in-process demo stand-in under /demo-identity (demo profile)
+    service-name: console-identity-service
+    timeout: 10s
+  state:
+    url: http://localhost:18082     # the state service; empty means the in-process demo stand-in under /demo-state (demo profile)
+    service-name: console-state-service
+    timeout: 10s
+  search:
+    url: http://localhost:18085     # the search indexer; empty means the in-process demo stand-in under /demo-search (demo profile)
+    service-name: console-search-indexer
+    timeout: 5s
+  platform:
+    base-url: http://localhost:18090
+    internal-token: ""              # the console-internal service account's token (feed and content reads)
+    partition: wf
+    timeout: 30s
+    client-ttl: 10m
+    accounts: {}                    # console.platform.accounts.<accountId>.token for environments without an identity service
+    fake:
+      enabled: false
+      port: 18090
+      step-delay: 250ms
+      seed: 20261023
+  access:
+    cache-ttl: 60s                  # decisions are kept this long unless an identity change evicts them
+    cache-size: 100000
+  types:
+    cache-ttl: 60s                  # descriptors are kept this long unless a content event evicts them
+  live:
+    ring-capacity: 10000            # events kept per account for Last-Event-ID replay
+    heartbeat: 15s
+    relay:
+      enabled: true                 # follow the platform's feed into the live stream
+  web:
+    origins: ["http://localhost:3000"]
+logging:
+  level:
+    root: info
+    com.iaf.console: info
+    console.access: info

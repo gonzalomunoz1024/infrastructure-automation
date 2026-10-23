@@ -1,0 +1,28 @@
+# The demo: everything in one JVM. The platform is platform-fake on port 18090, the identity
+# provider is the built-in /demo-idp with a user picker (login_hint skips it), and the identity
+# service, the state service and the search indexer are built-in stand-ins under /demo-identity,
+# /demo-state and /demo-search. Sign in at http://localhost:18081/auth/login.
+console:
+  oidc:
+    issuer: http://localhost:18081/demo-idp
+    client-id: console
+    redirect-uri: http://localhost:18081/auth/callback
+  session:
+    secure: false
+  identity:
+    url: ""
+  state:
+    url: ""
+  search:
+    url: ""
+  platform:
+    fake:
+      enabled: true
+      port: 18090
+      step-delay: 250ms
+  live:
+    relay:
+      enabled: true
+logging:
+  level:
+    com.iaf.console.bff: info

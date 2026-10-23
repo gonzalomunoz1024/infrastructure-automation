@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "console-bff.fullname" . }}
+  labels:
+    {{- include "console-bff.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "console-bff.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "console-bff.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "{{ .Values.service.targetPort }}"
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "console-bff.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: console-bff
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: SERVER_PORT
+              value: "{{ .Values.service.targetPort }}"
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ .Values.config.profiles | quote }}
+            - name: CONSOLE_OIDC_ISSUER
+              value: {{ .Values.config.oidc.issuer | quote }}
+            - name: CONSOLE_OIDC_CLIENT_ID
+              value: {{ .Values.config.oidc.clientId | quote }}
+            - name: CONSOLE_OIDC_REDIRECT_URI
+              value: {{ .Values.config.oidc.redirectUri | quote }}
+            - name: CONSOLE_OIDC_GROUPS_CLAIM
+              value: {{ .Values.config.oidc.groupsClaim | quote }}
+            - name: CONSOLE_TRUST_ISSUER
+              value: {{ .Values.config.trustIssuer | quote }}
+            - name: CONSOLE_IDENTITY_URL
+              value: {{ .Values.config.identityUrl | quote }}
+            - name: CONSOLE_STATE_URL
+              value: {{ .Values.config.stateUrl | quote }}
+            - name: CONSOLE_SEARCH_URL
+              value: {{ .Values.config.searchUrl | quote }}
+            - name: CONSOLE_PLATFORM_BASE_URL
+              value: {{ .Values.config.platformBaseUrl | quote }}
+            - name: CONSOLE_WEB_ORIGINS
+              value: {{ .Values.config.webOrigins | quote }}
+            - name: CONSOLE_KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.config.kafkaBootstrapServers | quote }}
+            - name: CONSOLE_LIVE_RELAY_ENABLED
+              value: {{ .Values.config.liveRelayEnabled | quote }}
+            - name: CONSOLE_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.sessionSecret }}
+            - name: CONSOLE_TRUST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.trustKey }}
+            - name: CONSOLE_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.oidcClientSecret }}
+            - name: CONSOLE_PLATFORM_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.platformInternalToken }}
+            - name: CONSOLE_MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.mongoUri }}
+            - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
+              value: "true"
+            - name: SPRING_APPLICATION_JSON
+              value: {{ include "console-bff.serviceTokens" . | quote }}
+            {{- with .Values.config.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.config.serviceTokens.kubernetes.enabled }}
+            - name: kube-api
+              mountPath: /var/run/secrets/console/kube-api
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.config.serviceTokens.kubernetes.enabled }}
+        # to read the cluster's service-account keys: a token for the API server and its CA
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

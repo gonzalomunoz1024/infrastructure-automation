@@ -1,0 +1,287 @@
+package com.iaf.console.bff.trust.application;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.text.ParseException;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.HexFormat;
+import java.util.Set;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.iaf.console.bff.trust.domain.IssuedServiceToken;
+import com.iaf.console.bff.trust.domain.ServiceTokenException;
+import com.iaf.console.bff.trust.domain.ServiceTokenRequest;
+import com.iaf.console.bff.trust.ports.outbound.ClientKeysPort;
+import com.iaf.console.bff.trust.ports.outbound.UsedAssertionsPort;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSVerifier;
+import com.nimbusds.jose.crypto.ECDSAVerifier;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
+import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.KeyUse;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+
+import reactor.core.publisher.Mono;
+
+/**
+ * Service tokens for the console's own services (hub decision 23): client credentials with a JWT
+ * client assertion, either the caller's projected Kubernetes service-account token (the cluster's
+ * issuer, audience {@code console-bff}, a registered service account) or a JWT the caller signed
+ * with its own registered key ({@code iss} and {@code sub} its id, audience {@code console-bff},
+ * short, its {@code jti} used once across every replica). A service-account token lives an hour
+ * at most and is redeemed once too (by jti, else by its hash); every client has a token bucket. The client is authenticated first; only then is the audience
+ * it asked for checked: exactly one (hub decision 35), registered for it. The answer is the BFF's
+ * own internal JWT for that one service, with no account.
+ */
+public class ServiceTokens {
+
+    static final Set<JWSAlgorithm> ALGORITHMS = Set.of(JWSAlgorithm.ES256, JWSAlgorithm.ES384, JWSAlgorithm.RS256, JWSAlgorithm.PS256);
+    private static final String SERVICE_ACCOUNT = "system:serviceaccount:";
+    private static final Duration SKEW = Duration.ofSeconds(30);
+    private static final Logger log = LoggerFactory.getLogger(ServiceTokens.class);
+
+    private final Trust trust;
+    private final TrustProperties properties;
+    private final ClientKeysPort keys;
+    private final UsedAssertionsPort used;
+    private final ClientRateLimits rates;
+    private final Clock clock;
+
+    public ServiceTokens(Trust trust, TrustProperties properties, ClientKeysPort keys, UsedAssertionsPort used, Clock clock) {
+        this.trust = trust;
+        this.properties = properties;
+        this.keys = keys;
+        this.used = used;
+        this.rates = new ClientRateLimits(properties.rateLimit().burst(), properties.rateLimit().perMinute(), clock);
+        this.clock = clock;
+    }
+
+    /** Who an assertion says is asking, before its signature is checked. */
+    private record Claimant(String id, TrustProperties.Client client, boolean cluster) {
+    }
+
+    public Mono<IssuedServiceToken> issue(ServiceTokenRequest request) {
+        return Mono.defer(() -> {
+            if (blank(request.grantType())) {
+                throw ServiceTokenException.invalidRequest("grant_type is required");
+            }
+            if (!ServiceTokenRequest.CLIENT_CREDENTIALS.equals(request.grantType())) {
+                throw ServiceTokenException.unsupportedGrantType("only client_credentials is granted here");
+            }
+            if (!ServiceTokenRequest.JWT_BEARER.equals(request.clientAssertionType())) {
+                throw ServiceTokenException.invalidRequest("client_assertion_type must be " + ServiceTokenRequest.JWT_BEARER);
+            }
+            if (blank(request.clientAssertion())) {
+                throw ServiceTokenException.invalidRequest("client_assertion is required");
+            }
+            SignedJWT jwt = parse(request.clientAssertion());
+            JWTClaimsSet claims = claims(jwt);
+            Claimant claimant = claimant(claims);
+            if (!blank(request.clientId()) && !request.clientId().equals(claimant.id())) {
+                throw ServiceTokenException.invalidClient("client_id is not the assertion's client");
+            }
+            String kid = jwt.getHeader().getKeyID();
+            Mono<JWK> key = claimant.cluster() ? keys.clusterKey(kid) : keys.clientKey(claimant.id(), kid);
+            return key.switchIfEmpty(Mono.error(() -> ServiceTokenException.invalidClient("no key registered for " + claimant.id() + " has the id " + kid)))
+                    .flatMap(k -> {
+                        verify(jwt, k);
+                        Instant now = clock.instant();
+                        checkTimes(claims, claimant, now);
+                        checkAudience(claims);
+                        if (!rates.tryAcquire(claimant.id())) {
+                            throw ServiceTokenException.slowDown(claimant.id() + " asked for more service tokens than its rate allows",
+                                    rates.retryAfterSeconds(claimant.id()));
+                        }
+                        return firstUse(claimant, claims, request.clientAssertion().trim()).map(first -> {
+                            String audience = audience(claimant, request.audiences());
+                            IssuedServiceToken issued = trust.issueServiceToken(claimant.id(), audience);
+                            log.info("issued a service token to {} for {} ({})", claimant.id(), audience,
+                                    claimant.cluster() ? "service-account token" : "signed assertion");
+                            return issued;
+                        });
+                    });
+        }).doOnError(ServiceTokenException.class, e -> log.warn("refused a service token: {} ({})", e.error(), e.getMessage()));
+    }
+
+    private static SignedJWT parse(String assertion) {
+        SignedJWT jwt;
+        try {
+            jwt = SignedJWT.parse(assertion.trim());
+        } catch (ParseException e) {
+            throw ServiceTokenException.invalidClient("the assertion is not a signed JWT");
+        }
+        if (!ALGORITHMS.contains(jwt.getHeader().getAlgorithm())) {
+            throw ServiceTokenException.invalidClient("the assertion's algorithm " + jwt.getHeader().getAlgorithm() + " is not accepted");
+        }
+        return jwt;
+    }
+
+    private static JWTClaimsSet claims(SignedJWT jwt) {
+        try {
+            return jwt.getJWTClaimsSet();
+        } catch (ParseException e) {
+            throw ServiceTokenException.invalidClient("the assertion's claims cannot be read");
+        }
+    }
+
+    /** The cluster's service-account token names a registered service account; any other assertion names its client as iss and sub. */
+    private Claimant claimant(JWTClaimsSet claims) {
+        String issuer = claims.getIssuer();
+        String subject = claims.getSubject();
+        if (blank(issuer) || blank(subject)) {
+            throw ServiceTokenException.invalidClient("the assertion needs iss and sub");
+        }
+        TrustProperties.Kubernetes cluster = properties.kubernetes();
+        if (cluster.enabled() && cluster.issuer().equals(issuer)) {
+            if (!subject.startsWith(SERVICE_ACCOUNT)) {
+                throw ServiceTokenException.invalidClient("the cluster's token is not a service account's");
+            }
+            String account = subject.substring(SERVICE_ACCOUNT.length());
+            for (Map.Entry<String, TrustProperties.Client> entry : properties.clients().entrySet()) {
+                if (account.equals(entry.getValue().serviceAccount())) {
+                    return new Claimant(entry.getKey(), entry.getValue(), true);
+                }
+            }
+            throw ServiceTokenException.invalidClient("the service account " + account + " is not a registered client");
+        }
+        TrustProperties.Client client = properties.clients().get(issuer);
+        if (client == null) {
+            throw ServiceTokenException.invalidClient("no client " + issuer + " is registered");
+        }
+        if (!issuer.equals(subject)) {
+            throw ServiceTokenException.invalidClient("a client's own assertion names it as both iss and sub");
+        }
+        if (!client.hasKeys()) {
+            throw ServiceTokenException.invalidClient(issuer + " has no registered keys; it proves itself with its service account");
+        }
+        return new Claimant(issuer, client, false);
+    }
+
+    private static void verify(SignedJWT jwt, JWK key) {
+        JWSAlgorithm alg = jwt.getHeader().getAlgorithm();
+        if (key.getKeyUse() != null && !KeyUse.SIGNATURE.equals(key.getKeyUse())) {
+            throw ServiceTokenException.invalidClient("the registered key is not a signing key");
+        }
+        if (key.getAlgorithm() != null && !key.getAlgorithm().getName().equals(alg.getName())) {
+            throw ServiceTokenException.invalidClient("the registered key is for " + key.getAlgorithm() + ", not " + alg);
+        }
+        try {
+            JWSVerifier verifier;
+            if (key instanceof ECKey ec && JWSAlgorithm.Family.EC.contains(alg)) {
+                verifier = new ECDSAVerifier(ec.toECPublicKey());
+            } else if (key instanceof RSAKey rsa && JWSAlgorithm.Family.RSA.contains(alg)) {
+                verifier = new RSASSAVerifier(rsa.toRSAPublicKey());
+            } else {
+                throw ServiceTokenException.invalidClient("the registered key does not fit " + alg);
+            }
+            if (!jwt.verify(verifier)) {
+                throw ServiceTokenException.invalidClient("the assertion's signature does not verify");
+            }
+        } catch (JOSEException e) {
+            throw ServiceTokenException.invalidClient("the assertion's signature cannot be checked");
+        }
+    }
+
+    /**
+     * Unexpired and already valid; a client's own assertion also carries iat and lives a few minutes
+     * at most, a cluster's service-account token {@code max-token-lifetime} at most (from its iat,
+     * or from now without one).
+     */
+    private void checkTimes(JWTClaimsSet claims, Claimant claimant, Instant now) {
+        if (claims.getExpirationTime() == null) {
+            throw ServiceTokenException.invalidClient("the assertion needs exp");
+        }
+        Instant exp = claims.getExpirationTime().toInstant();
+        if (now.isAfter(exp.plus(SKEW))) {
+            throw ServiceTokenException.invalidClient("the assertion has expired");
+        }
+        if (claims.getNotBeforeTime() != null && now.isBefore(claims.getNotBeforeTime().toInstant().minus(SKEW))) {
+            throw ServiceTokenException.invalidClient("the assertion is not valid yet");
+        }
+        if (claimant.cluster()) {
+            Instant from = claims.getIssueTime() == null ? now : claims.getIssueTime().toInstant();
+            Duration max = properties.kubernetes().maxTokenLifetime();
+            if (Duration.between(from, exp).compareTo(max) > 0) {
+                throw ServiceTokenException.invalidClient("the service-account token lives longer than " + max.toSeconds() + "s");
+            }
+            return;
+        }
+        if (claims.getIssueTime() == null) {
+            throw ServiceTokenException.invalidClient("the assertion needs iat");
+        }
+        Instant iat = claims.getIssueTime().toInstant();
+        if (now.isBefore(iat.minus(SKEW))) {
+            throw ServiceTokenException.invalidClient("the assertion was issued in the future");
+        }
+        if (Duration.between(iat, exp).compareTo(properties.clientAssertionMaxLifetime()) > 0) {
+            throw ServiceTokenException.invalidClient("the assertion lives longer than " + properties.clientAssertionMaxLifetime().toSeconds() + "s");
+        }
+    }
+
+    /** Exactly this service: an assertion naming another audience beside it could be replayed there. */
+    private void checkAudience(JWTClaimsSet claims) {
+        if (!List.of(properties.issuer()).equals(claims.getAudience())) {
+            throw ServiceTokenException.invalidClient("the assertion's audience must be exactly " + properties.issuer());
+        }
+    }
+
+    /**
+     * The assertion's first use across the deployment, or a refusal: a client's own assertion by its
+     * jti (which it must carry), a cluster's service-account token (with {@code single-use}) by its
+     * jti, or by its hash when it has none; each is remembered until it would have expired.
+     */
+    private Mono<Boolean> firstUse(Claimant claimant, JWTClaimsSet claims, String assertion) {
+        String jti = claims.getJWTID();
+        Instant forgetAfter = claims.getExpirationTime().toInstant().plus(SKEW);
+        String key;
+        if (claimant.cluster()) {
+            if (!properties.kubernetes().singleUse()) {
+                return Mono.just(true);
+            }
+            key = "cluster:" + claimant.id() + ":" + (blank(jti) ? "sha256:" + sha256(assertion) : "jti:" + jti);
+        } else {
+            if (blank(jti)) {
+                return Mono.error(ServiceTokenException.invalidClient("the assertion needs a jti"));
+            }
+            key = "client:" + claimant.id() + ":" + jti;
+        }
+        return used.firstUse(key, forgetAfter).flatMap(first -> first ? Mono.just(true)
+                : Mono.error(ServiceTokenException.invalidClient("the assertion was used before")));
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is missing", e);
+        }
+    }
+
+    /** The one audience asked for, registered for the client; none or several is {@code invalid_target}. */
+    private static String audience(Claimant claimant, List<String> asked) {
+        if (asked.size() != 1) {
+            throw ServiceTokenException.invalidTarget(asked.isEmpty() ? "name the one service the token is for in audience"
+                    : "a token is for one service; ask once per service, not for " + String.join(", ", asked));
+        }
+        String audience = asked.get(0);
+        if (!claimant.client().audiences().contains(audience)) {
+            throw ServiceTokenException.invalidTarget(claimant.id() + " may not get tokens for " + audience);
+        }
+        return audience;
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+}
