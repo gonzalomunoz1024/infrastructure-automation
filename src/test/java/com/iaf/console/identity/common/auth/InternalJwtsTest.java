@@ -28,7 +28,7 @@ class InternalJwtsTest {
 
     private static final Instant NOW = Instant.parse("2026-10-23T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
-    private static final AuthProperties PROPERTIES = new AuthProperties(null, null, null, null, null, null, null, false, null);
+    private static final AuthProperties PROPERTIES = new AuthProperties(null, null, null, null, null, null, null, false, null, null);
 
     private final ECKey key = generate("k1");
     private final InternalJwts.Signer signer = new InternalJwts.Signer(key, "console-bff", "console-identity-service", CLOCK);
@@ -63,11 +63,11 @@ class InternalJwtsTest {
 
     @Test
     void verifiesAServiceToken() {
-        Caller caller = verifier.verify(signer.service("console-state-service", Duration.ofMinutes(5))).block();
+        Caller caller = verifier.verify(signer.service("console-search-indexer", Duration.ofMinutes(5))).block();
         assertThat(caller).isNotNull();
         assertThat(caller.isInternal()).isTrue();
-        assertThat(caller.service()).isEqualTo("console-state-service");
-        assertThat(caller.actor()).isEqualTo("svc:console-state-service");
+        assertThat(caller.service()).isEqualTo("console-search-indexer");
+        assertThat(caller.actor()).isEqualTo("svc:console-search-indexer");
         assertThat(caller.covers("210987654321")).isTrue();
         assertThat(caller.roles()).isEmpty();
         assertThat(caller.isAccountAdmin()).isFalse();
@@ -96,6 +96,10 @@ class InternalJwtsTest {
 
         refuses(otherIssuer.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another issuer");
         refuses(otherAudience.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another audience");
+        InternalJwts.Signer own = new InternalJwts.Signer(key, "console-bff", "console-identity-service", CLOCK);
+        refuses(own.service("console-unknown", Duration.ofMinutes(5)), "known console service");
+        refuses(own.sign(new com.nimbusds.jwt.JWTClaimsSet.Builder().subject("usr_1").claim("svc", "console-bff"), Duration.ofMinutes(5)),
+                "known console service");
         InternalJwts.Signer shared = new InternalJwts.Signer(key, "console-bff", "console", CLOCK);
         refuses(shared.service("console-bff", Duration.ofMinutes(5)), "another audience");
         refuses(unknownKey.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "does not trust");

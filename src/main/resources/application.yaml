@@ -34,6 +34,8 @@ console:
       issuer: console-bff
       # its own name only (hub decision 23): a token the BFF minted for another service is refused here
       audiences: [console-identity-service]
+      # whose tokens without an account are the console-internal principal (sub and svc must agree)
+      internal-services: [console-bff, console-search-indexer, console-drift-service, console-cost-service]
       # jwks or jwks-uri: the BFF's signing keys; the demo profile points at the BFF's JWKS endpoint
       jwks-refresh: 5m
       max-lifetime: 1h
