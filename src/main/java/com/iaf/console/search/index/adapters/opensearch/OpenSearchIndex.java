@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,12 +69,31 @@ public final class OpenSearchIndex implements SearchIndexPort {
     private static final Duration BY_QUERY_TIMEOUT = Duration.ofMinutes(10);
     /** Where a document without a name sorts by name: after every name. */
     static final String NO_NAME = "￿";
+    /**
+     * How long an account's types and tag values, with their counts, answer suggestions before they
+     * are counted again. A keystroke would otherwise aggregate every live document of the account:
+     * on a million-resource account that was most of the cluster's work under load (README, Load).
+     */
+    static final Duration SUGGESTION_WORDS_TTL = Duration.ofSeconds(30);
+    /** The most used tag values an account's suggestions offer, of all its tag values. */
+    static final int SUGGESTION_TAGS = 1_000;
+    /** Past this many accounts (and types) kept, the expired ones are let go. */
+    private static final int SUGGESTION_WORDS_KEPT = 256;
 
     private final WebClient web;
     private final String alias;
     private final String refresh;
     private final ObjectMapper json;
     private final Clock clock;
+    /** Per account and type: the words suggestions offer, and until when (see {@link #SUGGESTION_WORDS_TTL}). */
+    private final Map<String, Words> suggestionWords = new ConcurrentHashMap<>();
+
+    /** An account's types and tag values ({@code name=value}), the most used first, as one aggregation counted them. */
+    private record Counted(List<Map.Entry<String, Long>> types, List<Map.Entry<String, Long>> tags) {
+    }
+
+    private record Words(Mono<Counted> counted, Instant until) {
+    }
 
     public OpenSearchIndex(WebClient web, String alias, String refresh, Clock clock) {
         this.web = web;
@@ -423,16 +443,7 @@ public final class OpenSearchIndex implements SearchIndexPort {
         sort.addObject().put("_score", "desc");
         sort.addObject().putObject("sortName").put("order", "asc");
         sort.addObject().put("wfrn", "asc");
-        // types and tags count every live document of the account, not only the resources found
-        ObjectNode everything = body.putObject("aggs").putObject("everything");
-        everything.putObject("global");
-        ObjectNode live = everything.putObject("aggs").putObject("live");
-        liveScope(live.putObject("filter").putObject("bool"), scope, query.type());
-        ObjectNode counts = live.putObject("aggs");
-        counts.putObject("types").putObject("terms").put("field", "type").put("size", query.limit()).put("include", regexEscape(prefix) + ".*");
-        counts.putObject("tags").putObject("terms").put("field", "tagsFlat").put("size", query.limit())
-                .put("include", regexEscape(prefix) + ".*|[^=]*=" + regexEscape(prefix) + ".*");
-        return post("/{alias}/_search", scope.accountId(), body).map(response -> {
+        Mono<List<Suggestion>> resources = post("/{alias}/_search", scope.accountId(), body).map(response -> {
             List<Suggestion> out = new ArrayList<>();
             for (JsonNode h : response.path("hits").path("hits")) {
                 IndexedResource d = fromDocument(h.path("_source"));
@@ -442,14 +453,63 @@ public final class OpenSearchIndex implements SearchIndexPort {
                 boolean byName = d.name() != null && d.name().toLowerCase(Locale.ROOT).startsWith(prefix);
                 out.add(byName ? Suggestion.resource(d) : Suggestion.wfrn(d));
             }
-            JsonNode aggregations = response.path("aggregations").path("everything").path("live");
-            for (JsonNode b : aggregations.path("types").path("buckets")) {
-                out.add(Suggestion.type(b.path("key").asText(), b.path("doc_count").asLong()));
+            return out;
+        });
+        // types and tags count every live document of the account, not only the resources found
+        return Mono.zip(resources, suggestionWords(scope, query.type())).map(t -> {
+            List<Suggestion> out = new ArrayList<>(t.getT1());
+            int types = 0;
+            for (Map.Entry<String, Long> e : t.getT2().types()) {
+                if (types < query.limit() && e.getKey().startsWith(prefix)) {
+                    out.add(Suggestion.type(e.getKey(), e.getValue()));
+                    types++;
+                }
             }
-            for (JsonNode b : aggregations.path("tags").path("buckets")) {
-                out.add(Suggestion.tag(b.path("key").asText(), b.path("doc_count").asLong()));
+            int tags = 0;
+            for (Map.Entry<String, Long> e : t.getT2().tags()) {
+                String lower = e.getKey().toLowerCase(Locale.ROOT);
+                if (tags < query.limit() && (lower.startsWith(prefix) || lower.substring(lower.indexOf('=') + 1).startsWith(prefix))) {
+                    out.add(Suggestion.tag(e.getKey(), e.getValue()));
+                    tags++;
+                }
             }
             return out.size() <= query.limit() ? out : new ArrayList<>(out.subList(0, query.limit()));
+        });
+    }
+
+    /**
+     * The account's types and most used tag values with their counts, counted at most once per
+     * {@link #SUGGESTION_WORDS_TTL} however many keystrokes ask; a failed count is not kept.
+     */
+    private Mono<Counted> suggestionWords(AccountScope scope, String type) {
+        String key = scope.accountId() + "/" + (type == null ? "" : type);
+        Instant now = clock.instant();
+        Words words = suggestionWords.compute(key, (k, current) -> {
+            if (current != null && current.until().isAfter(now)) {
+                return current;
+            }
+            Mono<Counted> counted = countWords(scope, type)
+                    .doOnError(e -> suggestionWords.remove(k))
+                    .cache();
+            return new Words(counted, now.plus(SUGGESTION_WORDS_TTL));
+        });
+        if (suggestionWords.size() > SUGGESTION_WORDS_KEPT) {
+            suggestionWords.values().removeIf(w -> !w.until().isAfter(now));
+        }
+        return words.counted();
+    }
+
+    private Mono<Counted> countWords(AccountScope scope, String type) {
+        ObjectNode body = json.createObjectNode();
+        body.put("size", 0);
+        body.put("track_total_hits", false);
+        liveScope(body.putObject("query").putObject("bool"), scope, type);
+        ObjectNode aggs = body.putObject("aggs");
+        aggs.putObject("types").putObject("terms").put("field", "type").put("size", 500);
+        aggs.putObject("tags").putObject("terms").put("field", "tagsFlat").put("size", SUGGESTION_TAGS);
+        return post("/{alias}/_search", scope.accountId(), body).map(response -> {
+            JsonNode a = response.path("aggregations");
+            return new Counted(List.copyOf(bucketsOf(a.path("types")).entrySet()), List.copyOf(bucketsOf(a.path("tags")).entrySet()));
         });
     }
 

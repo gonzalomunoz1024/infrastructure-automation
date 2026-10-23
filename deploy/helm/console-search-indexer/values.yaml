@@ -74,10 +74,11 @@ console:
       # false: a write is searchable at the next refresh (1s); wait_for slows writes to make them visible at once
       refresh: "false"
       timeout: 10s
-    # each account's queries (search, suggest, counts) per second, and the burst it may spend at once
+    # each account's queries (search, suggest, counts) per second, and the burst it may spend at once,
+    # per replica: three replicas give an account 90 a second, two (the disruption budget) 60
     budget:
-      perSecond: 20
-      burst: 40
+      perSecond: 30
+      burst: 60
   state:
     url: http://console-state-service.console.svc.cluster.local
     timeout: 30s

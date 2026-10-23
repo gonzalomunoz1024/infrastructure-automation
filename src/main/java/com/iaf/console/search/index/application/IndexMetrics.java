@@ -1,5 +1,6 @@
 package com.iaf.console.search.index.application;
 
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.micrometer.core.instrument.Counter;
@@ -53,6 +54,15 @@ public final class IndexMetrics {
 
     public void stop(Timer.Sample sample, String what) {
         sample.stop(Timer.builder("console_search_duration").description("Time spent in queries and event handling").tag("what", what)
+                .serviceLevelObjectives(LATENCY_BUCKETS)
                 .register(registry));
     }
+
+    /**
+     * The histogram's buckets, closest around the plan's targets (a list's counts under 300 ms, a
+     * search under 500 ms at p95), so the latency dashboard reads its p95 from them; ten buckets per
+     * kind of query, where a full percentile histogram would publish about seventy.
+     */
+    static final Duration[] LATENCY_BUCKETS = {Duration.ofMillis(10), Duration.ofMillis(25), Duration.ofMillis(50), Duration.ofMillis(100),
+            Duration.ofMillis(200), Duration.ofMillis(300), Duration.ofMillis(500), Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(5)};
 }

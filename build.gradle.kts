@@ -4,6 +4,7 @@
 
 plugins {
     id("console.spring-service") version "0.1.0-SNAPSHOT"
+    id("io.gatling.gradle") version "3.13.5"
 }
 
 val libsVersion: String = providers.gradleProperty("console.libs.version").get()
@@ -75,4 +76,25 @@ tasks.register<Sync>("opensearchDist") {
         from(opensearchReindexModule)
         from("src/opensearch/modules/reindex") { filesMatching("*.properties") { expand("version" to opensearchVersion) } }
     }
+}
+
+// The load test (work package 6.2), in src/gatling: the Gatling simulation of the console's searches
+// at the scale targets, and the seeder that first fills OpenSearch with the synthetic estate it
+// searches. Both read their settings from -Pload.<name>=… (README, "Load").
+val loadSettings: Map<String, String> = providers.gradlePropertiesPrefixedBy("load.").get()
+
+gatling {
+    systemProperties = loadSettings
+}
+
+// the seeder writes through the service's own OpenSearch adapter, so the load sources see what main sees
+configurations["gatlingImplementation"].extendsFrom(configurations.implementation.get())
+configurations["gatlingRuntimeOnly"].extendsFrom(configurations.runtimeOnly.get())
+
+tasks.register<JavaExec>("seedEstate") {
+    description = "Fills OpenSearch with the load test's synthetic estate (-Pload.size, -Pload.accounts, -Pload.opensearch, -Pload.mode=trickle)"
+    group = "console"
+    classpath = sourceSets["gatling"].runtimeClasspath
+    mainClass.set("com.iaf.console.search.load.SeedEstate")
+    systemProperties(loadSettings)
 }

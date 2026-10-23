@@ -33,9 +33,10 @@ console:
       username: ${CONSOLE_OPENSEARCH_USERNAME:}
       password: ${CONSOLE_OPENSEARCH_PASSWORD:}
       timeout: 10s
+    # per replica, so the chart's three replicas give an account 90 a second (README, Load)
     budget:
-      per-second: 20
-      burst: 40
+      per-second: 30
+      burst: 60
   state:
     url: ${CONSOLE_STATE_URL:http://localhost:18082}
     dev-headers: false
@@ -96,6 +97,11 @@ management:
     health:
       probes:
         enabled: true
+  metrics:
+    distribution:
+      # the latency dashboard's p95 at the HTTP edge (deploy/grafana), in buckets around the targets
+      slo:
+        "[http.server.requests]": 10ms,25ms,50ms,100ms,200ms,300ms,500ms,1s,2s,5s
 
 logging:
   level:
