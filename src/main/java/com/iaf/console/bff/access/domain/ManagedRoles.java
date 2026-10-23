@@ -15,7 +15,10 @@ import com.iaf.console.bff.session.domain.ActionPatterns;
  * an admin's. A viewer may still ask for access and for a higher quota, as the identity service's
  * viewer policy allows. Cost and budgets (decision 25): every role reads them ({@code cost:list},
  * {@code budgets:get}, {@code budgets:list}); exporting the chargeback ({@code cost:export}) is an
- * admin's and an auditor's, and changing budgets an admin's alone. The identity service decides
+ * admin's and an auditor's, and changing budgets an admin's alone. Access reviews (WP 9.11) are
+ * an admin's and an auditor's to read and an admin's to start, decide and cancel; every role but
+ * auditor may ask for an elevation (WP 9.12), admins and auditors read the account's, and only
+ * admins decide and revoke them. The identity service decides
  * for real; this table answers the demo stand-in and names the role to suggest when a verb is
  * refused.
  */
@@ -51,6 +54,13 @@ public final class ManagedRoles {
     private static final List<String> COST_EXPORT = List.of("cost:export");
     /** Creating, changing and deleting budgets: admins only. */
     private static final List<String> BUDGET_WRITES = List.of("budgets:create", "budgets:update", "budgets:delete");
+    /** Reading the account's access reviews and elevations: admins and auditors (viewer and operator leave them out). */
+    private static final List<String> GOVERNANCE_READS = List.of("access-review:list", "access-review:get", "elevation:list", "elevation:get");
+    /** Starting, deciding and cancelling access reviews, deciding and revoking elevations: admins only. */
+    private static final List<String> GOVERNANCE_WRITES = List.of("access-review:create", "access-review:decide", "access-review:cancel",
+            "elevation:decide", "elevation:revoke");
+    /** Asking for an elevation: every managed role but auditor. */
+    private static final List<String> ELEVATION_ASK = List.of("elevation:create");
 
     private ManagedRoles() {
     }
@@ -66,11 +76,13 @@ public final class ManagedRoles {
                 return true;
             case OPERATOR:
                 return !matchesAny(DESTRUCTIVE, action) && !matchesAny(IAM_WRITES, action) && !matchesAny(QUEUE, action)
-                        && !matchesAny(COST_EXPORT, action) && !matchesAny(BUDGET_WRITES, action);
+                        && !matchesAny(COST_EXPORT, action) && !matchesAny(BUDGET_WRITES, action) && !matchesAny(GOVERNANCE_READS, action)
+                        && !matchesAny(GOVERNANCE_WRITES, action);
             case AUDITOR:
-                return matchesAny(READS, action) || matchesAny(AUDIT, action) || matchesAny(COST_EXPORT, action);
+                return (matchesAny(READS, action) || matchesAny(AUDIT, action) || matchesAny(COST_EXPORT, action)) && !matchesAny(ELEVATION_ASK, action);
             case VIEWER:
-                return (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action)) && !matchesAny(QUEUE, action);
+                return (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action) || matchesAny(ELEVATION_ASK, action))
+                        && !matchesAny(QUEUE, action) && !matchesAny(GOVERNANCE_READS, action);
             default:
                 return false;
         }
@@ -87,18 +99,20 @@ public final class ManagedRoles {
     }
 
     /**
-     * The weakest managed role that would allow an action: auditor for the access-request queue
-     * and the chargeback export, viewer for any other read and for asking for access or quota,
-     * admin for a delete, an IAM write or a budget change, operator otherwise.
+     * The weakest managed role that would allow an action: auditor for the access-request queue,
+     * the chargeback export and reading access reviews and elevations, viewer for any other read
+     * and for asking for access, quota or an elevation, admin for a delete, an IAM write, a budget
+     * change or deciding a review or an elevation, operator otherwise.
      */
     public static String suggestedFor(String action) {
-        if (matchesAny(QUEUE, action) || matchesAny(COST_EXPORT, action)) {
+        if (matchesAny(QUEUE, action) || matchesAny(COST_EXPORT, action) || matchesAny(GOVERNANCE_READS, action)) {
             return AUDITOR;
         }
-        if (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action)) {
+        if (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action) || matchesAny(ELEVATION_ASK, action)) {
             return VIEWER;
         }
-        if (matchesAny(DESTRUCTIVE, action) || matchesAny(IAM_WRITES, action) || matchesAny(BUDGET_WRITES, action)) {
+        if (matchesAny(DESTRUCTIVE, action) || matchesAny(IAM_WRITES, action) || matchesAny(BUDGET_WRITES, action)
+                || matchesAny(GOVERNANCE_WRITES, action)) {
             return ADMIN;
         }
         return OPERATOR;

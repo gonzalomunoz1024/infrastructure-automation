@@ -58,6 +58,27 @@ class ManagedRolesTest {
     }
 
     @Test
+    void accessReviewsAndElevationsFollowTheManagedPolicies() {
+        assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "access-review:list"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "access-review:get"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.AUDITOR, "access-review:list"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.AUDITOR, "access-review:decide"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "access-review:create"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.ADMIN, "access-review:cancel"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "elevation:create"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.OPERATOR, "elevation:create"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.AUDITOR, "elevation:create"), "every managed role but auditor may ask");
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "elevation:list"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.AUDITOR, "elevation:get"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "elevation:decide"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "elevation:revoke"));
+        assertEquals(ManagedRoles.AUDITOR, ManagedRoles.suggestedFor("access-review:list"));
+        assertEquals(ManagedRoles.ADMIN, ManagedRoles.suggestedFor("access-review:decide"));
+        assertEquals(ManagedRoles.VIEWER, ManagedRoles.suggestedFor("elevation:create"));
+        assertEquals(ManagedRoles.ADMIN, ManagedRoles.suggestedFor("elevation:decide"));
+    }
+
+    @Test
     void theSuggestedRoleIsTheWeakestThatAllows() {
         assertEquals(ManagedRoles.VIEWER, ManagedRoles.suggestedFor("compute:get"));
         assertEquals(ManagedRoles.OPERATOR, ManagedRoles.suggestedFor("compute:create"));

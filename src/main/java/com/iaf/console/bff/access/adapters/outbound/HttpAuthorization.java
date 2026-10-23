@@ -21,7 +21,12 @@ import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
 
-/** {@code POST /v1/authorize} at the identity service, as the console-internal principal, up to 100 checks per call. */
+/**
+ * {@code POST /v1/authorize} at the identity service, as the console-internal principal, up to 100
+ * checks per call. A refusal keeps what the identity service said of it: the part of console IAM
+ * that refused it (its decision's {@code scope}, the Denial's {@code refusedBy}), the guardrail,
+ * whether it may be requested and the role to suggest; an allow keeps {@code elevated}.
+ */
 @Component
 public class HttpAuthorization implements AuthorizationPort {
 
@@ -74,13 +79,15 @@ public class HttpAuthorization implements AuthorizationPort {
         for (int i = 0; i < checks.size(); i++) {
             JsonNode d = items.path(i);
             if (d.path("allowed").asBoolean(false)) {
-                decisions.add(Decision.allow());
+                decisions.add(d.path("elevated").asBoolean(false) ? Decision.allowElevated() : Decision.allow());
             } else {
                 AccessCheck check = checks.get(i);
                 String reason = d.path("reason").asText(null);
-                decisions.add(Decision.deny(Denial.byPolicy(check.action(), check.resource(),
+                decisions.add(Decision.deny(Denial.decided(check.action(), check.resource(),
                         reason == null || reason.isBlank() ? "No statement allows " + check.action() : reason,
-                        d.path("role").asText(null), d.path("policyId").asText(null), d.path("statement").asText(null))));
+                        d.path("role").asText(null), d.path("policyId").asText(null), d.path("statement").asText(null),
+                        d.path("scope").asText(null), d.path("guardrailId").asText(null),
+                        d.hasNonNull("requestable") ? d.path("requestable").asBoolean() : null, d.path("suggestedRole").asText(null))));
             }
         }
         return new Decisions(decisions, json.path("version").asLong(0));

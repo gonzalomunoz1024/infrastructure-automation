@@ -22,7 +22,8 @@ import reactor.core.publisher.Mono;
  * The console's own authorization: a session's user may do an action on a resource when the
  * account's policies say so. Decisions are cached per account, user, action and resource for a
  * short while and dropped when the account's identity changes; a refusal carries the
- * {@link Denial} the identity service explained it with, completed with the user's role.
+ * {@link Denial} the identity service explained it with, completed with the user's role. An
+ * allow that only a role held for a while gave ({@code elevated}) is not cached.
  */
 public class Access {
 
@@ -59,7 +60,10 @@ public class Access {
                 Decision decision = j < decisions.items().size() ? decisions.items().get(j) : Decision.deny(Denial.byPolicy(missing.get(j).action(),
                         missing.get(j).resource(), "no decision was returned", null, null, null));
                 decision = withRole(decision, session);
-                cache.put(key(session, missing.get(j)), decision);
+                if (!decision.elevated()) {
+                    // an allow a time-boxed role gave ends at the role's until, which the cache does not know
+                    cache.put(key(session, missing.get(j)), decision);
+                }
                 answers.set(missingAt.get(j), decision);
             }
             return List.copyOf(answers);
@@ -102,9 +106,6 @@ public class Access {
         if (decision.allowed() || decision.denial() == null || decision.denial().role() != null) {
             return decision;
         }
-        Denial d = decision.denial();
-        String role = RoleConventions.strongest(session.currentAccount().roles());
-        return Decision.deny(new Denial(d.layer(), d.action(), d.resource(), d.reason(), role, d.policyId(), d.statement(), d.scope(), d.requestable(),
-                d.suggestedRole()));
+        return Decision.deny(decision.denial().withRole(RoleConventions.strongest(session.currentAccount().roles())));
     }
 }

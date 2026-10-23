@@ -36,12 +36,15 @@ public final class ConsoleEvents {
         return Optional.of(new PlatformEvents.Mapped(envelope.accountId(), new LiveEvent(type, wfrn, at, version, envelope.key(), envelope.data())));
     }
 
-    /** Whether an event changes who may do what in its account. */
+    /**
+     * Whether an event changes who may do what in its account: the identity records, and since
+     * decision 34 a guardrail over the account, an access review's revoke and an elevation.
+     */
     public static boolean changesIdentity(EventEnvelope envelope) {
         String type = envelope.type() == null ? "" : envelope.type();
         return type.endsWith("Changed") && envelope.aggregate() != null
                 && switch (envelope.aggregate()) {
-                    case "account", "user", "group", "role", "policy", "accessKey", "quota" -> true;
+                    case "account", "user", "group", "role", "policy", "accessKey", "quota", "guardrail", "access-review", "elevation" -> true;
                     default -> false;
                 };
     }
