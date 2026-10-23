@@ -31,7 +31,7 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `a0f5dbe` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `dc7a89c` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first).
 
