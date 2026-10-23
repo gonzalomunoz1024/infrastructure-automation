@@ -6,9 +6,11 @@ import java.util.List;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.jobs.domain.ApprovalView;
+import com.iaf.console.bff.jobs.domain.JobNotPausedException;
 import com.iaf.console.bff.jobs.domain.JobView;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
+import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.application.Sessions;
 import com.iaf.console.bff.session.domain.Session;
@@ -18,7 +20,9 @@ import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.platform.client.JobFilter;
 import com.iaf.console.platform.model.JobDetail;
+import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
+import com.iaf.console.platform.model.SkipRequest;
 
 import reactor.core.publisher.Mono;
 
@@ -30,6 +34,8 @@ import reactor.core.publisher.Mono;
 public class Jobs {
 
     public static final String SERVICE = "jobs";
+    public static final String SKIP = "skip";
+    public static final String ABORT = "abort";
 
     private final PlatformClients clients;
     private final Access access;
@@ -90,8 +96,11 @@ public class Jobs {
 
     /**
      * One job with its steps and approvals, and {@code can}: the commands the console serves on it
-     * that its state allows and the account's policies grant the person, {@code cancel} while it
-     * runs and {@code retry} once it failed (see {@link JobRetries}).
+     * that its state allows and the account's policies grant the person: {@code cancel} while it
+     * runs, {@code retry} once it failed (see {@link JobRetries}), and {@code skip} and
+     * {@code abort} while it is paused on a failed step, as far as the platform offers them there.
+     * The platform's {@code rerun} of a finished job from any step is not a console command: on a
+     * create or a delete that went through it would run again on a resource that exists or is gone.
      */
     public Mono<JobView> get(Session session, String jobId) {
         return detail(session, jobId).flatMap(job -> Mono.zip(approvals.mayDecide(session), can(session, job)).map(tuple -> {
@@ -104,11 +113,17 @@ public class Jobs {
 
     private Mono<List<String>> can(Session session, JobDetail job) {
         boolean cancel = job.status() != null && !job.status().terminal();
-        boolean retry = JobRetries.retryable(job);
-        if (!cancel && !retry) {
+        boolean paused = job.status() == JobStatus.NEEDS_ATTENTION;
+        List<String> offered = paused && job.attention() != null && job.attention().options() != null ? job.attention().options()
+                : List.of(JobRetries.VERB, SKIP, ABORT);
+        boolean retry = JobRetries.retryable(job) && (!paused || offered.contains(JobRetries.VERB));
+        boolean skip = paused && offered.contains(SKIP);
+        boolean abort = paused && offered.contains(ABORT);
+        if (!cancel && !retry && !skip) {
             return Mono.just(List.of());
         }
-        Mono<JobRetries.Target> target = retry ? retries.target(session, job) : Mono.just(new JobRetries.Target(null, null, null, null, null, false));
+        Mono<JobRetries.Target> target = retry || skip ? retries.target(session, job)
+                : Mono.just(new JobRetries.Target(null, null, null, null, null, false));
         return target.flatMap(t -> {
             List<String> verbs = new ArrayList<>();
             List<AccessCheck> checks = new ArrayList<>();
@@ -119,6 +134,14 @@ public class Jobs {
             if (retry) {
                 verbs.add(JobRetries.VERB);
                 checks.add(new AccessCheck(t.actionName(), t.resource()));
+            }
+            if (skip) {
+                verbs.add(SKIP);
+                checks.add(new AccessCheck(t.actionName(), t.resource()));
+            }
+            if (abort) {
+                verbs.add(ABORT);
+                checks.add(new AccessCheck(AccessCheck.action(SERVICE, "cancel"), cancelResource(session, job)));
             }
             return access.decide(session, checks).map(decisions -> {
                 List<String> can = new ArrayList<>();
@@ -147,6 +170,47 @@ public class Jobs {
                     .flatMap(p -> p.cancelJob(jobId, OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
                     .then();
         });
+    }
+
+    /**
+     * Skips the step a paused job waits on and lets the job go on: it changes what the request
+     * does, so it needs what a retry needs, the job's own console action on its resource; 409
+     * {@code job.not-paused} for a job that is not paused.
+     */
+    public Mono<CommandAccepted> skip(Session session, String jobId, String step, String requestId, String idempotencyKey) {
+        return detail(session, jobId).flatMap(job -> {
+            requirePaused(job, SKIP);
+            String waiting = job.attention() != null ? job.attention().step() : job.failedStep();
+            return retries.target(session, job).flatMap(t -> access.require(session, t.actionName(), t.resource())
+                    .then(sessions.requireFreshFor(session, t.actionName()))
+                    .then(clients.forAccount(CurrentSession.scope(session)))
+                    .flatMap(p -> p.skipJobStep(jobId, new SkipRequest(step != null && !step.isBlank() ? step : waiting),
+                            OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
+                    .thenReturn(new CommandAccepted(t.wfrn(), jobId, requestId, null)));
+        });
+    }
+
+    /**
+     * Aborts a paused job: its failed step fails for good and the completed steps' compensations
+     * run, so the request ends failed or rolled back; as {@code jobs:cancel} allows, since it stops
+     * the request; 409 {@code job.not-paused} for a job that is not paused.
+     */
+    public Mono<CommandAccepted> abort(Session session, String jobId, String requestId, String idempotencyKey) {
+        return detail(session, jobId).flatMap(job -> {
+            requirePaused(job, ABORT);
+            String resource = cancelResource(session, job);
+            return access.require(session, AccessCheck.action(SERVICE, "cancel"), resource)
+                    .then(sessions.requireFreshFor(session, AccessCheck.action(SERVICE, "cancel")))
+                    .then(clients.forAccount(CurrentSession.scope(session)))
+                    .flatMap(p -> p.abortJob(jobId, OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
+                    .thenReturn(new CommandAccepted(job.context() == null ? null : job.context().wfrn(), jobId, requestId, null));
+        });
+    }
+
+    private static void requirePaused(JobDetail job, String verb) {
+        if (job.status() != JobStatus.NEEDS_ATTENTION) {
+            throw new JobNotPausedException(job.id(), job.status() == null ? "unknown" : job.status().id(), verb);
+        }
     }
 
     /** The job, read with the account's client; 404 when it is another account's. */

@@ -4,6 +4,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,7 +21,7 @@ import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
-/** {@code /console/v1/jobs}: the account's jobs, one job, cancel and retry. */
+/** {@code /console/v1/jobs}: the account's jobs, one job, cancel, retry, and skip or abort of a paused job. */
 @RestController
 public class JobsController {
 
@@ -55,6 +56,28 @@ public class JobsController {
         return CurrentSession.required(exchange)
                 .flatMap(session -> jobs.cancel(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
                 .thenReturn(ResponseEntity.accepted().<Void>build());
+    }
+
+    /** Skips the step a paused job waits on (WP 4.2): 202 with the job, 409 {@code job.not-paused} for a job that is not paused. */
+    @PostMapping(path = "/console/v1/jobs/{jobId}:skip", produces = "application/json")
+    public Mono<ResponseEntity<CommandAccepted>> skip(@PathVariable("jobId") String jobId, @RequestBody(required = false) SkipBody body,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange)
+                .flatMap(session -> jobs.skip(session, jobId, body == null ? null : body.step(), OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
+                .map(accepted -> ResponseEntity.accepted().body(accepted));
+    }
+
+    /** Aborts a paused job (WP 4.2): its compensations run and it ends failed or rolled back; 409 {@code job.not-paused} otherwise. */
+    @PostMapping(path = "/console/v1/jobs/{jobId}:abort", produces = "application/json")
+    public Mono<ResponseEntity<CommandAccepted>> abort(@PathVariable("jobId") String jobId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange)
+                .flatMap(session -> jobs.abort(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
+                .map(accepted -> ResponseEntity.accepted().body(accepted));
+    }
+
+    /** The step to skip; the one the job waits on when left out. */
+    public record SkipBody(String step) {
     }
 
     /** Runs a failed request again (WP 4.2): 202 with the job that now runs it, 409 {@code job.not-failed} for a job that did not fail. */
