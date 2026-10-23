@@ -191,7 +191,7 @@ console at once. The test lives in `src/gatling` and needs no other service:
   so the documents, routing and versions are the ones the service writes, with refreshes and
   replicas off while it loads. `-Pload.mode=trickle` then keeps changing it at `load.trickle`
   writes a second, so the searches meet refreshes.
-- **`SearchSimulation`** (`./gradlew gatlingRun`) is the people: each opens lists (the counts for
+- **`SearchSimulation`** (`./gradlew gatlingRun --simulation …SearchSimulation`) is the people: each opens lists (the counts for
   the header and chips; the rows come from the state service), types in the header's search (a
   suggestion per keystroke, then the search), uses the filter bar (a page newest first, sometimes
   the next), asks the copilot, looks a resource up by its CMDB tag or its wfrn, or opens the
@@ -209,7 +209,7 @@ console at once. The test lives in `src/gatling` and needs no other service:
 java -jar build/libs/console-search-indexer.jar --console.ingest.enabled=false --console.auth.dev-headers=true
 # 1,000 people for 15 minutes, while 10 writes a second change the estate
 ./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.mode=trickle -Pload.trickle=10 -Pload.trickleFor=PT20M &
-./gradlew gatlingRun -Pload.size=10000000 -Pload.accounts=2000 -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M \
+./gradlew gatlingRun --simulation com.iaf.console.search.load.SearchSimulation -Pload.size=10000000 -Pload.accounts=2000 -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M \
   -Pload.baseUrl=http://console-search-indexer:18085
 ```
 
