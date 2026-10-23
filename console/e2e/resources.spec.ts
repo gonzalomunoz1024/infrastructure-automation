@@ -56,8 +56,9 @@ test.describe('resources in mock mode', () => {
     const steps = page.getByRole('navigation', { name: 'Wizard steps' })
     await expect(steps.getByText('Virtual machine details')).toBeVisible()
     await expect(steps.getByText('Boot')).toBeVisible()
+    await expect(steps.getByText('Tags')).toBeVisible()
     await expect(steps.getByText('Review and create')).toBeVisible()
-    await expect(page.getByText('Step 1 of 3')).toBeVisible()
+    await expect(page.getByText('Step 1 of 4')).toBeVisible()
 
     // Next checks the step first, and lands on the field that needs attention
     await page.getByRole('button', { name: 'Next' }).click()
@@ -72,6 +73,12 @@ test.describe('resources in mock mode', () => {
     await expect(page.getByRole('heading', { name: 'Boot', level: 2 })).toBeFocused()
     await expect(page.getByRole('radio', { name: 'Use an existing image' })).toBeChecked()
     await choose(page, 'Image id', /ubuntu-24\.04-cis-l1/)
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // the account's required tags, each pre-filled from its default (the environment follows the create's own field)
+    await expect(page.getByRole('heading', { name: 'Tags', level: 2, exact: true })).toBeFocused()
+    await expect(page.locator('#create-tag-cost-centre')).toHaveValue('cc-1042')
+    await expect(page.getByRole('button', { name: 'Environment: dev' })).toBeVisible()
     await page.getByRole('button', { name: 'Next' }).click()
 
     // the review: what was asked for, what will happen, what it costs, and the request as code
@@ -242,7 +249,7 @@ test.describe('resources in mock mode', () => {
 
     await page.goto('/#/console/compute/vm/create')
     await expect(page.getByRole('heading', { name: 'Create VM', level: 1 })).toBeVisible()
-    await expect(page.getByText('Step 1 of 3')).toBeVisible()
+    await expect(page.getByText('Step 1 of 4')).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: shot('create-phone'), fullPage: true })
     await expectNoSeriousA11y(page, 'create wizard at phone width')

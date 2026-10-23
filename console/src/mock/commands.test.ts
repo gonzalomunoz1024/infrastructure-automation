@@ -32,6 +32,8 @@ function bff(person: string, start = Date.parse('2026-10-23T10:00:00Z')) {
 }
 
 const body = <T>(res: { body?: unknown }) => res.body as T
+/** the account's required tags, as every create names them (README decision 38) */
+const TAGS = { owner: 'team-compute', 'cost-centre': 'cc-1042', 'data-class': 'internal', environment: 'dev' }
 const enc = encodeURIComponent
 
 describe('creating a resource through the BFF', () => {
@@ -53,7 +55,7 @@ describe('creating a resource through the BFF', () => {
 
   it('answers 202 with the job, the wfrn and the request id, then settles the machine on the clock', () => {
     const dana = bff('dana')
-    const res = dana.call('POST', '/console/v1/r/vm', { input: { name: 'web-77', image: 'image-demo01', size: 'medium', environment: 'dev' }, reason: 'the shop needs one more web node' })
+    const res = dana.call('POST', '/console/v1/r/vm', { input: { name: 'web-77', image: 'image-demo01', size: 'medium', environment: 'dev' }, tags: TAGS, reason: 'the shop needs one more web node' })
     expect(res.status).toBe(202)
     const accepted = body<CommandAccepted>(res)
     expect(accepted.wfrn).toMatch(/^wfrn:wf:compute:global:123456789012:vm\/vm-[a-z0-9]{8}$/)
@@ -96,7 +98,7 @@ describe('creating a resource through the BFF', () => {
 
   it('needs an approval for production, which the mock approver grants after a while', () => {
     const dana = bff('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'api-90', image: 'image-demo01', size: 'small', environment: 'prod' } }))
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'api-90', image: 'image-demo01', size: 'small', environment: 'prod' }, tags: { ...TAGS, environment: 'prod' } }))
     expect(accepted.approval).toMatchObject({ group: 'compute-approvers', status: 'pending' })
     expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`)).status).toBe('waiting-approval')
     dana.tick(APPROVAL_MS + 1)
@@ -109,7 +111,7 @@ describe('creating a resource through the BFF', () => {
 
   it('fails a machine whose name asks for it, and shows the failure on the resource', () => {
     const dana = bff('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'fail-01', image: 'image-demo01', size: 'small' } }))
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'fail-01', image: 'image-demo01', size: 'small' }, tags: TAGS }))
     dana.tick(RUN_MS + 1)
     expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))).toMatchObject({ status: 'failed', failedStep: 'apply', errorClass: 'provider' })
     expect(body<ConsoleResourceDetail>(dana.get(`/console/v1/r/vm/${enc(accepted.wfrn)}`)).state).toBe('failed')
@@ -118,20 +120,20 @@ describe('creating a resource through the BFF', () => {
   it('answers the same reply to the same Idempotency-Key and body, and refuses the key with another body', () => {
     const dana = bff('dana')
     const input = { name: 'cache-21', image: 'image-demo01', size: 'small' }
-    const first = dana.call('POST', '/console/v1/r/vm', { input }, { 'idempotency-key': 'k-1' })
-    const again = dana.call('POST', '/console/v1/r/vm', { input }, { 'idempotency-key': 'k-1' })
+    const first = dana.call('POST', '/console/v1/r/vm', { input, tags: TAGS }, { 'idempotency-key': 'k-1' })
+    const again = dana.call('POST', '/console/v1/r/vm', { input, tags: TAGS }, { 'idempotency-key': 'k-1' })
     expect(again.status).toBe(202)
     expect(again.body).toEqual(first.body)
     expect(again.headers?.['Idempotent-Replayed']).toBe('true')
     expect(dana.server.data.jobs.filter((j) => j.title === 'Create VM cache-21')).toHaveLength(1)
-    const other = dana.call('POST', '/console/v1/r/vm', { input: { ...input, size: 'large' } }, { 'idempotency-key': 'k-1' })
+    const other = dana.call('POST', '/console/v1/r/vm', { input: { ...input, size: 'large' }, tags: TAGS }, { 'idempotency-key': 'k-1' })
     expect(other.status).toBe(409)
     expect(body<{ error: string }>(other).error).toBe('idempotency.mismatch')
   })
 
   it('previews a create with its steps, the image it uses, the list price and the quota rule', () => {
     const dana = bff('dana')
-    const res = dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-78', image: 'image-demo01', size: 'large', environment: 'dev' } })
+    const res = dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-78', image: 'image-demo01', size: 'large', environment: 'dev' }, tags: TAGS })
     expect(res.status).toBe(200)
     const preview = body<ConsolePreview>(res)
     expect(preview.workflow).toBe('create-vm')
@@ -142,9 +144,9 @@ describe('creating a resource through the BFF', () => {
     expect(preview.policy.decision).toBe('allow')
     expect(preview.policy.rules?.map((r) => r.id)).toEqual(['rbac.role', 'quota.resources'])
 
-    const prod = body<ConsolePreview>(dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-79', image: 'image-demo01', size: 'small', environment: 'prod' } }))
+    const prod = body<ConsolePreview>(dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-79', image: 'image-demo01', size: 'small', environment: 'prod' }, tags: { ...TAGS, environment: 'prod' } }))
     expect(prod.policy.decision).toBe('needs-approval')
-    const building = body<ConsolePreview>(dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-80', image: { create: { os: 'ubuntu-24.04' } }, size: 'small' } }))
+    const building = body<ConsolePreview>(dana.call('POST', '/console/v1/r/vm:preview', { input: { name: 'web-80', image: { create: { os: 'ubuntu-24.04' } }, size: 'small' }, tags: TAGS }))
     expect(building.steps.map((s) => s.id)).toContain('build-image')
     expect(building.affectedResources).toEqual([])
   })
@@ -153,14 +155,14 @@ describe('creating a resource through the BFF', () => {
     const gonzalo = bff('gonzalo')
     const quota = () => body<Quota>(gonzalo.get('/console/v1/iam/quotas/resources.vm'))
     const input = { name: 'web-81', image: 'image-demo01', size: 'small', environment: 'dev' }
-    const ruleOf = () => body<ConsolePreview>(gonzalo.call('POST', '/console/v1/r/vm:preview', { input })).policy.rules?.find((r) => r.id === 'quota.resources')
+    const ruleOf = () => body<ConsolePreview>(gonzalo.call('POST', '/console/v1/r/vm:preview', { input, tags: TAGS })).policy.rules?.find((r) => r.id === 'quota.resources')
     const { used, limit } = quota()
     expect(ruleOf()).toMatchObject({ result: 'pass', message: `Virtual machines: ${used} of ${limit} in this account` })
 
     // the platform team set the limit at what the account holds: the review and the create refuse
     gonzalo.data.directory.quotaOverrides['123456789012']['resources.vm'] = used
     expect(ruleOf()).toMatchObject({ result: 'deny', message: expect.stringContaining('request an increase from the platform team') })
-    const refused = gonzalo.call('POST', '/console/v1/r/vm', { input })
+    const refused = gonzalo.call('POST', '/console/v1/r/vm', { input, tags: TAGS })
     expect(refused.status).toBe(409)
     expect(body<{ error: string; problems: Problem[] }>(refused)).toMatchObject({ error: 'policy.denied', problems: [expect.objectContaining({ code: 'quota.resources' })] })
 
@@ -273,10 +275,17 @@ describe('verbs, updates and tags on one resource', () => {
     const bad = dana.call('PUT', `/console/v1/r/vm/${enc(VM)}/tags`, { 'bad key!': 'x', fine: 42 })
     expect(bad.status).toBe(400)
     expect(body<{ problems: Problem[] }>(bad).problems).toHaveLength(2)
-    const ok = dana.call('PUT', `/console/v1/r/vm/${enc(VM)}/tags`, { owner: 'payments', 'cost-centre': 'CC-4411' })
+    // the required tags it carries stay, with values they may take
+    const dropped = dana.call('PUT', `/console/v1/r/vm/${enc(VM)}/tags`, { owner: 'payments', 'cost-centre': 'CC-4411' })
+    expect(dropped.status).toBe(400)
+    expect(body<{ problems: Problem[] }>(dropped).problems).toEqual([
+      expect.objectContaining({ code: 'tags.invalid', field: '/tags/cost-centre', message: 'Cost centre must match ^cc-[0-9]{4}$' }),
+      expect.objectContaining({ code: 'tags.required', field: '/tags/environment', message: 'Environment is required and stays on the resource' }),
+    ])
+    const ok = dana.call('PUT', `/console/v1/r/vm/${enc(VM)}/tags`, { owner: 'payments', 'cost-centre': 'cc-4411', environment: 'prod' })
     expect(ok.status).toBe(200)
-    expect(ok.body).toEqual({ owner: 'payments', 'cost-centre': 'CC-4411' })
-    expect(body<ConsoleResource>(dana.get(`/console/v1/r/vm/${enc(VM)}`)).tags).toEqual({ owner: 'payments', 'cost-centre': 'CC-4411' })
+    expect(ok.body).toEqual({ owner: 'payments', 'cost-centre': 'cc-4411', environment: 'prod' })
+    expect(body<ConsoleResource>(dana.get(`/console/v1/r/vm/${enc(VM)}`)).tags).toEqual({ owner: 'payments', 'cost-centre': 'cc-4411', environment: 'prod' })
     const list = body<Page<ConsoleResource>>(dana.get('/console/v1/r/vm?tag.owner=payments'))
     expect(list.items.map((r) => r.wfrn)).toEqual([VM])
     const activity = body<Page<ActivityEntry>>(dana.get(`/console/v1/r/vm/${enc(VM)}/activity`))
@@ -330,7 +339,7 @@ describe('reading resources, drift, lineage and jobs through the BFF', () => {
 
   it('lists jobs by wfrn and status, and cancels an open one', () => {
     const dana = bff('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'etl-05', image: 'image-demo01', size: 'small' } }))
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'etl-05', image: 'image-demo01', size: 'small' }, tags: TAGS }))
     const mine = body<Page<BffJobSummary>>(dana.get(`/console/v1/jobs?wfrn=${enc(accepted.wfrn)}`))
     expect(mine.items.map((j) => j.jobId)).toEqual([accepted.jobId])
     expect(body<Page<BffJobSummary>>(dana.get('/console/v1/jobs?status=running')).items.every((j) => j.status === 'running')).toBe(true)
@@ -363,8 +372,8 @@ describe('the journal the browser keeps', () => {
     const store = new Map<string, string>()
     const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) }
     const dana = bff('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'batch-44', image: 'image-demo01', size: 'small' } }))
-    dana.call('PUT', `/console/v1/r/vm/${enc(accepted.wfrn)}/tags`, { team: 'payments' })
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'batch-44', image: 'image-demo01', size: 'small' }, tags: TAGS }))
+    expect(dana.call('PUT', `/console/v1/r/vm/${enc(accepted.wfrn)}/tags`, { ...TAGS, team: 'payments' }).status).toBe(200)
     saveConsole(dana.server.data, storage)
     expect(store.has(MOCK_JOURNAL_KEY)).toBe(true)
 
@@ -376,7 +385,7 @@ describe('the journal the browser keeps', () => {
     expect(vm?.wfrn).toBe(accepted.wfrn)
     expect(vm?.status).toBe('ready')
     expect(fresh.jobs.find((j) => j.id === accepted.jobId)?.status).toBe('succeeded')
-    expect(fresh.console?.tags[accepted.wfrn]).toEqual({ team: 'payments' })
+    expect(fresh.console?.tags[accepted.wfrn]).toEqual({ ...TAGS, team: 'payments' })
     expect(fresh.console?.journal).toHaveLength(2)
   })
 

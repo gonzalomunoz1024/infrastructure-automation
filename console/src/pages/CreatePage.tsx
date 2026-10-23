@@ -12,9 +12,11 @@ import { purposeOf, singularOf, type ConsoleAction, type ConsoleType } from '../
 import { explain } from '../lib/plain'
 import { useQuery } from '../lib/queries'
 import { cleanInput, useSubmissionKey } from '../lib/submission'
+import { andList, draftTags, emptyTagsDraft, missingTags, requiredValue, tagsApi, type TagsDraft } from '../lib/tags'
 import type { CommandInput } from '../lib/types'
 import { MissingType } from './parts'
-import { stepOfProblems, stepsFor, withTypeHints } from './create/steps'
+import { isTagProblem, stepOfProblems, stepsFor, withTypeHints } from './create/steps'
+import { TagsStep, tagsStepProblems } from './create/TagsStep'
 
 /*
  * The create wizard (WP 3.3), generated from the type's create workflow: its input schema makes
@@ -22,7 +24,9 @@ import { stepOfProblems, stepsFor, withTypeHints } from './create/steps'
  * own fields before moving on, and the review shows every value, the preview the BFF judged
  * (steps, what it touches, the monthly cost, what policy says) and the same request as code.
  * Create sends one request with one Idempotency-Key and opens the new resource's page, which
- * follows the request until the resource is there.
+ * follows the request until the resource is there. Before the review, the Tags step asks for
+ * every tag the account requires (README decision 38): a blank one keeps Create disabled, and says
+ * so in words, because the BFF refuses a create that leaves one out.
  */
 
 export default function CreatePage({ route }: PageProps) {
@@ -76,11 +80,15 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
   const listPath = pathFor('type', { service: type.service, type: type.name })
   // the create's input, laid out with the type's own groups where the input carries none
   const schema = useMemo(() => withTypeHints(action.input, type.schema), [action.input, type.schema])
-  const steps = useMemo(() => stepsFor(schema, noun), [schema, noun])
+  const tagPolicy = useQuery(['tag-policy', account.id], () => tagsApi.policy())
+  const required = useMemo(() => tagPolicy.data?.required ?? [], [tagPolicy.data])
+  const steps = useMemo(() => stepsFor(schema, noun, { tags: true, requiredTags: required.length }), [schema, noun, required.length])
   const [current, setCurrent] = useState(0)
   const [value, setValue] = useState<SchemaValue>(() => defaultsFor(schema))
   const [problems, setProblems] = useState<Problem[]>([])
   const [reason, setReason] = useState('')
+  const [tagDraft, setTagDraft] = useState<TagsDraft>(emptyTagsDraft)
+  const [showMissing, setShowMissing] = useState(false)
   const heading = useRef<HTMLHeadingElement>(null)
   const step = steps[current]
   const review = step.kind === 'review'
@@ -88,9 +96,13 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
   const allFields = useMemo(() => fieldNames(schema), [schema])
 
   const input = useMemo(() => cleanInput(value), [value])
-  const body: CommandInput = reason.trim() ? { input, reason: reason.trim() } : { input }
+  const tags = useMemo(() => draftTags(required, tagDraft, input), [required, tagDraft, input])
+  const missing = useMemo(() => missingTags(required, tagDraft, input), [required, tagDraft, input])
+  const body: CommandInput = reason.trim() ? { input, tags, reason: reason.trim() } : { input, tags }
   const inputJson = JSON.stringify(input)
-  const preview = useQuery(['create-preview', type.name, inputJson], () => bff.resources.previewCreate(type.name, { input: JSON.parse(inputJson) as Record<string, unknown> }), { enabled: review })
+  const tagsJson = JSON.stringify(tags)
+  const preview = useQuery(['create-preview', type.name, inputJson, tagsJson], () => bff.resources.previewCreate(type.name, { input: JSON.parse(inputJson) as Record<string, unknown>, tags: JSON.parse(tagsJson) as Record<string, string> }), { enabled: review })
+  const tagsStep = steps.findIndex((s) => s.kind === 'tags')
   const policy = review ? preview.data?.policy.decision : undefined
   const samples = codeSamplesFor({ kind: 'create', type, action, body, context: { accountId: account.id, region: region.name } })
 
@@ -105,6 +117,15 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
     if (root) requestAnimationFrame(() => document.getElementById(`create-${root}`)?.focus())
   }
   const next = () => {
+    if (step.kind === 'tags') {
+      // a value a tag may not take, or a row that is not a tag, keeps the step; a blank required tag waits for the review
+      if (tagsStepProblems(tagPolicy.data, tagDraft, input).length) {
+        requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
+        return
+      }
+      moveTo(current + 1)
+      return
+    }
     const found = problemsIn(current, value)
     setProblems(found)
     if (found.length) {
@@ -114,6 +135,11 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
     moveTo(current + 1)
   }
   const create = async () => {
+    if (missing.length) {
+      setShowMissing(true)
+      if (tagsStep >= 0) moveTo(tagsStep)
+      return
+    }
     const found = validateAgainst(schema, value)
     if (found.length) {
       setProblems(found)
@@ -127,6 +153,7 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
       invalidates: ['resources', 'jobs'],
       onProblems: (ps) => {
         setProblems(ps)
+        if (ps.some(isTagProblem)) setShowMissing(true)
         const i = stepOfProblems(steps, ps)
         if (i >= 0) moveTo(i)
       },
@@ -143,8 +170,31 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
 
   const denied = !decision.allowed && decision.denied ? decision.denied : null
 
+  const blocked = missing.length ? `Set ${andList(missing.map((t) => t.title))} on the Tags step before you create: every new resource of this account carries its required tags.` : null
+
   let content: ReactNode
-  if (step.kind === 'fields') {
+  if (step.kind === 'tags') {
+    content = (
+      <div className="space-y-6">
+        <TagsStep
+          policy={tagPolicy.data}
+          loading={tagPolicy.loading}
+          error={tagPolicy.error}
+          onRetry={() => void tagPolicy.refetch()}
+          draft={tagDraft}
+          onChange={(d) => {
+            setTagDraft(d)
+            // the BFF's word on a tag goes once the tag changes
+            if (problems.some(isTagProblem)) setProblems(problems.filter((p) => !isTagProblem(p)))
+          }}
+          input={input}
+          problems={problems.filter(isTagProblem)}
+          showMissing={showMissing}
+        />
+        <CodeDisclosure samples={samples} ariaLabel={`${title} as code`} />
+      </div>
+    )
+  } else if (step.kind === 'fields') {
     content = (
       <div className="max-w-2xl space-y-6">
         <SchemaForm
@@ -180,6 +230,29 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
               <Facts columns={2} items={s.fields.map((name) => ({ label: action.input.properties?.[name]?.title ?? titleCase(name), value: reviewValue(action, name, value[name]) }))} />
             </Section>
           ))}
+        {tagsStep >= 0 && (
+          <Section
+            title="Tags"
+            actions={
+              <Button size="sm" variant="ghost" icon="edit" onClick={() => moveTo(tagsStep)}>
+                Edit tags
+              </Button>
+            }
+          >
+            <Facts
+              columns={2}
+              items={[
+                ...required.map((t) => {
+                  const v = requiredValue(t, tagDraft, input).trim()
+                  return { label: t.title, value: v ? <span className="font-mono text-caption">{v}</span> : <span className="text-critical">Not set: required</span> }
+                }),
+                ...Object.entries(tags)
+                  .filter(([k]) => !required.some((t) => t.key === k))
+                  .map(([k, v]) => ({ label: k, value: <span className="font-mono text-caption">{v || '(empty)'}</span> })),
+              ]}
+            />
+          </Section>
+        )}
         <Section title="What will happen" description="What the workflow will do, what it touches, what it costs a month and what policy says, judged before anything starts.">
           {preview.loading ? (
             <SkeletonRows n={2} rowClassName="h-20" />
@@ -240,6 +313,17 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
           </h2>
           {review && <p className="mt-1 text-sm text-secondary">Check the request, what it will do and what it costs, then create it.</p>}
           <div className="mt-5">{content}</div>
+          {review && blocked && (
+            <p className="mt-8 flex items-start gap-2 text-sm text-secondary" data-blocked="tags">
+              <Icon name="lock" size={14} className="mt-0.5 shrink-0 text-tertiary" />
+              <span>
+                {`Create is not available yet. ${blocked}`}{' '}
+                <button type="button" className="font-medium text-accent hover:opacity-70" onClick={() => moveTo(tagsStep)}>
+                  Set the tags
+                </button>
+              </span>
+            </p>
+          )}
           <div className="mt-10 flex flex-wrap items-center justify-between gap-3 border-t border-stroke-light pt-5">
             <Button variant="ghost" onClick={() => navigate(listPath)}>
               Cancel
@@ -251,7 +335,7 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
                 </Button>
               )}
               {review ? (
-                <ActionButton decision={decision} what={title} verb="create" variant="primary" icon="plus" loading={cmd.busy} disabled={policy === 'deny' || preview.loading} onClick={() => void create()}>
+                <ActionButton decision={decision} what={title} verb="create" variant="primary" icon="plus" loading={cmd.busy} disabled={policy === 'deny' || preview.loading || !!blocked || tagPolicy.loading} onClick={() => void create()}>
                   {title}
                 </ActionButton>
               ) : (
