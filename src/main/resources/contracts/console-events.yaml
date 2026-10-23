@@ -6,7 +6,7 @@ info:
   description: |
     The events the console's own services exchange: the state service's resource stream
     (`state.resources`), the drift service's findings (`drift.findings`) and the identity service's
-    changes (`identity.changes`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    changes (`identity.changes`), and the cost service's budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
     **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
@@ -33,7 +33,9 @@ info:
 
     **Keys are deterministic** and consumers de-duplicate on them, never on `id`:
     `<type>:<wfrn>:<version>` on `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on
-    `drift.findings` and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
+    `drift.findings`, `<type>:<accountId>:<budgetId>:<version>` on `cost.events` (a threshold crossed is
+    `<type>:<accountId>:<budgetId>:<period>-<threshold>`, a chargeback month `<type>:<accountId>:<month>:<version>`)
+    and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
     subject id is the account, policy, role, group, user, key or quota id). A producer that retries
     publishes the same key; a re-emitted event gets a new `id` and the same `key`.
 
@@ -140,6 +142,25 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: accountId
     x-retention: 90d, compacted by key
+  costEvents:
+    address: cost.events
+    title: Cost and budgets
+    description: Budgets created, changed and deleted, thresholds crossed and months published to finance, by the cost service (decision 25). Partitioned by accountId, kept 90 days.
+    messages:
+      budgetChanged: { $ref: '#/components/messages/budgetChanged' }
+      budgetThresholdCrossed: { $ref: '#/components/messages/budgetThresholdCrossed' }
+      chargebackPublished: { $ref: '#/components/messages/chargebackPublished' }
+    bindings:
+      kafka:
+        topic: cost.events
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 7776000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 90d
 operations:
   publishResourceState:
     action: send
@@ -165,6 +186,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/identityChanges' }
     summary: Every service refreshes its authorization cache from here
+  publishCostEvents:
+    action: send
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The cost service publishes budget changes, alerts and chargeback months
+  followCostEvents:
+    action: receive
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The BFF (budget.alert on the live stream) and notifications (WP 7.5) follow budget alerts
 components:
   messageTraits:
     consoleEvent:
@@ -506,6 +535,81 @@ components:
             properties:
               type: { const: AccessRequestChanged }
               aggregate: { const: access-request }
+    budgetChanged:
+      name: BudgetChanged
+      title: A budget was created, changed or deleted
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetChanged }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, action]
+                properties:
+                  budgetId: { type: string }
+                  action: { type: string, enum: [created, updated, deleted] }
+                  name: { type: string }
+                  amount: { type: number }
+                  currency: { type: string }
+                  thresholds: { type: array, items: { type: integer } }
+                  blockCreates: { type: boolean }
+                  tag:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      value: { type: string }
+    budgetThresholdCrossed:
+      name: BudgetThresholdCrossed
+      title: A budget's spend crossed one of its thresholds this month
+      summary: At most once per budget, month and threshold; `key` is `BudgetThresholdCrossed:<accountId>:<budgetId>:<period>-<threshold>`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetThresholdCrossed }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, name, period, threshold, percent, spent, amount, currency]
+                properties:
+                  budgetId: { type: string }
+                  name: { type: string }
+                  period: { type: string, description: YYYY-MM }
+                  threshold: { type: integer }
+                  percent: { type: number }
+                  spent: { type: number }
+                  amount: { type: number }
+                  forecast: { type: number }
+                  currency: { type: string }
+                  blockCreates: { type: boolean, description: 'At 100 and over: creates in the scope are now refused' }
+    chargebackPublished:
+      name: ChargebackPublished
+      title: An account's month was closed and its chargeback published to finance
+      summary: One per account and month; `key` is `ChargebackPublished:<accountId>:<month>:1`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: ChargebackPublished }
+              aggregate: { const: chargeback }
+              data:
+                type: object
+                required: [version, month, total, currency, sha256]
+                properties:
+                  month: { type: string }
+                  total: { type: number }
+                  currency: { type: string }
+                  sha256: { type: string, description: "The sha256 of the account's rows as CSV" }
+                  rows: { type: integer }
+                  costCentre: { type: string }
   schemas:
     Wfrn:
       type: string
@@ -606,6 +710,17 @@ components:
                   type: array
                   items: { $ref: '#/components/schemas/DriftField' }
                 observedAt: { type: string, format: date-time }
+    CostEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [context, data]
+          properties:
+            aggregate: { type: string, enum: [budget, chargeback] }
+            aggregateId: { type: string, description: 'The budget id, or `<accountId>:<month>` for a chargeback month' }
+            context:
+              type: object
+              required: [accountId]
     IdentityEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
@@ -712,8 +827,8 @@ components:
       required: [workflow]
       properties:
         retryOf: { type: string, description: The failed job the retry follows }
-        workflow: { type: string, description: The workflow the retry runs, the create workflow unless the request named another }
-        jobId: { type: string, description: The rerun job, when it was started before the retry was recorded }
+        workflow: { type: string, description: 'The workflow the retry runs, the create workflow unless the request named another' }
+        jobId: { type: string, description: 'The rerun job, when it was started before the retry was recorded' }
     DeletedData:
       type: object
       required: [tombstoneUntil]

@@ -291,7 +291,7 @@ class ResourceGroupsTest {
     }
 
     private Resources stateRows() {
-        return new Resources(null, null, null, null, null, null, null, null, null, null, null, null, null) {
+        return new Resources(null, null, null, null, null, null, null, null, null, null, null, null, null, null) {
             @Override
             public Mono<Page<ResourceView>> rows(Session session, StateQuery query) {
                 queries.add(query);

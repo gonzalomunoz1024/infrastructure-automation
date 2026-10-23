@@ -1,6 +1,6 @@
 # Endpoints beyond the pinned contract
 
-`contracts.lock` pins the hub's contracts (console-root--state-retry at c6c22ab: decision 24 on console-root--phase-0). The web
+`contracts.lock` pins the hub's contracts (console-root--cost-contract at 4a016b8: hub PR #18, on console-root--state-retry). The web
 app's phase-1 thread asked for the additions below (its note:
 `console-web-phase-1/bff-contract-additions.md`); the hub folded them into the contract at
 29cdcf9 and e8992fb, and this file now only records what this service answers beyond the pinned
@@ -281,6 +281,59 @@ ResourceGroup:
   without one and keeps the group's types. Rows of a type the person may not list
   (`<service>:list` on the type's pattern) are left out, so a page can hold fewer rows than
   `limit` (1 to 200, 50 by default) while `next`, the state service's cursor, goes on.
+
+## Cost and budgets
+
+Served as the pinned contract says (hub PR #18), through the cost service, with these details
+the contract does not spell out yet:
+
+- Cost is decided on `wfrn:<partition>:cost::<account>:*`; a budget on
+  `wfrn:<partition>:budgets::<account>:budget/<id>`, its id's underscore written as a hyphen
+  (`bud_01j…` is `budget/bud-01j…`, a wfrn id takes no underscore), and the list and create on
+  `…:budget/*`. A resource's cost is decided on the resource's own wfrn.
+- `GET /console/v1/cost/chargeback` (JSON) asks `cost:export`, as the CSV does; the pinned text
+  says `cost:list`. With `scope=organization` both read the accounts where `cost:export` is
+  allowed; the JSON names the others in `skippedAccounts`, the CSV in an
+  `X-Console-Skipped-Accounts` header (comma separated). With no account allowed, the read is a
+  403, not an empty report.
+- `GET /console/v1/cost/price-lists` asks `cost:list` (403 with a Denial); the pinned operation
+  lists no 403.
+- `PUT /console/v1/budgets/{budgetId}` without `If-Match` is a 400 (`required` at `If-Match`)
+  before the cost service is asked; `DELETE` needs a fresh sign-in, as every `*:delete`.
+- A budget create naming another account in `scope.accountId` is a 400 (`scope.account`); left
+  out, the session's account is filled in.
+- A create (`POST /r/{type}`, and a batch create) refused by a budget is a 409
+  `budget.exceeded` with `detail.budgets: [{ budgetId, name, message }]`; a batch preview's row
+  carries the problem `budget.exceeded` at `/items/<i>/tags`, and its policy each budget's rule
+  with `budgetId`. The `quota.resources` rule the pinned `Preview.policy.rules` description names
+  is not added by the BFF yet (the state service enforces the quota on mint).
+
+## Scorecards (from hub PR #19, folded in when it merges)
+
+Not in the pinned contract: hub PR #19 (console-root--scorecards-contract) adds them, and this
+service serves them with that branch's shapes until the pin moves past it.
+
+```
+GET  /console/v1/scorecards?days=                                   -> Scorecard (drift: GET /v1/scorecards/account)
+GET  /console/v1/scorecards/packs                                   -> { items: [RulePackSummary] }
+GET  /console/v1/scorecards/heatmap                                 -> ScorecardHeatmap, each row with accountName
+GET  /console/v1/scorecards/packs/{pack}/rules/{ruleId}/failing?type=&limit=&after=  -> { items: [Evaluation], next }
+GET  /console/v1/r/{type}/{wfrn}/compliance                         -> ResourceCompliance (drift: GET /v1/scorecards/resources?wfrn=)
+POST /console/v1/scorecards/packs/{pack}/rules/{ruleId}:remediate   { wfrn, input?, reason? } -> 200 | 202 Remediation
+```
+
+- Every read asks `scorecards:list` on `wfrn:<partition>:scorecards::<account>:*` (403 with a
+  Denial; PR #19 lists no 403 on `/packs`); the compliance page also the resource's own
+  `<service>:get`. A pack or rule id outside `^[a-z][a-z0-9-]{0,62}[a-z0-9]$` is a 404.
+- The heat map decides `scorecards:list` in each of the person's accounts and reads the allowed
+  ones (at most 500) with the BFF's service token (`?accountIds=`, comma separated); none
+  allowed is `{ packs: [], rows: [] }`.
+- A fix asks `scorecards:remediate` on the resource's wfrn and the fix its pack describes:
+  `<service>:tag` for a tags fix, `<service>:<verb>` for a workflow fix (with its step-up rule).
+  The BFF relays the person's `X-On-Behalf-Of`, `Idempotency-Key` and `X-Console-Request-Id`; the
+  drift service's 200, 202, 400 (`remediation.input`) and 409 (`evaluation.passing`,
+  `remediation.none`, `remediation.unavailable`, `remediation.needsPerson`, `resource.inFlight`)
+  come back as they were. PR #19's 409 list leaves out `remediation.needsPerson`.
 
 ## Session
 

@@ -8,7 +8,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.iaf.console.bff.live.domain.LiveHub;
+import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.platform.application.PlatformClients;
+import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.platform.application.Regions;
 import com.iaf.console.bff.types.application.Types;
 
@@ -22,8 +24,8 @@ public class LiveConfiguration {
     }
 
     @Bean
-    public Live live(LiveHub hub, LiveProperties properties) {
-        return new Live(hub, properties);
+    public Live live(LiveHub hub, LiveProperties properties, Access access, PlatformProperties platform) {
+        return new Live(hub, properties, access, platform.partition());
     }
 
     @Bean

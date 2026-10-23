@@ -6,7 +6,9 @@ resource type looks like and what the signed-in person may do with it, serves th
 over the state service (list, detail, create, update, verbs, tags, lineage, drift, batches,
 previews), changes them safely (blast radius, required tags, bulk in waves, retry with a fix,
 the Tag Editor, resource groups, launch more like this), the Requests page (jobs and
-approvals), streams live changes, and passes IAM calls through to the identity service.
+approvals), cost and budgets (through the cost service, with budgets guarding creates),
+compliance scorecards (through the drift service), streams live changes, and passes IAM calls
+through to the identity service.
 It never holds platform credentials in the browser: every platform call is made here, with the
 account's service account and a signed on-behalf-of assertion naming the person.
 
@@ -16,7 +18,9 @@ step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type 
 BFF's side of **6.1** (global search, type-ahead and the list's counts, through the search
 indexer), and phase 4: **4.1** (the update convention), **4.2** (delete with dependents, bulk
 in waves, retry, skip and abort), **4.3** (tags, the Tag Editor, resource groups), **4.4**
-(required tags at create), **4.5** (blast radius) and **4.6** (launch more like this).
+(required tags at create), **4.5** (blast radius) and **4.6** (launch more like this); the BFF's
+side of cost and budgets (decision 25: Cost Explorer, price lists, chargeback, budgets, budget
+checks on creates, `budget.alert`) and of the compliance scorecards (**9.6**).
 
 ## Running it
 
@@ -26,7 +30,9 @@ in waves, retry, skip and abort), **4.3** (tags, the Tag Editor, resource groups
 
 The demo profile needs nothing else: it embeds `platform-fake` on port 18090, a small OpenID
 provider at `/demo-idp` with a user picker, and an in-process stand-in of the identity service at
-`/demo-identity`, reached over HTTP by the same adapters that will talk to the real one. Open
+`/demo-identity`, reached over HTTP by the same adapters that will talk to the real one (likewise
+the state service, the search indexer, the cost service and the drift service's scorecards under
+`/demo-state`, `/demo-search`, `/demo-cost` and `/demo-drift`). Open
 <http://localhost:18081/auth/login?returnTo=/> and pick a person:
 
 | Person | Compute account 123456789012 | Data account 210987654321 |
@@ -40,8 +46,8 @@ provider at `/demo-idp` with a user picker, and an in-process stand-in of the id
 | noah | no account: the sign-in answers 403 | |
 
 `GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs
-use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, search indexer 18085,
-web 3000 (the project's port decision of 2026-10-23; the plan's table had state and identity the
+use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, drift 18084, search
+indexer 18085, cost 18086, web 3000 (the project's port decision of 2026-10-23; the plan's table had state and identity the
 other way round).
 
 To run against the real services, leave the demo profile off and set the settings below; the
@@ -64,6 +70,8 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
 | `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
+| `console.cost.url`, `service-name`, `timeout`, `check-timeout` | The cost service (`http://localhost:18086`; empty: `/demo-cost`), its token audience, and how long a create waits for the budget check and estimate (2 s; past it the create goes on without them) |
+| `console.drift.url`, `service-name`, `timeout` | The drift service, for the scorecards (`http://localhost:18084`; empty: `/demo-drift`) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
@@ -151,7 +159,9 @@ fans events out per account into a ring (`console.live.ring-capacity` events, on
 sequence). A browser subscribes once with its session and may send `Last-Event-ID` after a
 reconnect; what the ring still holds is replayed, and when the cursor is older than the ring a
 `resync` event tells the web app to reload. The `kafka` profile adds the console's own events, so
-an identity change drops the cached policy decisions of its account on every instance.
+an identity change drops the cached policy decisions of its account on every instance, and a
+budget's threshold crossed (`BudgetThresholdCrossed` on `cost.events`) reaches the account's pages
+as `budget.alert`, only on the streams of people who may read the budget (`budgets:get`).
 
 ## Resources (WP 3.2, 3.3)
 
@@ -250,6 +260,48 @@ service's records directly: the indexer's query syntax (free words and quoted ph
 scores 10, a prefix 6, a contained word 4, the wfrn 2, a tag or attribute 1), HTML-escaped
 highlights, every sort the console offers, and exact counts.
 
+## Cost and budgets (decision 25, the BFF's side)
+
+The cost service prices; the account's policies decide who sees what. `cost:list` reads Cost
+Explorer (`GET /console/v1/cost`), the price lists and a resource's cost
+(`/r/{type}/{wfrn}/cost`, decided on the wfrn); `cost:export` the chargeback (JSON and CSV);
+`budgets:get|list|create|update|delete` the budgets, decided on
+`wfrn:<partition>:budgets::<account>:budget/<id>` (the id's underscore written as a hyphen), and
+each budget carries `can: { update, delete }`. Cost is decided on `wfrn:<partition>:cost::<account>:*`.
+With the managed roles every role reads, admins and auditors export, only admins change budgets.
+
+- The session's own account is read as the person. `scope=organization` decides the action in
+  each of the person's accounts, reads the allowed ones (at most 500) in one call with the BFF's
+  service token, and names the others in `skippedAccounts` (a header,
+  `X-Console-Skipped-Accounts`, on the CSV). The browser never names accounts itself.
+- Before a create's preview and before a create (one row or a batch), the BFF asks the cost
+  service's `budgets:check` with its service token: the account, type, service, tags, and the
+  preview's monthly cost (0 for the create itself). Each rule joins the preview's policy with its
+  `budgetId`; `budget.exceeded` denies, and the create is refused with a 409 `budget.exceeded`
+  (`detail.budgets`). A preview the provider's plan priced nothing is priced from
+  `POST /v1/cost:estimate`. Both fail open: past `console.cost.check-timeout` (2 s), or with the
+  cost service down, the BFF logs it and goes on with no budget rule and no estimate.
+- `Costs.monthlyCost(Session, wfrn)` gives the copilot one resource's monthly cost, empty when
+  refused, unknown or unreachable.
+
+In the demo profile the cost service is a stand-in under `/demo-cost` over the demo state
+service: list prices as the platform-fake's (a vm by cpu or size, a database by tier), spend
+counted day by day from each resource's creation, a budget's spend its scope's monthly run rate,
+and every threshold crossed published to the live stream as `budget.alert`.
+
+## Compliance scorecards (WP 9.6, the BFF's side)
+
+`/console/v1/scorecards` (the account's scorecard), `/scorecards/packs`, `/scorecards/heatmap`,
+`/scorecards/packs/{pack}/rules/{ruleId}/failing` and `/r/{type}/{wfrn}/compliance` pass through
+to the drift service's scorecards as the person, as `scorecards:list` allows (the compliance page
+also the resource's own `<service>:get`); the heat map decides it in each of the person's accounts
+and reads the allowed ones with the service token, naming each row's account. A one-click fix
+(`POST /scorecards/packs/{pack}/rules/{ruleId}:remediate`) needs `scorecards:remediate` on the
+resource and the fix's own action (`<service>:tag`, or `<service>:<verb>` with its step-up rule),
+relays the person's `X-On-Behalf-Of`, `Idempotency-Key` and request id, and answers the drift
+service's 200, 202, 400 and 409 as they were. The demo's stand-in under `/demo-drift` judges one
+pack, `baseline` (owner and cost-centre tags with a tags fix, a meaningful name without one).
+
 ## Service tokens (hub decision 23)
 
 The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
@@ -294,15 +346,16 @@ needs. `/internal` is never routed by the ingress. The demos keep their dev head
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
-`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `iam`, `preferences`,
-`platform`, `identity`, `demo`, and `common` for the error handling shared by every slice. Each slice is `domain` (no Spring),
+`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `iam`,
+`preferences`, `platform`, `identity`, `demo`, and `common` for the error handling and the
+service pass-through (`common.relay`) shared by every slice. Each slice is `domain` (no Spring),
 `ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
 service to the kit's rules and adds one of its own: only `..demo..` packages may depend on
 `platform-fake`.
 
 ## Tests
 
-`./gradlew test` runs 164 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 192 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).
