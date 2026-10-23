@@ -38,6 +38,13 @@ class IamProxyTest extends DemoApp {
         assertTrue(policies.json().path("items").size() > 0);
         Console.Reply quotas = console.get("/console/v1/iam/quotas", gonzalo);
         assertEquals(200, quotas.status(), quotas.body());
+        List<String> keys = new java.util.ArrayList<>();
+        quotas.json().path("items").forEach(q -> keys.add(q.path("key").asText()));
+        assertEquals(List.of("jobs-per-minute", "access-keys", "resources.compute", "resources.data", "resources.platform"), keys,
+                "the identity service's keys: " + quotas.body());
+        JsonNode jobs = quotas.json().path("items").get(0);
+        assertEquals("platform", jobs.path("source").asText(), "jobs per minute is the platform's bucket: " + jobs);
+        assertEquals(60, jobs.path("burst").asInt(), jobs.toString());
         assertEquals(404, console.get("/console/v1/iam/toasters", gonzalo).status());
     }
 
@@ -141,18 +148,18 @@ class IamProxyTest extends DemoApp {
     @Test
     void aQuotaIncreaseIsRequestedFollowedAndWithdrawn() {
         Console.Signed gonzalo = console.signIn("gonzalo");
-        Console.Reply opened = console.post("/console/v1/iam/quotas/compute:volumes:request-increase", gonzalo,
+        Console.Reply opened = console.post("/console/v1/iam/quotas/resources.compute:request-increase", gonzalo,
                 Map.of("limit", 400, "reason", "the nightly backups need more volumes"));
         assertEquals(202, opened.status(), opened.body());
         String requestId = opened.json().path("requestId").asText();
         assertTrue(requestId.startsWith("qreq_"), opened.body());
         assertEquals("open", opened.json().path("status").asText());
         assertEquals(400, opened.json().path("requestedLimit").asInt());
-        assertEquals(200, opened.json().path("currentLimit").asInt());
-        Console.Reply second = console.post("/console/v1/iam/quotas/compute:volumes:request-increase", gonzalo,
+        assertEquals(100, opened.json().path("currentLimit").asInt());
+        Console.Reply second = console.post("/console/v1/iam/quotas/resources.compute:request-increase", gonzalo,
                 Map.of("limit", 500, "reason", "the nightly backups need even more"));
         assertEquals(409, second.status(), "one open request per quota: " + second.body());
-        Console.Reply quota = console.get("/console/v1/iam/quotas/compute:volumes", gonzalo);
+        Console.Reply quota = console.get("/console/v1/iam/quotas/resources.compute", gonzalo);
         assertEquals(requestId, quota.json().path("pendingRequestId").asText(), quota.body());
         Console.Reply followed = console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo);
         assertEquals(200, followed.status(), followed.body());
@@ -166,6 +173,40 @@ class IamProxyTest extends DemoApp {
         Console.Reply twice = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + requestId, gonzalo, null, Map.of());
         assertEquals(409, twice.status(), twice.body());
         assertEquals("withdrawn", console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo).json().path("status").asText());
-        assertTrue(console.get("/console/v1/iam/quotas/compute:volumes", gonzalo).json().path("pendingRequestId").isMissingNode());
+        assertTrue(console.get("/console/v1/iam/quotas/resources.compute", gonzalo).json().path("pendingRequestId").isMissingNode());
+    }
+
+    @Test
+    void aViewerAsksForMoreQuotaAndWithdrawsItThemselves() {
+        Console.Signed mia = console.signIn("mia");
+        Console.Reply opened = console.post("/console/v1/iam/quotas/access-keys:request-increase", mia,
+                Map.of("limit", 80, "reason", "the build farm needs a key per runner"));
+        assertEquals(202, opened.status(), "a viewer may ask for a higher quota: " + opened.body());
+        assertEquals("user_mia", opened.json().path("requestedBy").asText(), opened.body());
+        assertEquals(50, opened.json().path("currentLimit").asInt(), opened.body());
+        Console.Reply withdrawn = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + opened.json().path("requestId").asText(), mia, null,
+                Map.of());
+        assertEquals(204, withdrawn.status(), "the requester withdraws their own: " + withdrawn.body());
+    }
+
+    @Test
+    void nobodyDecidesTheirOwnAccessRequest() {
+        Console.Signed dana = console.signIn("dana");
+        Console.Reply requested = console.post("/console/v1/access-requests", dana,
+                Map.of("action", "compute:delete", "reason", "I retire the old build VMs"));
+        assertEquals(202, requested.status(), requested.body());
+        String requestId = requested.json().path("requestId").asText();
+        assertFalse(requested.json().path("approvers").toString().contains("user_dana"),
+                "an approver who asks is no approver of their own request: " + requested.body());
+        Console.Reply own = console.post("/console/v1/access-requests/" + requestId + ":decide", dana, Map.of("decision", "approve"));
+        assertEquals(403, own.status(), own.body());
+        JsonNode denied = own.json().path("denied");
+        assertEquals("access-request:decide", denied.path("action").asText(), own.body());
+        assertEquals("wfrn:wf:iam::" + COMPUTE + ":access-request/" + requestId, denied.path("resource").asText(), own.body());
+        assertFalse(denied.path("requestable").asBoolean(true), "there is nothing to ask for: " + own.body());
+        assertEquals("nobody decides their own access request", own.json().path("error").asText(), own.body());
+        Console.Reply rejected = console.post("/console/v1/access-requests/" + requestId + ":decide", console.signIn("gonzalo"),
+                Map.of("decision", "reject", "comment", "use the cleanup workflow"));
+        assertEquals(202, rejected.status(), "someone else decides it: " + rejected.body());
     }
 }

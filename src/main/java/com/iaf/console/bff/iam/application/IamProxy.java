@@ -79,18 +79,60 @@ public class IamProxy {
                 return body;
             }
             ObjectNode out = parsed.isObject() ? (ObjectNode) parsed : json.createObjectNode();
-            String action = "iam:" + verbOf(method, rest);
+            String action = actionOf(method, rest);
             String role = RoleConventions.strongest(session.currentAccount().roles());
             String reason = out.path("error").asText("No statement allows " + action + " for role " + role);
             if (!out.has("error")) {
                 out.put("error", reason);
             }
-            Denial denial = Denial.byPolicy(action, "wfrn:wf:iam:" + session.region() + ":" + session.accountId() + ":*", reason, role, null, null);
+            Denial denial = Denial.byPolicy(action, resourceOf(session.accountId(), rest), reason, role, null, null);
             out.set("denied", json.valueToTree(denial));
             return json.writeValueAsBytes(out);
         } catch (java.io.IOException e) {
             return ("{\"error\":\"forbidden\"}").getBytes(StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * The action a refused call was, in the identity service's names: {@code quota:<verb>} for
+     * quotas and their requests ({@code quota:set} for a write or a withdrawal,
+     * {@code quota:request-increase}), {@code access-request:<verb>}, else {@code iam:<verb>}.
+     */
+    static String actionOf(HttpMethod method, String rest) {
+        if (rest.endsWith(":request-increase")) {
+            return "quota:request-increase";
+        }
+        String verb = verbOf(method, rest);
+        return switch (collectionOf(rest)) {
+            case "quotas", "quota-requests" -> "quota:" + ("update".equals(verb) || "delete".equals(verb) ? "set" : verb);
+            case "access-requests" -> "access-request:" + verb;
+            default -> "iam:" + verb;
+        };
+    }
+
+    /** The wfrn of what a refused call named, as the identity service names IAM things: {@code wfrn:wf:iam::<account>:<kind>/<id or *>}. */
+    static String resourceOf(String accountId, String rest) {
+        String path = rest.contains("?") ? rest.substring(0, rest.indexOf('?')) : rest;
+        int slash = path.indexOf('/');
+        String collection = collectionOf(path);
+        String kind = switch (collection) {
+            case "policies" -> "policy";
+            case "quotas" -> "quota";
+            default -> collection.endsWith("s") ? collection.substring(0, collection.length() - 1) : collection;
+        };
+        String id = slash < 0 || slash == path.length() - 1 ? "*" : path.substring(slash + 1).replaceAll(":[a-z-]+$", "");
+        return "wfrn:wf:iam::" + accountId + ":" + kind + "/" + id;
+    }
+
+    private static String collectionOf(String rest) {
+        int end = rest.length();
+        for (char c : new char[] {'/', '?', ':'}) {
+            int at = rest.indexOf(c);
+            if (at >= 0 && at < end) {
+                end = at;
+            }
+        }
+        return rest.substring(0, end);
     }
 
     static String verbOf(HttpMethod method, String rest) {

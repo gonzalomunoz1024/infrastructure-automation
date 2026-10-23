@@ -124,7 +124,14 @@ with the identity service's schemas unchanged. `quota-requests` is new beyond th
 with `POST /console/v1/iam/quotas/{quotaKey}:request-increase` (the quota's `pendingRequestId`
 names it) and `DELETE` withdraws it; the decision is the platform team's, internal only. `If-Match`, `If-None-Match`, `Idempotency-Key` and `Content-Type` are
 forwarded; the status, `ETag` and body come back as they were; a 403 without a `denied` block gets
-one. Writes need `X-Csrf-Token` like every other write.
+one, named as the identity service names it (`quota:request-increase`, `quota:set`,
+`access-request:<verb>`, else `iam:<verb>`, on `wfrn:wf:iam::<account>:<kind>/<id or *>`). Writes
+need `X-Csrf-Token` like every other write.
+
+The quota keys are the identity service's: `jobs-per-minute` (the platform's bucket, `source:
+platform`, with `burst`), `access-keys` (`used` counts the account's active keys) and
+`resources.<service>` for every service of the catalog. Viewers, operators and admins may ask for
+an increase (`quota:request-increase`); auditors only read.
 
 ## Access requests
 
@@ -140,7 +147,10 @@ requests; the account's queue (no `requester`, or someone else's) needs `access-
 and one request `access-request:get`, which the managed `account-admin` and `auditor` policies
 grant; deciding needs `access-request:decide` (admins, and the approver groups an admin granted
 it, so gate the approve button on the request's `approvers`); `reason` is 1 to 2000 characters;
-a request pending for 30 days is served `expired`.
+a request pending for 30 days is served `expired`. Nobody decides their own request: the
+requester is never among its `approvers`, and their own `:decide` is a 403 whose `denied` names
+`access-request:decide` on the request's wfrn with `requestable: false` and the reason "nobody
+decides their own access request".
 
 `AccessRequest`: `requestId, accountId, requester {userId, email, name}, action, resource, role,
 reason, status (pending|approved|rejected|expired), requestedAt, decidedAt, decidedBy, comment,

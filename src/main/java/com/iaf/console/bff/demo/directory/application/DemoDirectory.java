@@ -163,8 +163,9 @@ public class DemoDirectory {
 
     /** Opens a request; the caller has checked that no pending request of the same requester and role exists ({@link #pendingRequest}). */
     public synchronized AccessRequest requestAccess(String accountId, DemoPerson requester, String action, String resource, String role, String reason) {
+        // a requester never decides their own request, so they are no approver of it
         List<String> approvers = members(accountId).stream().filter(e -> decidesAccessRequests(e.getKey().subject(), accountId))
-                .map(e -> e.getKey().userId()).sorted().toList();
+                .map(e -> e.getKey().userId()).filter(userId -> !userId.equals(requester.userId())).sorted().toList();
         AccessRequest request = new AccessRequest("areq_" + Ulid.next().toLowerCase(), accountId,
                 new AccessRequest.Requester(requester.userId(), requester.email(), requester.name()), action, resource, role, reason, "pending",
                 clock.instant(), null, null, null, approvers);

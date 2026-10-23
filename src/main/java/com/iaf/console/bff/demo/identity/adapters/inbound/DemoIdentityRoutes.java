@@ -106,7 +106,7 @@ public class DemoIdentityRoutes {
                 .andRoute(GET(a + "/quotas"), r -> member(r, this::listQuotas))
                 .andRoute(GET(a + "/quotas/{quotaKey}"), r -> member(r, this::getQuota))
                 .andRoute(PUT(a + "/quotas/{quotaKey}"), this::setQuota)
-                .andRoute(POST(a + "/quotas/{quotaKey}:request-increase"), r -> admin(r, this::requestQuotaIncrease))
+                .andRoute(POST(a + "/quotas/{quotaKey}:request-increase"), r -> quotaRequester(r, this::requestQuotaIncrease))
                 .andRoute(GET(a + "/quota-requests/{requestId}"), r -> member(r, this::getQuotaRequest))
                 .andRoute(DELETE(a + "/quota-requests/{requestId}"), r -> member(r, this::withdrawQuotaRequest))
                 .andRoute(POST(a + "/quota-requests/{requestId}:decide"), this::decideQuotaRequest)
@@ -465,6 +465,9 @@ public class DemoIdentityRoutes {
     private static Map<String, Object> policy(String role) {
         List<Map<String, Object>> statements = new ArrayList<>();
         statements.add(statement("AllowReads", "allow", List.of("*:list", "*:get", "*:read", "*:preview")));
+        if (!ManagedRoles.AUDITOR.equals(role)) {
+            statements.add(statement("AllowSelfService", "allow", List.of("access-request:create", "quota:request-increase")));
+        }
         if (!ManagedRoles.VIEWER.equals(role) && !ManagedRoles.AUDITOR.equals(role)) {
             statements.add(statement("AllowChanges", "allow", List.of("*:*")));
         }
@@ -601,19 +604,54 @@ public class DemoIdentityRoutes {
 
     // ---- quotas
 
-    private static final Map<String, Integer> QUOTAS = Map.of("compute:vms", 50, "compute:volumes", 200, "data:databases", 20, "jobs:concurrent", 10);
+    /**
+     * The identity service's keys and defaults: {@code jobs-per-minute} (the platform's bucket, 60
+     * a minute with a burst of 60), {@code access-keys} (50, counted here) and
+     * {@code resources.<service>} for every service of the demo catalog (100; {@code used} is the
+     * state service's to report, so 0 here as there).
+     */
+    private static final String JOBS_PER_MINUTE = "jobs-per-minute";
+    private static final String ACCESS_KEYS = "access-keys";
+    private static final String RESOURCES = "resources.";
+    private static final List<String> DEMO_SERVICES = List.of("compute", "data", "platform");
+    private static final Map<String, Integer> QUOTAS = quotaDefaults();
+
+    private static Map<String, Integer> quotaDefaults() {
+        Map<String, Integer> defaults = new LinkedHashMap<>();
+        defaults.put(JOBS_PER_MINUTE, 60);
+        defaults.put(ACCESS_KEYS, 50);
+        DEMO_SERVICES.forEach(service -> defaults.put(RESOURCES + service, 100));
+        return Map.copyOf(defaults);
+    }
 
     private Mono<ServerResponse> listQuotas(ServerRequest request, DemoCaller caller, String accountId) {
         List<Map<String, Object>> items = new ArrayList<>();
-        for (Map.Entry<String, Integer> q : QUOTAS.entrySet()) {
-            items.add(quota(accountId, q.getKey()));
-        }
+        items.add(quota(accountId, JOBS_PER_MINUTE));
+        items.add(quota(accountId, ACCESS_KEYS));
+        DEMO_SERVICES.forEach(service -> items.add(quota(accountId, RESOURCES + service)));
         return json(HttpStatus.OK, page(items));
     }
 
     private Mono<ServerResponse> getQuota(ServerRequest request, DemoCaller caller, String accountId) {
         String key = request.pathVariable("quotaKey");
         return QUOTAS.containsKey(key) ? json(HttpStatus.OK, quota(accountId, key)) : error(HttpStatus.NOT_FOUND, "quota " + key + " not found");
+    }
+
+    /** Viewers, operators and admins ask for more ({@code quota:request-increase}); an auditor only reads. */
+    private Mono<ServerResponse> quotaRequester(ServerRequest request, Scoped handler) {
+        return member(request, (r, caller, accountId) -> {
+            List<String> roles = caller.internal() ? List.of() : directory.rolesOf(caller.personSubject(), accountId);
+            boolean asks = caller.internal() || roles.contains(ManagedRoles.VIEWER) || roles.contains(ManagedRoles.OPERATOR)
+                    || roles.contains(ManagedRoles.ADMIN);
+            if (!asks) {
+                String role = RoleConventions.strongest(roles);
+                Denial denial = Denial.byPolicy("quota:request-increase", "wfrn:wf:iam::" + accountId + ":quota/" + r.pathVariable("quotaKey"),
+                        "No statement allows quota:request-increase for role " + role, role, "managed/" + role, null);
+                return ServerResponse.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(Map.of("error", denial.reason(), "denied", denial));
+            }
+            return handler.handle(r, caller, accountId);
+        });
     }
 
     private Mono<ServerResponse> setQuota(ServerRequest request) {
@@ -740,12 +778,20 @@ public class DemoIdentityRoutes {
     private Map<String, Object> quota(String accountId, String key) {
         Map<String, Object> q = new LinkedHashMap<>();
         Integer override = quotaOverrides.get(accountId + "/" + key);
+        int limit = override == null ? QUOTAS.get(key) : override;
         q.put("key", key);
-        q.put("limit", override == null ? QUOTAS.get(key) : override);
-        q.put("used", Math.abs((accountId + key).hashCode()) % 7);
-        q.put("source", override == null ? "default" : "override");
+        q.put("limit", limit);
+        if (JOBS_PER_MINUTE.equals(key)) {
+            q.put("burst", limit);
+        }
+        q.put("used", ACCESS_KEYS.equals(key) ? usableKeys(accountId) : 0);
+        q.put("source", override != null ? "override" : JOBS_PER_MINUTE.equals(key) ? "platform" : "default");
         openQuotaRequest(accountId, key).ifPresent(open -> q.put("pendingRequestId", open.requestId()));
         return q;
+    }
+
+    private int usableKeys(String accountId) {
+        return (int) accessKeys.values().stream().filter(k -> accountId.equals(k.get("accountId")) && "active".equals(k.get("status"))).count();
     }
 
     /** A quota increase request, as the identity service's {@code QuotaRequest}. */
@@ -888,6 +934,9 @@ public class DemoIdentityRoutes {
             if (existing.isEmpty()) {
                 return error(HttpStatus.NOT_FOUND, "access request " + requestId + " not found");
             }
+            if (!caller.internal() && caller.subject().equals(existing.get().requester().userId())) {
+                return ownRequest(accountId, requestId);
+            }
             if (!existing.get().open()) {
                 return error(HttpStatus.CONFLICT, "the request is " + existing.get().status());
             }
@@ -898,6 +947,16 @@ public class DemoIdentityRoutes {
             invalidate(accountId);
             return json(HttpStatus.ACCEPTED, accessRequest(decided));
         });
+    }
+
+    /** Nobody decides their own access request, as the identity service refuses it; there is nothing to ask for, so it is not requestable. */
+    private Mono<ServerResponse> ownRequest(String accountId, String requestId) {
+        Denial denial = new Denial(Denial.CONSOLE_IAM, "access-request:decide", "wfrn:wf:iam::" + accountId + ":access-request/" + requestId,
+                "nobody decides their own access request", null, null, null, null, false, null);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", denial.reason());
+        body.put("denied", denial);
+        return json(HttpStatus.FORBIDDEN, body);
     }
 
     private static Map<String, Object> accessRequest(AccessRequest r) {
