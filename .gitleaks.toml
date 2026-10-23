@@ -1,0 +1,4 @@
+# gitleaks: the default rules, as the platform's own scan uses them. A single finding reviewed as a
+# false positive goes in .gitleaksignore by its fingerprint; a rule is never silenced here.
+[extend]
+useDefault = true

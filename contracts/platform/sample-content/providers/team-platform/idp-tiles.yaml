@@ -1,0 +1,44 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: idp-tiles
+  title: IDP tiles
+  owner: team-platform
+  version: 0.1.0
+  description: The enterprise developer portal's tiles. A mock catalog until the IDP tiles API is wired (TODO, examples pending).
+spec:
+  type: idp
+  tile: { id: block-storage-request }
+  auth: { type: bearer, credential: vault:idp/token }
+  actions:
+    - id: block-storage-request
+      title: Request block storage
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [sizeGb]
+        properties:
+          sizeGb: { type: integer }
+          tier: { type: string, enum: [standard, premium], default: standard }
+          requester: { type: string }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          ticket: { type: string }
+          state: { type: string }
+      sample: { id: "vol-{{ $job.seq }}", ticket: "IDP-{{ $job.seq }}", state: fulfilled }
+    - id: dns-record-request
+      title: Request a DNS record
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [name, target]
+        properties:
+          name: { type: string }
+          target: { type: string }
+      sample: { id: "dns-{{ $job.seq }}", ticket: "IDP-{{ $job.seq }}", state: fulfilled }
+  slo: { successRate: 95.0, p95Ms: 5000 }
+  alerts: { channel: "#platform-alerts" }

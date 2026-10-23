@@ -1,0 +1,123 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: vm-restart
+  title: VM restart
+  noun: vm
+  verb: restart
+  persona: ops
+  owner: team-compute
+  folder: Compute
+  tags: [vsphere, ops]
+  version: 1.2.0
+  description: Restart a virtual machine after safety checks, with an approval for production.
+api:
+  method: POST
+  path: /api/v1/vms/{vmId}:restart
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId:
+        type: string
+        title: VM id
+        description: The VM to restart, picked from the resource registry
+        x-resource: { type: vm }
+      reason:
+        type: string
+        title: Reason
+        examples: ["stuck after a kernel update", "high load, unresponsive", "memory leak in the monitoring agent", "requested by the on-call", "disk full, services restarting"]
+      environment:
+        type: string
+        title: Environment
+        enum: [dev, test, prod]
+        default: dev
+  response:
+    status: 202
+    body:
+      type: object
+      properties:
+        vmName: { type: string, description: "The VM's name in vSphere" }
+        powerState: { type: string, description: "Its power state after the restart, like poweredOn" }
+  preview: true
+  batch:
+    max: 500
+    rollout: { waves: [5, 25, 100], maxParallel: 10, stopIfFailedPercent: 5 }
+mcp:
+  expose: true
+  description: Restart a virtual machine after safety checks. Returns a job id to poll.
+policy:
+  approval: { required: true, group: compute-approvers, timeout: 4h }
+  rbac: [ops, sre]
+  change: { required: true }
+triggers:
+  - alert:
+      match: { source: grafana, labels: { alertname: VMUnresponsive, severity: critical } }
+      input: { vmId: "{{ $alert.labels.vm_id }}", reason: "{{ $alert.annotations.summary }}" }
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - checkVmExists:
+        name: Check VM exists
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.get
+          input: { id: "{{ $input.vmId }}" }
+        output: { as: vm }
+    - noBackupRunning:
+        name: No backup running
+        call: provider
+        with:
+          provider: backup
+          action: jobs.list
+          input: { target: "{{ $input.vmId }}", state: running }
+        assert: "{{ $json.items.length == 0 }}"
+    - approval:
+        name: Approve restart
+        approval:
+          group: compute-approvers
+          message: "Restart {{ $vm.name }} ({{ $vm.powerState }}) in {{ $input.environment }}? Reason: {{ $input.reason }}"
+          timeout: 4h
+          escalation: { after: 2h, to: compute-leads }
+    - restart:
+        name: Restart with Ansible
+        call: ansible
+        with:
+          playbook:
+            git: { repo: github.com/acme/ops-playbooks, ref: v3.1.0, path: vm/restart.yml }
+            commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d
+          inventory: dynamic
+          limit: "{{ $vm.name }}"
+          extraVars: { vm_id: "{{ $input.vmId }}", graceful: true }
+          credential: vault:ssh/ops-automation
+          executionEnvironment: ee-platform:2.17
+          checkModeOnTest: true
+        retry: { maxAttempts: 1 }
+        timeout: 30m
+    - validate:
+        name: Wait for power on
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.waitForPowerState
+          input: { id: "{{ $input.vmId }}", state: poweredOn, timeout: 600 }
+        timeout: 10m
+        pauseOnFailure: true
+    - notifyDone:
+        name: Tell the channel
+        notify:
+          channel: "#compute-ops"
+          message: "Restarted {{ $vm.name }} for {{ $job.requester }}: {{ $('Wait for power on').json.powerState }}"
+  catch:
+    do:
+      - notifyOwner:
+          name: Tell the on-call
+          notify:
+            channel: "#compute-alerts"
+            message: "VM restart {{ $job.id }} failed at {{ $error.step }}: {{ $error.message }}"
+  outputs:
+    vmName: "{{ $vm.name }}"
+    powerState: "{{ $('validate').json.powerState }}"

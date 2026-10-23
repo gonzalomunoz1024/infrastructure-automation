@@ -1,0 +1,107 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: patch-cve
+  title: Patch CVE
+  noun: vm
+  verb: patch
+  persona: ops
+  owner: team-platform
+  folder: Platform
+  tags: [security, ansible]
+  version: 1.0.0
+  description: Apply a vendor patch for one CVE to a VM, verify it, and reboot only when the patch needs it.
+api:
+  method: POST
+  path: /api/v1/vms/{vmId}:patch
+  input:
+    type: object
+    required: [vmId, cve]
+    properties:
+      vmId:
+        type: string
+        title: VM id
+        x-resource: { type: vm }
+      cve:
+        type: string
+        title: CVE
+        examples: [CVE-2026-1234, CVE-2026-20871, CVE-2026-3301]
+        pattern: "^CVE-[0-9]{4}-[0-9]{4,}$"
+      severity:
+        type: string
+        title: Severity
+        enum: [low, medium, high, critical]
+        default: high
+  response: { status: 202 }
+  preview: true
+  batch:
+    max: 1000
+    rollout: { waves: [5, 25, 100], maxParallel: 20, stopIfFailedPercent: 5 }
+mcp:
+  expose: true
+  description: Patch one CVE on a VM. Use the batch tool for a fleet.
+policy:
+  rbac: [ops, sre, security]
+triggers:
+  - alert:
+      match: { source: vuln-scanner, labels: { severity: critical } }
+      input: { vmId: "{{ $alert.labels.vm_id }}", cve: "{{ $alert.labels.cve }}", severity: critical }
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - useVm:
+        name: Use VM
+        # the platform team patches every team's VMs: the step opts out of the owner-team check
+        use: { type: vm, id: "{{ $input.vmId }}", checkAccess: false }
+        output: { as: vm }
+    - needsApproval:
+        name: Critical in prod?
+        switch:
+          - case: { when: "{{ $input.severity == 'critical' && $vm.attributes.environment == 'prod' }}", then: approval }
+          - default: patch
+    - approval:
+        name: Approve emergency patch
+        approval:
+          group: platform-approvers
+          message: "Patch {{ $input.cve }} on production VM {{ $vm.attributes.name }} now?"
+          timeout: 1h
+    - patch:
+        name: Apply patch
+        call: ansible
+        with:
+          playbook:
+            git: { repo: github.com/acme/ops-playbooks, ref: v3.1.0, path: patch/cve.yml }
+            commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d
+          inventory: dynamic
+          limit: "{{ $vm.attributes.name }}"
+          extraVars: { cve: "{{ $input.cve }}" }
+          credential: vault:ssh/ops-automation
+          executionEnvironment: ee-platform:2.17
+        output: { as: patchResult }
+        retry: { maxAttempts: 1 }
+        timeout: 45m
+    - rebootIfNeeded:
+        name: Reboot needed?
+        switch:
+          - case: { when: "{{ $patchResult.rebootRequired == true }}", then: reboot }
+          - default: verify
+    - reboot:
+        name: Reboot via VM restart
+        run:
+          workflow: vm-restart
+          version: "^1"
+          input: { vmId: "{{ $input.vmId }}", reason: "Reboot after {{ $input.cve }}" }
+    - verify:
+        name: Verify patch
+        script:
+          language: javascript
+          code: |
+            const fixed = input.installed.some(p => p.cves.includes(input.cve));
+            return { fixed, installed: input.installed.length };
+          input: { installed: "{{ $patchResult.packages }}", cve: "{{ $input.cve }}" }
+        assert: "{{ $json.fixed == true }}"
+  outputs:
+    fixed: "{{ $('verify').json.fixed }}"
+    rebooted: "{{ $patchResult.rebootRequired }}"

@@ -1,0 +1,1042 @@
+asyncapi: 3.0.0
+id: urn:iaf:platform:events
+info:
+  title: Infrastructure automation platform, target event feed
+  version: 1.0.0-target
+  description: |
+    The platform's durable event feed as P-01 of `platform-changes/README.md` defines it, with the
+    additions of P-04 (context), P-05 (wfrns on resource events), P-07 (`region.changed`) and P-19
+    (`content.published`). It is the contract the console's consumers are built against; the
+    platform's own copy will live at `docs/customer-console/events.asyncapi.yaml`.
+
+    **Envelope.** Every message, on Kafka (the message value, JSON) and over
+    `GET /api/v1/events` and `/api/v1/events/stream`, is the `Envelope` below: `specVersion`,
+    `dataVersion`, `id`, `key`, `seq`, `type`, `at`, `aggregate`, `aggregateId`, `actor`,
+    `onBehalfOf`, `context`, `traceparent` and `data`. `onBehalfOf` and `context` are present only
+    when the job was started by the console (P-02, P-04). `data` is what the event carries in
+    process today, run through the redaction; its schema per event type is in
+    `components.schemas`, and `dataVersion` is the version of that schema (1 for every type in this
+    first catalog). Adding a field to `data` is compatible and keeps the version; removing or
+    renaming one needs a new type name (`job.finished.v2`), published beside the old one for one
+    release.
+
+    **De-duplication is on `key`, never on `id`.** `id` is random (`evt_...`) and only serves
+    tracing; a re-emitted event (the outbox sweeper re-emits a terminal event whose first write was
+    lost) gets a new `id` and the same `key`. `key` is deterministic: `<type>:<jobId>:<seq>` for
+    job events (`seq` is the job's own event sequence), `<type>:<resourceId>:<updatedAt epoch
+    nanos>` for resource events, `<type>:<name>:<version>` for content events (the file hash stands
+    for the version of a resource type or a region until P-19 gives types a version), and
+    `<type>:<recordId>:<at epoch nanos>` for audit events. Every consumer keeps the keys it has
+    applied and drops a message whose key it has seen. `seq` is the outbox sequence, one total order
+    per platform installation; the HTTP feed pages by it and the stream resumes from it
+    (`Last-Event-ID`).
+
+    **Ordering** is per partition only: per job on `platform.jobs`, per resource on
+    `platform.resources`, per content name on `platform.content`, per record on `platform.audit`.
+    A resource's job events carry its wfrn in `context.wfrn`, so a consumer never needs an order
+    across resources.
+
+    **Visibility.** The feed carries redacted data only. A console service account (P-03) sees only
+    events whose `context.accountId` is its own account; the console's internal account (the state
+    service, the indexer) sees all accounts.
+
+    **Retention.** The outbox keeps 7 days, Kafka 14 days on the job and resource topics and 30 days
+    on the content and audit topics (the content topic is also compacted by name). A consumer
+    further behind rebuilds from `GET /api/v1/events/snapshot` and follows the feed from the
+    snapshot's `highWaterSeq`.
+  contact:
+    name: Customer console hub (console-root)
+  x-platform-change: [P-01]
+defaultContentType: application/json
+servers:
+  kafka:
+    host: kafka.platform.internal:9092
+    protocol: kafka
+    description: The platform's Kafka, written by the relay of P-01 (`kafka` profile). The console's consumers read it with a consumer group per service.
+    security:
+      - $ref: '#/components/securitySchemes/saslScram'
+  feed:
+    host: platform.internal
+    protocol: https
+    description: The same events over HTTP, `GET /api/v1/events?after=<seq>` and `GET /api/v1/events/stream` (scope `events:read`), for every run without Kafka. See openapi-target.yaml, operations listEvents and streamEvents.
+    security:
+      - $ref: '#/components/securitySchemes/bearer'
+channels:
+  platformJobs:
+    address: platform.jobs
+    title: Job events
+    description: Everything that happens to a job, keyed by the job id, so one job's events are in order. 14 days.
+    messages:
+      jobStarted: { $ref: '#/components/messages/jobStarted' }
+      jobStep: { $ref: '#/components/messages/jobStep' }
+      jobAttention: { $ref: '#/components/messages/jobAttention' }
+      jobAttentionResolved: { $ref: '#/components/messages/jobAttentionResolved' }
+      jobApprovalRequested: { $ref: '#/components/messages/jobApprovalRequested' }
+      jobApprovalDecided: { $ref: '#/components/messages/jobApprovalDecided' }
+      jobApprovalEscalated: { $ref: '#/components/messages/jobApprovalEscalated' }
+      jobCancelled: { $ref: '#/components/messages/jobCancelled' }
+      jobFinished: { $ref: '#/components/messages/jobFinished' }
+      batchWave: { $ref: '#/components/messages/batchWave' }
+    bindings:
+      kafka:
+        topic: platform.jobs
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 1209600000
+        bindingVersion: 0.5.0
+    x-partition-key: jobId
+    x-retention: 14d
+  platformResources:
+    address: platform.resources
+    title: Resource events
+    description: Registrations and retirements, keyed by the resource's wfrn when it has one (P-05), else by its registry id. 14 days.
+    messages:
+      resourceRegistered: { $ref: '#/components/messages/resourceRegistered' }
+      resourceRetired: { $ref: '#/components/messages/resourceRetired' }
+    bindings:
+      kafka:
+        topic: platform.resources
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 1209600000
+        bindingVersion: 0.5.0
+    x-partition-key: 'wfrn, else resourceId'
+    x-retention: 14d
+  platformContent:
+    address: platform.content
+    title: Content events
+    description: Workflows, providers, resource types and regions as they are published, changed or deleted, and releases, keyed by the content name. 30 days, compacted by name.
+    messages:
+      workflowPublished: { $ref: '#/components/messages/workflowPublished' }
+      workflowDeleted: { $ref: '#/components/messages/workflowDeleted' }
+      providerPublished: { $ref: '#/components/messages/providerPublished' }
+      providerUpdated: { $ref: '#/components/messages/providerUpdated' }
+      resourceTypeChanged: { $ref: '#/components/messages/resourceTypeChanged' }
+      regionChanged: { $ref: '#/components/messages/regionChanged' }
+      contentPublished: { $ref: '#/components/messages/contentPublished' }
+      releaseStarted: { $ref: '#/components/messages/releaseStarted' }
+      releasePromoted: { $ref: '#/components/messages/releasePromoted' }
+      releaseRolledBack: { $ref: '#/components/messages/releaseRolledBack' }
+    bindings:
+      kafka:
+        topic: platform.content
+        partitions: 3
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [compact, delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: content name
+    x-retention: 30d, compacted by name
+  platformAudit:
+    address: platform.audit
+    title: Audit events
+    description: Evidence records sealed and shared, keyed by the record id (a job id). 30 days.
+    messages:
+      auditSealed: { $ref: '#/components/messages/auditSealed' }
+      auditShared: { $ref: '#/components/messages/auditShared' }
+    bindings:
+      kafka:
+        topic: platform.audit
+        partitions: 3
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: record id
+    x-retention: 30d
+operations:
+  receiveJobEvents:
+    action: receive
+    channel: { $ref: '#/channels/platformJobs' }
+    summary: The state service, the BFF and the indexer follow jobs here
+    description: The state service turns `job.started`, `job.step` (register steps), `job.finished` and `job.cancelled` into its own resource state; the BFF pushes them to open consoles; the indexer updates its activity index.
+    messages:
+      - $ref: '#/channels/platformJobs/messages/jobStarted'
+      - $ref: '#/channels/platformJobs/messages/jobStep'
+      - $ref: '#/channels/platformJobs/messages/jobAttention'
+      - $ref: '#/channels/platformJobs/messages/jobAttentionResolved'
+      - $ref: '#/channels/platformJobs/messages/jobApprovalRequested'
+      - $ref: '#/channels/platformJobs/messages/jobApprovalDecided'
+      - $ref: '#/channels/platformJobs/messages/jobApprovalEscalated'
+      - $ref: '#/channels/platformJobs/messages/jobCancelled'
+      - $ref: '#/channels/platformJobs/messages/jobFinished'
+      - $ref: '#/channels/platformJobs/messages/batchWave'
+  receiveResourceEvents:
+    action: receive
+    channel: { $ref: '#/channels/platformResources' }
+    summary: The state service and the drift service follow the registry here
+    messages:
+      - $ref: '#/channels/platformResources/messages/resourceRegistered'
+      - $ref: '#/channels/platformResources/messages/resourceRetired'
+  receiveContentEvents:
+    action: receive
+    channel: { $ref: '#/channels/platformContent' }
+    summary: The BFF refreshes type descriptors and the catalog from here
+    messages:
+      - $ref: '#/channels/platformContent/messages/workflowPublished'
+      - $ref: '#/channels/platformContent/messages/workflowDeleted'
+      - $ref: '#/channels/platformContent/messages/providerPublished'
+      - $ref: '#/channels/platformContent/messages/providerUpdated'
+      - $ref: '#/channels/platformContent/messages/resourceTypeChanged'
+      - $ref: '#/channels/platformContent/messages/regionChanged'
+      - $ref: '#/channels/platformContent/messages/contentPublished'
+      - $ref: '#/channels/platformContent/messages/releaseStarted'
+      - $ref: '#/channels/platformContent/messages/releasePromoted'
+      - $ref: '#/channels/platformContent/messages/releaseRolledBack'
+  receiveAuditEvents:
+    action: receive
+    channel: { $ref: '#/channels/platformAudit' }
+    summary: The identity service's audit export follows seals here
+    messages:
+      - $ref: '#/channels/platformAudit/messages/auditSealed'
+      - $ref: '#/channels/platformAudit/messages/auditShared'
+components:
+  securitySchemes:
+    saslScram:
+      type: scramSha512
+      description: The relay's and the consumers' Kafka credentials, one principal per console service
+    bearer:
+      type: httpApiKey
+      name: Authorization
+      in: header
+      description: A service account token with the `events:read` scope (P-03)
+  messageTraits:
+    event:
+      summary: One event of the feed
+      contentType: application/json
+      correlationId:
+        description: The deterministic event key, which consumers de-duplicate on
+        location: $message.payload#/key
+      bindings:
+        kafka:
+          key:
+            type: string
+            description: The partition key of the channel (job id, wfrn or resource id, content name, record id)
+          bindingVersion: 0.5.0
+  messages:
+    jobStarted:
+      name: job.started
+      title: A job started
+      summary: A job was accepted and starts to run; carries the redacted input and, when there was one, the preview, the policy decision and the change record
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobStartedEvent' }
+      x-key: 'job.started:<jobId>:<seq>'
+      x-platform-change: [P-01]
+      examples:
+        - name: A console user creates a VM
+          payload:
+            specVersion: '1.0'
+            dataVersion: 1
+            id: evt_01jbx9example
+            key: 'job.started:job_7q2m:1'
+            seq: 1882201
+            type: job.started
+            at: '2026-10-23T02:10:41.002Z'
+            aggregate: job
+            aggregateId: job_7q2m
+            actor: console-123456789012
+            onBehalfOf: { id: dana, name: Dana Li, email: dana@example.com }
+            context:
+              accountId: '123456789012'
+              region: global
+              wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
+              consoleRequestId: req_01jbx9example
+            data:
+              jobId: job_7q2m
+              workflow: create-vm
+              version: 2.0.1
+              requester: dana
+              channel: rest
+              input: { name: web-03, image: img-base-ubuntu, size: small, environment: dev }
+              kind: single
+              title: Create VM
+              traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+    jobStep:
+      name: job.step
+      title: A step changed state
+      summary: A step started, finished, failed, was skipped or compensated; the register step's output names the resource it wrote
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobStepEvent' }
+      x-key: 'job.step:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobAttention:
+      name: job.attention
+      title: A job needs attention
+      summary: A step failed in a way a person must decide on (retry, edit the input, skip, abort)
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobAttentionEvent' }
+      x-key: 'job.attention:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobAttentionResolved:
+      name: job.attention-resolved
+      title: The attention was resolved
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobAttentionResolvedEvent' }
+      x-key: 'job.attention-resolved:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobApprovalRequested:
+      name: job.approval-requested
+      title: An approval was requested
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobApprovalRequestedEvent' }
+      x-key: 'job.approval-requested:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobApprovalDecided:
+      name: job.approval-decided
+      title: An approval was decided
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobApprovalDecidedEvent' }
+      x-key: 'job.approval-decided:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobApprovalEscalated:
+      name: job.approval-escalated
+      title: An approval was escalated
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobApprovalEscalatedEvent' }
+      x-key: 'job.approval-escalated:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobCancelled:
+      name: job.cancelled
+      title: A job was cancelled
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobCancelledEvent' }
+      x-key: 'job.cancelled:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    jobFinished:
+      name: job.finished
+      title: A job ended
+      summary: The terminal event, with the final status, the duration and the redacted output; the sweeper re-emits it when its first write was lost
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/JobFinishedEvent' }
+      x-key: 'job.finished:<jobId>:<seq>'
+      x-platform-change: [P-01]
+      examples:
+        - name: The VM was created
+          payload:
+            specVersion: '1.0'
+            dataVersion: 1
+            id: evt_01jbx9example2
+            key: 'job.finished:job_7q2m:42'
+            seq: 1882231
+            type: job.finished
+            at: '2026-10-23T02:11:09.412Z'
+            aggregate: job
+            aggregateId: job_7q2m
+            actor: console-123456789012
+            onBehalfOf: { id: dana, name: Dana Li, email: dana@example.com }
+            context:
+              accountId: '123456789012'
+              region: global
+              wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
+              consoleRequestId: req_01jbx9example
+            data:
+              jobId: job_7q2m
+              workflow: create-vm
+              version: 2.0.1
+              status: succeeded
+              durationMs: 28410
+              output: { vmId: vm-1042 }
+    batchWave:
+      name: batch.wave
+      title: A batch wave started or ended
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/BatchWaveEvent' }
+      x-key: 'batch.wave:<jobId>:<seq>'
+      x-platform-change: [P-01]
+    resourceRegistered:
+      name: resource.registered
+      title: A resource was registered
+      summary: A register step wrote a resource, new or re-registered (the building then ready pattern); with P-05 the event names it by wfrn
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ResourceRegisteredEvent' }
+      x-key: 'resource.registered:<resourceId>:<updatedAt epoch nanos>'
+      x-platform-change: [P-01, P-05]
+    resourceRetired:
+      name: resource.retired
+      title: A resource was retired
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ResourceRetiredEvent' }
+      x-key: 'resource.retired:<resourceId>:<updatedAt epoch nanos>'
+      x-platform-change: [P-01, P-05]
+    workflowPublished:
+      name: workflow.published
+      title: A workflow version was published
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/WorkflowPublishedEvent' }
+      x-key: 'workflow.published:<name>:<version>'
+      x-platform-change: [P-01]
+    workflowDeleted:
+      name: workflow.deleted
+      title: A workflow was deleted
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/WorkflowDeletedEvent' }
+      x-key: 'workflow.deleted:<name>:<version>'
+      x-platform-change: [P-01]
+    providerPublished:
+      name: provider.published
+      title: A provider version was published
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ProviderPublishedEvent' }
+      x-key: 'provider.published:<name>:<version>'
+      x-platform-change: [P-01]
+    providerUpdated:
+      name: provider.updated
+      title: A provider was updated in place
+      summary: In the platform's recorded event list at c9529d5, but nothing publishes it yet; kept in the catalog with the published shape so a consumer handles both
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ProviderUpdatedEvent' }
+      x-key: 'provider.updated:<name>:<version>'
+      x-platform-change: [P-01]
+    resourceTypeChanged:
+      name: resource-type.changed
+      title: A resource type's stored definition changed
+      summary: New with P-01, published by the content loader at start and by ResourceCommandHandler on a change request; until P-19 lands it fires at start-up only
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ResourceTypeChangedEvent' }
+      x-key: 'resource-type.changed:<name>:<hash>'
+      x-platform-change: [P-01, P-19]
+    regionChanged:
+      name: region.changed
+      title: A region's stored definition changed
+      summary: New with P-07, published by the regions loader
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/RegionChangedEvent' }
+      x-key: 'region.changed:<name>:<hash>'
+      x-platform-change: [P-01, P-07]
+    contentPublished:
+      name: content.published
+      title: Content was published through a change request
+      summary: P-19, fired once when a change request that adds or changes a resource type is merged, beside resource-type.changed
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ContentPublishedEvent' }
+      x-key: 'content.published:<name>:<version>'
+      x-platform-change: [P-19]
+    releaseStarted:
+      name: release.started
+      title: A canary release started
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ReleaseStartedEvent' }
+      x-key: 'release.started:<workflow or provider>:<to>'
+      x-platform-change: [P-01]
+    releasePromoted:
+      name: release.promoted
+      title: A version takes all traffic
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ReleasePromotedEvent' }
+      x-key: 'release.promoted:<workflow or provider>:<to>'
+      x-platform-change: [P-01]
+    releaseRolledBack:
+      name: release.rolled-back
+      title: A release was rolled back
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/ReleaseRolledBackEvent' }
+      x-key: 'release.rolled-back:<workflow or provider>:<to>'
+      x-platform-change: [P-01]
+    auditSealed:
+      name: audit.sealed
+      title: An evidence record was sealed
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/AuditSealedEvent' }
+      x-key: 'audit.sealed:<recordId>:<at epoch nanos>'
+      x-platform-change: [P-01]
+    auditShared:
+      name: audit.shared
+      title: An evidence record was shared by link
+      traits: [{ $ref: '#/components/messageTraits/event' }]
+      payload: { $ref: '#/components/schemas/AuditSharedEvent' }
+      x-key: 'audit.shared:<recordId>:<at epoch nanos>'
+      x-platform-change: [P-01]
+  schemas:
+    Envelope:
+      type: object
+      description: What every consumer sees, on Kafka and over HTTP (P-01)
+      required: [specVersion, dataVersion, id, key, seq, type, at, aggregate, aggregateId, actor, data]
+      properties:
+        specVersion: { type: string, const: '1.0', description: The envelope's version }
+        dataVersion: { type: integer, minimum: 1, description: 'The version of this event type''s data schema' }
+        id: { type: string, description: 'Random (evt_...), for tracing only; never the identity' }
+        key: { type: string, description: 'The deterministic identity: consumers de-duplicate on it' }
+        seq: { type: integer, format: int64, description: The outbox sequence, one total order per installation }
+        type: { type: string, description: An event type of this catalog }
+        at: { type: string, format: date-time }
+        aggregate: { type: string, enum: [job, resource, workflow, provider, resource-type, region, release, audit, content] }
+        aggregateId: { type: string }
+        actor: { type: string, description: 'Who caused it: a person, a service account (the console''s is console-<accountId>) or system' }
+        onBehalfOf:
+          $ref: '#/components/schemas/Person'
+          x-platform-change: [P-02]
+        context:
+          $ref: '#/components/schemas/JobContext'
+          x-platform-change: [P-04]
+        traceparent: { type: string, description: W3C trace context of the request that caused the event, when there was one }
+        data: { type: object, additionalProperties: true }
+    Person:
+      type: object
+      description: 'P-02: the console user a job was started for; absent when the job was not started by the console'
+      required: [id]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+    JobContext:
+      type: object
+      description: 'P-04: the console account, region, resource and request a job is about; absent when the job was not started by the console'
+      properties:
+        accountId: { type: string, pattern: '^[0-9]{12}$' }
+        region: { type: string, pattern: '^[a-z0-9-]{2,32}$' }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        consoleRequestId: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+    Wfrn:
+      type: string
+      description: 'A resource name: wfrn:<partition>:<service>:<region>:<account>:<type>/<id> (contracts/wfrn/SPEC.md)'
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    StepError:
+      type: object
+      required: [class, message, retryable]
+      properties:
+        class: { type: string, description: 'A class from the provider''s errors table, or the platform''s' }
+        message: { type: string }
+        retryable: { type: boolean }
+    JobStatus:
+      type: string
+      enum: [queued, running, waiting-approval, needs-attention, succeeded, failed, cancelled, rolled-back]
+    StepStatus:
+      type: string
+      enum: [pending, running, waiting, succeeded, failed, skipped, compensated]
+    Preview:
+      type: object
+      description: The preview a job or an approval carries, as openapi-target.yaml's Preview
+      required: [workflow, version, steps, affectedResources, policy]
+      properties:
+        workflow: { type: string }
+        version: { type: string }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, name, effect]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              effect: { type: string, enum: [create, change, delete, read, none, unknown] }
+              detail: { type: string }
+              skipped: { type: boolean }
+        affectedResources:
+          type: array
+          items:
+            type: object
+            required: [id, type]
+            properties:
+              id: { type: string }
+              type: { type: string }
+              name: { type: string }
+              via: { type: string }
+              wfrn:
+                $ref: '#/components/schemas/Wfrn'
+                x-platform-change: [P-05]
+        cost:
+          type: object
+          required: [monthly, currency]
+          properties:
+            monthly: { type: number }
+            currency: { type: string }
+            detail: { type: string }
+        policy: { $ref: '#/components/schemas/PolicyDecision' }
+    PolicyDecision:
+      type: object
+      required: [decision, rules, engine]
+      properties:
+        decision: { type: string, enum: [allow, deny, needs-approval] }
+        rules:
+          type: array
+          items:
+            type: object
+            required: [id, result]
+            properties:
+              id: { type: string }
+              result: { type: string }
+              message: { type: string }
+        engine: { type: string, enum: [mock, opa] }
+    ChangeTicket:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        url: { type: string }
+        state: { type: string }
+        evidenceUrl: { type: string }
+    JobStartedData:
+      type: object
+      description: 'job.started, as JobEvents.started builds it: the job, its redacted input and what the start decided'
+      required: [jobId, workflow, version, requester, channel, input, kind, title]
+      properties:
+        jobId: { type: string }
+        workflow: { type: string }
+        version: { type: string }
+        requester: { type: string, description: 'Who asked; with a delegation (P-02) the console user' }
+        channel: { type: string, enum: [catalog, rest, mcp, trigger, batch] }
+        input: { type: object, description: The job input after redaction, additionalProperties: true }
+        parentId: { type: string, description: The batch this job is a row of }
+        kind: { type: string, enum: [single, batch] }
+        preview: { $ref: '#/components/schemas/Preview' }
+        policy: { $ref: '#/components/schemas/PolicyDecision' }
+        change: { $ref: '#/components/schemas/ChangeTicket' }
+        title: { type: string }
+        traceId: { type: string }
+        contentHash: { type: string, description: The content hash of the workflow version that runs }
+        row: { type: integer, description: The row of the batch this job runs }
+        environment: { type: string }
+        rerunOf: { type: string, description: The job this one reruns }
+        resumedFrom: { type: string, description: The step a rerun continues from }
+        rows: { type: integer, description: 'For a batch parent: how many rows it holds' }
+    JobStepData:
+      type: object
+      description: 'job.step, as JobEvents.step builds it'
+      required: [jobId, step, name, type, status, attempt]
+      properties:
+        jobId: { type: string }
+        step: { type: string, description: The step id }
+        name: { type: string }
+        type: { type: string, description: 'The step kind: call, register, approval, wait, each, and so on' }
+        status: { $ref: '#/components/schemas/StepStatus' }
+        attempt: { type: integer }
+        input: { type: object, additionalProperties: true }
+        output: { type: object, description: 'A register step''s output names the resource it wrote (id, type, and with P-05 wfrn)', additionalProperties: true }
+        error: { $ref: '#/components/schemas/StepError' }
+        durationMs: { type: integer }
+        items: { type: integer, description: 'For an each step: how many items it ran' }
+        replayed: { type: boolean, description: The step was copied from the job this one reruns }
+    JobAttentionData:
+      type: object
+      description: 'job.attention, as JobViews.attention builds it'
+      required: [jobId, step, options, since, timeout]
+      properties:
+        jobId: { type: string }
+        step: { type: string }
+        error: { $ref: '#/components/schemas/StepError' }
+        options:
+          type: array
+          items: { type: string, enum: [retry, edit-input, skip, abort] }
+        since: { type: string, format: date-time }
+        timeout: { type: string }
+    JobAttentionResolvedData:
+      type: object
+      required: [jobId, step, action, by]
+      properties:
+        jobId: { type: string }
+        step: { type: string }
+        action: { type: string, enum: [retry, edit-input, skip, abort] }
+        by: { type: string }
+        input: { type: object, description: The edited input of an edit-input decision, additionalProperties: true }
+    JobApprovalRequestedData:
+      type: object
+      required: [jobId, approvalId, workflow, step, group, message, timeout]
+      properties:
+        jobId: { type: string }
+        approvalId: { type: string }
+        workflow: { type: string }
+        step: { type: string }
+        group: { type: string }
+        message: { type: string }
+        timeout: { type: string }
+        preview: { $ref: '#/components/schemas/Preview' }
+    JobApprovalDecidedData:
+      type: object
+      required: [jobId, approvalId, step, decision, by]
+      properties:
+        jobId: { type: string }
+        approvalId: { type: string }
+        step: { type: string }
+        decision: { type: string, enum: [approved, rejected, expired] }
+        by: { type: string }
+        comment: { type: string }
+    JobApprovalEscalatedData:
+      type: object
+      required: [jobId, approvalId, step, to]
+      properties:
+        jobId: { type: string }
+        approvalId: { type: string }
+        step: { type: string }
+        to: { type: string, description: The group the approval was escalated to }
+    JobCancelledData:
+      type: object
+      required: [jobId, by]
+      properties:
+        jobId: { type: string }
+        by: { type: string }
+    JobFinishedData:
+      type: object
+      description: 'job.finished, as JobEvents.finished builds it'
+      required: [jobId, workflow, version, status, durationMs]
+      properties:
+        jobId: { type: string }
+        workflow: { type: string }
+        version: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        durationMs: { type: integer }
+        errorClass: { type: string }
+        failedStep: { type: string }
+        output: { type: object, description: The job output after redaction, additionalProperties: true }
+        message: { type: string }
+    BatchWaveData:
+      type: object
+      required: [jobId, wave, percent, size, status]
+      properties:
+        jobId: { type: string, description: The batch's parent job }
+        wave: { type: integer }
+        percent: { type: integer }
+        size: { type: integer }
+        status: { type: string }
+        reason: { type: string, description: Why the rollout stopped, when it did }
+        rows:
+          type: array
+          items: { type: integer }
+    ResourceRegisteredData:
+      type: object
+      description: 'resource.registered, as ResourceCommandHandler.register builds it, with P-05''s names'
+      required: [id, type, state, jobId, workflow, by, created]
+      properties:
+        id: { type: string, description: The registry id }
+        type: { type: string }
+        state: { type: string, description: The resource's status after the write }
+        jobId: { type: string }
+        workflow: { type: string }
+        by: { type: string, description: The requester of the job }
+        created: { type: boolean, description: 'true for a new record, false for a re-registration' }
+        wfrn:
+          $ref: '#/components/schemas/Wfrn'
+          x-platform-change: [P-05]
+        accountId:
+          type: string
+          pattern: '^[0-9]{12}$'
+          x-platform-change: [P-05]
+        region:
+          type: string
+          pattern: '^[a-z0-9-]{2,32}$'
+          x-platform-change: [P-05]
+        providerId:
+          type: string
+          description: The id the register step gave, when the record's id is a wfrn ULID
+          x-platform-change: [P-05]
+    ResourceRetiredData:
+      type: object
+      description: 'resource.retired, as ResourceCommandHandler.retire builds it, with P-05''s names'
+      required: [id, type, by]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        by: { type: string }
+        wfrn:
+          $ref: '#/components/schemas/Wfrn'
+          x-platform-change: [P-05]
+        accountId:
+          type: string
+          pattern: '^[0-9]{12}$'
+          x-platform-change: [P-05]
+        region:
+          type: string
+          pattern: '^[a-z0-9-]{2,32}$'
+          x-platform-change: [P-05]
+        jobId:
+          type: string
+          description: The job that retired it, when a job did
+          x-platform-change: [P-05]
+    WorkflowPublishedData:
+      type: object
+      required: [name, version, strategy, by]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        strategy: { type: string, description: The release strategy of the change request (all, or a canary plan) }
+        by: { type: string }
+        previous: { type: [string, 'null'], description: The version that was current before, null for a first version }
+    WorkflowDeletedData:
+      type: object
+      required: [name, version, by]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        by: { type: string }
+    ProviderPublishedData:
+      type: object
+      required: [name, version, by, strategy]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        by: { type: string }
+        previous: { type: [string, 'null'] }
+        strategy: { type: string }
+    ProviderUpdatedData:
+      type: object
+      required: [name, version, by]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        by: { type: string }
+    ResourceTypeChangedData:
+      type: object
+      required: [name, hash]
+      properties:
+        name: { type: string }
+        hash: { type: string, description: 'A hash of the stored definition; also the ETag of GET /resource-types/{name} (P-19)' }
+        version:
+          type: integer
+          description: The published version (P-19)
+          x-platform-change: [P-19]
+    RegionChangedData:
+      type: object
+      required: [name, hash]
+      properties:
+        name: { type: string }
+        hash: { type: string }
+        status: { type: string, enum: [available, opt-in, retired] }
+    ContentPublishedData:
+      type: object
+      description: 'P-19: { kind, name, version, hash }'
+      required: [kind, name, version, hash]
+      properties:
+        kind: { type: string, enum: [ResourceType, Workflow, Provider, Region] }
+        name: { type: string }
+        version: { type: string }
+        hash: { type: string }
+    ReleaseData:
+      type: object
+      description: 'As ReleaseCommandHandler.versions builds it: the release and the versions it moves between; workflow or provider, never both'
+      required: [releaseId, from, to]
+      properties:
+        releaseId: { type: string }
+        workflow: { type: string }
+        provider: { type: string }
+        from: { type: [string, 'null'], description: The version that was current, null for a first version }
+        to: { type: string }
+    ReleaseStartedData:
+      allOf:
+        - $ref: '#/components/schemas/ReleaseData'
+        - type: object
+          required: [stagePercent]
+          properties:
+            stagePercent: { type: integer, description: The share of traffic the first stage takes }
+    ReleasePromotedData:
+      $ref: '#/components/schemas/ReleaseData'
+    ReleaseRolledBackData:
+      allOf:
+        - $ref: '#/components/schemas/ReleaseData'
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string }
+    AuditSealedData:
+      type: object
+      required: [jobId, keyId]
+      properties:
+        jobId: { type: string, description: The record, which is a job id }
+        keyId: { type: string, description: The signing key }
+    AuditSharedData:
+      type: object
+      required: [recordId, by, expiresAt]
+      properties:
+        recordId: { type: string }
+        by: { type: string }
+        expiresAt: { type: string, format: date-time }
+    JobStartedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.started }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobStartedData' }
+    JobStepEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.step }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobStepData' }
+    JobAttentionEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.attention }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobAttentionData' }
+    JobAttentionResolvedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.attention-resolved }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobAttentionResolvedData' }
+    JobApprovalRequestedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.approval-requested }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobApprovalRequestedData' }
+    JobApprovalDecidedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.approval-decided }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobApprovalDecidedData' }
+    JobApprovalEscalatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.approval-escalated }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobApprovalEscalatedData' }
+    JobCancelledEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.cancelled }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobCancelledData' }
+    JobFinishedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: job.finished }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/JobFinishedData' }
+    BatchWaveEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: batch.wave }
+            aggregate: { const: job }
+            data: { $ref: '#/components/schemas/BatchWaveData' }
+    ResourceRegisteredEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: resource.registered }
+            aggregate: { const: resource }
+            data: { $ref: '#/components/schemas/ResourceRegisteredData' }
+    ResourceRetiredEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: resource.retired }
+            aggregate: { const: resource }
+            data: { $ref: '#/components/schemas/ResourceRetiredData' }
+    WorkflowPublishedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: workflow.published }
+            aggregate: { const: workflow }
+            data: { $ref: '#/components/schemas/WorkflowPublishedData' }
+    WorkflowDeletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: workflow.deleted }
+            aggregate: { const: workflow }
+            data: { $ref: '#/components/schemas/WorkflowDeletedData' }
+    ProviderPublishedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: provider.published }
+            aggregate: { const: provider }
+            data: { $ref: '#/components/schemas/ProviderPublishedData' }
+    ProviderUpdatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: provider.updated }
+            aggregate: { const: provider }
+            data: { $ref: '#/components/schemas/ProviderUpdatedData' }
+    ResourceTypeChangedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: resource-type.changed }
+            aggregate: { const: resource-type }
+            data: { $ref: '#/components/schemas/ResourceTypeChangedData' }
+    RegionChangedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: region.changed }
+            aggregate: { const: region }
+            data: { $ref: '#/components/schemas/RegionChangedData' }
+    ContentPublishedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: content.published }
+            aggregate: { const: content }
+            data: { $ref: '#/components/schemas/ContentPublishedData' }
+    ReleaseStartedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: release.started }
+            aggregate: { const: release }
+            data: { $ref: '#/components/schemas/ReleaseStartedData' }
+    ReleasePromotedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: release.promoted }
+            aggregate: { const: release }
+            data: { $ref: '#/components/schemas/ReleasePromotedData' }
+    ReleaseRolledBackEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: release.rolled-back }
+            aggregate: { const: release }
+            data: { $ref: '#/components/schemas/ReleaseRolledBackData' }
+    AuditSealedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: audit.sealed }
+            aggregate: { const: audit }
+            data: { $ref: '#/components/schemas/AuditSealedData' }
+    AuditSharedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            type: { const: audit.shared }
+            aggregate: { const: audit }
+            data: { $ref: '#/components/schemas/AuditSharedData' }
