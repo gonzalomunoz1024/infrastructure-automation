@@ -16,11 +16,13 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import com.iaf.console.bff.trust.adapters.outbound.InMemoryUsedAssertions;
 import com.iaf.console.bff.trust.domain.IssuedServiceToken;
 import com.iaf.console.bff.trust.domain.ServiceTokenException;
 import com.iaf.console.bff.trust.domain.ServiceTokenRequest;
 import com.iaf.console.bff.trust.ports.outbound.ClientKeysPort;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
+import com.iaf.console.bff.trust.ports.outbound.UsedAssertionsPort;
 import com.iaf.console.platform.assertion.OnBehalfOfAssertions;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
 import com.nimbusds.jose.jwk.Curve;
@@ -50,8 +52,13 @@ class ServiceTokensTest {
             "console-drift-service", new TrustProperties.Client(List.of(STATE), "console:console-drift-service", null, null));
 
     private ServiceTokens tokens(boolean cluster, Clock clock) {
+        return tokens(cluster, clock, true, new InMemoryUsedAssertions(clock), new TrustProperties.RateLimit(100, 600));
+    }
+
+    private ServiceTokens tokens(boolean cluster, Clock clock, boolean singleUse, UsedAssertionsPort used, TrustProperties.RateLimit rate) {
         TrustProperties properties = new TrustProperties("console-bff", "platform", Duration.ofSeconds(60), Duration.ofSeconds(30), null, null,
-                Duration.ofMinutes(5), Duration.ofMinutes(5), new TrustProperties.Kubernetes(cluster ? CLUSTER : null, null, null, null, null), clients);
+                Duration.ofMinutes(5), Duration.ofMinutes(5),
+                new TrustProperties.Kubernetes(cluster ? CLUSTER : null, null, null, null, null, Duration.ofHours(1), singleUse), clients, rate);
         SigningKeyPort keys = new SigningKeyPort() {
             @Override
             public ECKey currentKey() {
@@ -74,7 +81,7 @@ class ServiceTokensTest {
                 return cluster && clusterKey.getKeyID().equals(kid) ? Mono.just(clusterKey.toPublicJWK()) : Mono.empty();
             }
         };
-        return new ServiceTokens(new Trust(keys, properties, clock), properties, clientKeys, clock);
+        return new ServiceTokens(new Trust(keys, properties, clock), properties, clientKeys, used, clock);
     }
 
     private ServiceTokens tokens() {
@@ -185,14 +192,28 @@ class ServiceTokensTest {
     }
 
     @Test
-    void aClusterServiceAccountTokenProvesItsRegisteredClientAgainAndAgain() throws Exception {
+    void aClusterServiceAccountTokenProvesItsRegisteredClientOnce() throws Exception {
         ServiceTokens tokens = tokens();
         String token = Assertions.serviceAccount(clusterKey, CLUSTER, "console", "console-drift-service", now);
         IssuedServiceToken first = tokens.issue(request(token)).block();
-        IssuedServiceToken again = tokens.issue(request(token)).block();
         assertEquals("console-drift-service", first.clientId());
-        assertEquals(STATE, again.audience());
-        assertEquals("console-drift-service", SignedJWT.parse(again.token()).getJWTClaimsSet().getStringClaim("svc"));
+        assertEquals(STATE, first.audience());
+        assertEquals("console-drift-service", SignedJWT.parse(first.token()).getJWTClaimsSet().getStringClaim("svc"));
+        ServiceTokenException replayed = refused(tokens, request(token));
+        assertEquals("invalid_client", replayed.error(), "a token without jti is remembered by its hash");
+        assertTrue(replayed.getMessage().contains("used before"), replayed.getMessage());
+
+        String withJti = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).jwtID("sa-jti-1").issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(600))).build());
+        tokens.issue(request(withJti)).block();
+        String sameJti = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).jwtID("sa-jti-1").issueTime(Date.from(now.plusSeconds(1))).expirationTime(Date.from(now.plusSeconds(601))).build());
+        assertTrue(refused(tokens, request(sameJti)).getMessage().contains("used before"), "a jti is used once, whatever else differs");
+
+        ServiceTokens reusable = tokens(true, Clock.fixed(now, ZoneOffset.UTC), false, new InMemoryUsedAssertions(Clock.fixed(now, ZoneOffset.UTC)),
+                new TrustProperties.RateLimit(100, 600));
+        reusable.issue(request(token)).block();
+        assertEquals("console-drift-service", reusable.issue(request(token)).block().clientId(), "single-use off: the kubelet's token serves again");
 
         String other = Assertions.serviceAccount(clusterKey, CLUSTER, "default", "console-drift-service", now);
         assertTrue(refused(tokens, request(other)).getMessage().contains("not a registered client"));
@@ -205,6 +226,71 @@ class ServiceTokensTest {
         String apiServer = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
                 .audience(List.of("https://kubernetes.default.svc")).expirationTime(Date.from(now.plusSeconds(600))).build());
         assertTrue(refused(tokens, request(apiServer)).getMessage().contains("exactly console-bff"));
+    }
+
+    @Test
+    void aClusterTokenLivesAnHourAtMost() {
+        String day = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).issueTime(Date.from(now)).expirationTime(Date.from(now.plus(Duration.ofHours(24)))).build());
+        assertTrue(refused(tokens(), request(day)).getMessage().contains("lives longer than 3600s"));
+        String noIat = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).expirationTime(Date.from(now.plus(Duration.ofDays(365)))).build());
+        assertTrue(refused(tokens(), request(noIat)).getMessage().contains("lives longer"), "a year-long legacy token is refused");
+    }
+
+    @Test
+    void anAssertionIsUsedOnceAcrossReplicas() {
+        Clock clock = Clock.fixed(now, ZoneOffset.UTC);
+        UsedAssertionsPort shared = new InMemoryUsedAssertions(clock);
+        ServiceTokens one = tokens(true, clock, true, shared, new TrustProperties.RateLimit(100, 600));
+        ServiceTokens other = tokens(true, clock, true, shared, new TrustProperties.RateLimit(100, 600));
+        String assertion = Assertions.own(indexerKey, "console-search-indexer", now);
+        one.issue(request(assertion)).block();
+        assertTrue(refused(other, request(assertion)).getMessage().contains("used before"), "the second replica sees the first one's use");
+    }
+
+    @Test
+    void eachClientHasATokenBucket() {
+        MutableClock clock = new MutableClock(now);
+        ServiceTokens tokens = tokens(true, clock, true, new InMemoryUsedAssertions(clock), new TrustProperties.RateLimit(2, 60));
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+        ServiceTokenException slowed = refused(tokens, request(Assertions.own(indexerKey, "console-search-indexer", now)));
+        assertEquals("slow_down", slowed.error());
+        assertEquals(429, slowed.status());
+        assertEquals(1, slowed.retryAfterSeconds());
+        String drift = Assertions.serviceAccount(clusterKey, CLUSTER, "console", "console-drift-service", now);
+        assertEquals("console-drift-service", tokens.issue(request(drift)).block().clientId(), "another client has its own bucket");
+        clock.set(now.plusSeconds(1));
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+    }
+
+    static final class MutableClock extends Clock {
+
+        private volatile Instant at;
+
+        MutableClock(Instant at) {
+            this.at = at;
+        }
+
+        void set(Instant instant) {
+            at = instant;
+        }
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return at;
+        }
     }
 
     @Test

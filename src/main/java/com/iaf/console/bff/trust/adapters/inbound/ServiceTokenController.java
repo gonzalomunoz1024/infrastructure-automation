@@ -50,8 +50,11 @@ public class ServiceTokenController {
 
     @ExceptionHandler(ServiceTokenException.class)
     public ResponseEntity<ErrorBody> refused(ServiceTokenException e) {
-        return ResponseEntity.status(e.status()).cacheControl(CacheControl.noStore()).header("Pragma", "no-cache")
-                .contentType(MediaType.APPLICATION_JSON).body(new ErrorBody(e.error(), e.getMessage()));
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(e.status()).cacheControl(CacheControl.noStore()).header("Pragma", "no-cache");
+        if (e.retryAfterSeconds() > 0) {
+            builder.header("Retry-After", Long.toString(e.retryAfterSeconds()));
+        }
+        return builder.contentType(MediaType.APPLICATION_JSON).body(new ErrorBody(e.error(), e.getMessage()));
     }
 
     private static ServiceTokenRequest request(MultiValueMap<String, String> form) {

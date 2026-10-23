@@ -61,6 +61,8 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
 | `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
+| `console.trust.kubernetes.max-token-lifetime`, `single-use` | A cluster's service-account token may live 1 hour at most (from its `iat`, or from now without one); with `single-use` (on) each is redeemed once, by its `jti` or else its hash, until it expires |
+| `console.trust.rate-limit.burst`, `per-minute` | A token bucket per client of `POST /internal/v1/token`: 10 at once, 30 a minute; over it is 429 `slow_down` with `Retry-After` |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
@@ -254,12 +256,15 @@ The assertion proves who asks, in one of two ways:
   against the cluster's service-account issuer (`console.trust.kubernetes.*`) and maps
   `system:serviceaccount:<namespace>:<name>` to the client registered with that
   `service-account`. No secret exists anywhere. The chart turns this on and mounts a token for
-  the API server and the cluster's CA, so the BFF can read the issuer's keys.
+  the API server and the cluster's CA, so the BFF can read the issuer's keys. The token may live an hour at
+  most and, with `console.trust.kubernetes.single-use`, is redeemed once (by `jti`, else by its
+  hash) until it expires, so a client needs a fresh service-account token for every service token.
 * **Anywhere else** (a laptop, CI, a VM), a JWT the service signs with its own EC or RSA key: `iss`
   and `sub` its service id, `aud` exactly `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
   is plenty) and a `jti` used once; the BFF holds the service's public keys
-  (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Replays are refused per replica, so
-  keep assertions short.
+  (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Used `jti`s are kept until they
+  expire, in memory, or with the `mongo` profile in `service_token_assertions` (a TTL index), so
+  an assertion is redeemed once across every replica.
 
 Only asymmetric algorithms are accepted (ES256, ES384, RS256, PS256). A new client is a new entry
 under `console.trust.clients` (in the chart, `config.serviceTokens.clients`) with the audiences it
