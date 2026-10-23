@@ -13,9 +13,10 @@ branch validates everything here.
 | `platform/used-operations.txt` | One operation id per line of every target operation the console uses; the nightly check reads it | kept in step with the target |
 | `platform/openapi-c9529d5.json` | The platform's own OpenAPI document captured at `c9529d5`, read-only, for reference and for the local run of the platform check | pinned |
 | `platform/sample-content/` | The platform's `resource-types/`, `providers/` and `workflows/` at `c9529d5`, read-only; the overlays merge over these types and name these providers' actions | pinned |
-| `asyncapi/console-events.yaml` | The console's own topics, AsyncAPI 3.0: `state.resources`, `drift.findings`, `identity.changes`, `cost.events`, with partition keys, deterministic keys and the resource state machine | draft |
+| `asyncapi/console-events.yaml` | The console's own topics, AsyncAPI 3.0: `state.resources`, `drift.findings`, `drift.scorecards`, `identity.changes`, `cost.events`, with partition keys, deterministic keys and the resource state machine | draft |
 | `openapi/console-bff.yaml`, `console-identity-service.yaml`, `console-state-service.yaml`, `console-drift-service.yaml`, `console-search-indexer.yaml`, `console-cost-service.yaml` | One OpenAPI 3.1 file per service, `x-status: draft`: the agreed paths and names, the account scope rule, cursor paging, the error shape and the wfrn-in-URL rule; field lists will grow | draft |
 | `schemas/` | JSON Schema (draft 2020-12) for `kind: ResourceType` as P-06 shapes it, `kind: Region` (P-07), the hub's `kind: TypeOverlay`, and the wfrn fixtures file | settled for phase 0 |
+| `schemas/rule-pack.schema.json`, `rule-packs/reference.mjs` | The shape of a compliance rule pack (`kind: RulePack`, the packs live in `/rule-packs`) and the JavaScript reference of its declarative `when` and `check`, which the drift service's embedded engine follows; `npm run check` runs every rule's examples through it and through the rule's Rego with OPA | draft |
 | `wfrn/SPEC.md`, `wfrn/fixtures.json`, `wfrn/reference.mjs` | The wfrn specification, the fixtures every wfrn library runs, and the JavaScript reference that passes them (`node contracts/wfrn/reference.mjs contracts/wfrn/fixtures.json`) | settled |
 
 ## The rules every service contract follows

@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/rule-pack.schema.json",
+  "title": "RulePack",
+  "description": "A compliance rule pack (rule-packs/<name>.yaml, WP 9.6): rules the drift service scores every managed resource against on each read, per account. Each rule carries its policy twice: as Rego for the firm's OPA engine (package console.scorecards.<pack>.<rule>, with '-' written '_', defining `applies` and the set `deny` of messages), and as the declarative `when` and `check` the console's embedded engine evaluates until that engine is wired in, as the platform's own policy check is a mock today. The two must say the same; `npm run check` validates the shape, the Rego package names and the remediations.",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "iaf.console/v1"
+    },
+    "kind": {
+      "const": "RulePack"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name",
+        "title",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}[a-z0-9]$",
+          "description": "The pack's id; the file is rule-packs/<name>.yaml"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Raised on every change; a resource scored under an older version is scored again on its next read"
+        },
+        "owner": {
+          "type": "string",
+          "description": "The team that owns the pack"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "rules"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "severity",
+        "types",
+        "check",
+        "message",
+        "rego",
+        "examples"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}[a-z0-9]$",
+          "description": "Unique in the pack"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "What a compliant resource is, in plain words"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ],
+          "description": "Weighs the rule in the score: critical 10, warning 3, info 1"
+        },
+        "types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(\\*|[a-z0-9-]{1,64})$"
+          },
+          "description": "The resource types it applies to; `*` is every type"
+        },
+        "when": {
+          "$ref": "#/$defs/condition",
+          "description": "Applies only where this holds (for instance only in production); a rule that does not apply is not scored"
+        },
+        "check": {
+          "$ref": "#/$defs/condition",
+          "description": "Passes where this holds"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "What a failing resource is told; `{{ path }}` inserts a value of the input"
+        },
+        "rego": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The same rule in Rego v1 for OPA: package console.scorecards.<pack>.<rule>, `applies` (boolean, default false) and `deny` (a set of messages; empty passes)"
+        },
+        "remediation": {
+          "$ref": "#/$defs/remediation"
+        },
+        "examples": {
+          "type": "array",
+          "description": "Inputs and what the rule makes of them; `npm run check` runs each through the Rego with OPA and through the declarative check, which must agree with `expect`. The drift service's tests run them through its embedded engine too.",
+          "items": {
+            "type": "object",
+            "required": [
+              "input",
+              "expect"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "input": {
+                "type": "object",
+                "required": [
+                  "resource"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "resource": {
+                    "type": "object"
+                  }
+                }
+              },
+              "expect": {
+                "enum": [
+                  "pass",
+                  "fail",
+                  "not-applicable"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "remediation": {
+      "type": "object",
+      "required": [
+        "title",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "The one-click fix a person may start for a failing resource. It never runs on its own: the drift service starts it on behalf of the person who asks.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "kind": {
+          "enum": [
+            "workflow",
+            "tags"
+          ],
+          "description": "`workflow` starts a workflow verb of the type on the platform; `tags` sets tags through the state service"
+        },
+        "verb": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "description": "workflow: the catalog verb of the type (update, restart, ...)"
+        },
+        "workflow": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,64}$",
+          "description": "workflow: the workflow's name, when its noun is not the type (mongodb-upgrade on a database)"
+        },
+        "input": {
+          "type": "object",
+          "description": "workflow: the input, besides the subject; string values may be `{{ $input.<name> }}` or `{{ $resource.<path> }}`",
+          "additionalProperties": true
+        },
+        "set": {
+          "type": "object",
+          "description": "tags: the tags to set; values as in `input`",
+          "propertyNames": {
+            "pattern": "^[a-z0-9-]{1,32}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "description": "What the person supplies when they start it",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "title"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean"
+                ],
+                "default": "string"
+              },
+              "enum": {
+                "type": "array",
+                "minItems": 1
+              },
+              "default": {},
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "workflow"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "verb"
+                ]
+              },
+              {
+                "required": [
+                  "workflow"
+                ]
+              }
+            ],
+            "not": {
+              "required": [
+                "set"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tags"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "set"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "verb"
+                  ]
+                },
+                {
+                  "required": [
+                    "workflow"
+                  ]
+                },
+                {
+                  "required": [
+                    "input"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "condition": {
+      "description": "A condition over the evaluation input: `all`, `any` or `not` of conditions, or one test of a value at a dotted `path` (resource.tags.owner, resource.effective.cpu). The input is { resource: { wfrn, accountId, region, type, service, name, state, environment, production, attributes, observed, effective, tags } }, where `effective` is the desired attributes overlaid with what the provider last reported.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "all"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "any"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/condition"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false,
+          "minProperties": 2,
+          "maxProperties": 2,
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^resource(\\.[A-Za-z0-9_-]+)+$"
+            },
+            "present": {
+              "type": "boolean",
+              "description": "The value is there and not null or an empty string (true), or absent (false)"
+            },
+            "equals": {},
+            "notEquals": {},
+            "in": {
+              "type": "array",
+              "minItems": 1
+            },
+            "notIn": {
+              "type": "array",
+              "minItems": 1
+            },
+            "gte": {
+              "type": "number"
+            },
+            "gt": {
+              "type": "number"
+            },
+            "lte": {
+              "type": "number"
+            },
+            "lt": {
+              "type": "number"
+            },
+            "matches": {
+              "type": "string",
+              "description": "A regular expression the whole string value matches"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
