@@ -55,6 +55,11 @@ const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
 const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
 const ShellPage = lazy(() => import('../pages/developer/ShellPage'))
 const PortalPage = lazy(() => import('../pages/developer/PortalPage'))
+const NotificationsPage = lazy(() => import('../pages/notify/NotificationsPage'))
+const NotificationSettingsPage = lazy(() => import('../pages/notify/NotificationSettingsPage'))
+const ChatLinkPage = lazy(() => import('../pages/notify/ChatLinkPage'))
+const DigestsPage = lazy(() => import('../pages/notify/DigestsPage'))
+const DigestPage = lazy(() => import('../pages/notify/DigestsPage').then((m) => ({ default: m.DigestPage })))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
 /*
@@ -99,6 +104,11 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'iam-cli': CliSessionsPage,
   shell: ShellPage,
   portal: PortalPage,
+  notifications: NotificationsPage,
+  'notification-settings': NotificationSettingsPage,
+  'chat-link': ChatLinkPage,
+  digests: DigestsPage,
+  digest: DigestPage,
   'not-found': NotFoundPage,
 }
 

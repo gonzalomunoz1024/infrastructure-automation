@@ -43,6 +43,11 @@ export type RouteName =
   | 'iam-cli'
   | 'shell'
   | 'portal'
+  | 'notifications'
+  | 'notification-settings'
+  | 'chat-link'
+  | 'digests'
+  | 'digest'
   | 'not-found'
 
 export interface RouteDef {
@@ -95,6 +100,12 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-cli', pattern: '/iam/cli-sign-ins', title: 'CLI sign-ins' },
   { name: 'shell', pattern: '/shell', title: 'Console shell' },
   { name: 'portal', pattern: '/developer', title: 'Developer portal' },
+  // notifications, linked chats and the weekly digests (phase 7)
+  { name: 'notifications', pattern: '/notifications', title: 'Notifications' },
+  { name: 'notification-settings', pattern: '/settings/notifications', title: 'Notification settings' },
+  { name: 'chat-link', pattern: '/chat-link', title: 'Linked chats' },
+  { name: 'digests', pattern: '/digests', title: 'Weekly digests' },
+  { name: 'digest', pattern: '/digests/:weekStart', title: 'Weekly digest' },
 ]
 
 /** The identity and access section: the overview and every page under it. */

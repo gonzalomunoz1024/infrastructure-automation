@@ -82,6 +82,19 @@ export default function SettingsPage(_props: PageProps) {
           </CardRow>
         </Card>
 
+        <Card title="Notifications" subtitle="What the console tells you, and where">
+          <CardRow label="Notification settings" description="Email, Slack and Teams for each kind of notification, and a test send.">
+            <Button size="sm" icon="bell" onClick={() => navigate(pathFor('notification-settings'))}>
+              Open notification settings
+            </Button>
+          </CardRow>
+          <CardRow label="Linked chats" description="The Slack and Teams identities that act as you and receive your notifications.">
+            <Button size="sm" icon="link" onClick={() => navigate(pathFor('chat-link'))}>
+              Open linked chats
+            </Button>
+          </CardRow>
+        </Card>
+
         <Card title="Data in this browser" subtitle="Nothing here leaves your browser">
           <CardRow label="Cached descriptors" description="Resource types, the catalog and the regions, kept with their ETags so the shell draws before the platform answers.">
             <Button size="sm" onClick={clearCaches} icon="refresh">

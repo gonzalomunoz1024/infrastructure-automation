@@ -85,6 +85,14 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'shell':
     case 'portal':
       return [home, { label: route.def?.title ?? 'Developer tools' }]
+    case 'notifications':
+    case 'digests':
+      return [home, { label: route.def?.title ?? 'Notifications' }]
+    case 'notification-settings':
+    case 'chat-link':
+      return [home, { label: 'Settings', href: pathFor('settings') }, { label: route.def?.title ?? 'Notifications' }]
+    case 'digest':
+      return [home, { label: 'Weekly digests', href: pathFor('digests') }, { label: route.params.weekStart }]
     default:
       return [home, { label: 'Not found' }]
   }

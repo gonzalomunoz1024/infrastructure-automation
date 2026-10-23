@@ -9,6 +9,7 @@ import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, 
 import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
 import { applyMonitoringCommand, type MonitoringState } from './monitoring'
 import { applyCliCommand, type CliState } from './cli'
+import { applyNotificationCommand, followNotifications, type NotificationsState } from './notifications'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -111,6 +112,8 @@ export interface MockConsoleState {
   monitoring?: MonitoringState
   /** device grants and API sessions (./cli), made on first use */
   cli?: CliState
+  /** notifications, settings, chat links and digests (./notifications), made on first use */
+  notifications?: NotificationsState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
 }
@@ -708,6 +711,8 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   job: (data, cmd) => applyJobCommand(data, cmd),
   batch: (data, cmd) => applyJobCommand(data, cmd),
   cli: (data, cmd) => applyCliCommand(data, cmd),
+  notification: (data, cmd) => applyNotificationCommand(data, cmd),
+  'chat-link': (data, cmd) => applyNotificationCommand(data, cmd),
 }
 
 /**
@@ -921,6 +926,8 @@ export function settleConsole(data: MockData, now: number) {
     st.inFlight = st.inFlight.filter((x) => x !== f)
   }
   settleBatches(data, now)
+  // what ended, paused or waits for an approver notifies the people it concerns, at the moment it happened
+  followNotifications(data, now)
 }
 
 /** Replays a saved journal onto a fresh dataset, then settles everything whose time has passed. */

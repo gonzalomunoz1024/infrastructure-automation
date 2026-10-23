@@ -38,6 +38,18 @@ Phase 7 brings the CLI's web side and the developer portal:
 - the developer portal: the console API by tag from its OpenAPI document, how to get the CLI and
   SDKs, sample calls for a type built from its workflows' schemas, and sample portal tiles, any of
   them kept as a shortcut
+Phase 7 tells people what happened:
+
+- the bell carries the person's notifications beside the access requests to decide: requests that
+  succeed, fail or pause, approvals waiting and decided, access requests, drift, quotas, budgets
+  and the weekly digest, new ones arriving on the live stream, each leading to its resource or
+  request and marked read on the way; the Notifications page filters them by unread and kind
+- notification settings: email, Slack and Teams on or off, the channels for each kind (the
+  defaults filled in), saved against the version read, and a test send per channel
+- linked chats: `#/chat-link?token=` links the Slack or Teams identity `/console link` names after
+  one confirmation; the linked ones are listed and unlinked there
+- weekly digests: each week of the account in words, its changes, drift, cost and access, with
+  the numbers they were written from and links to what they name
 
 Phase 5 decides on drift and finds what nobody manages:
 
@@ -721,6 +733,43 @@ type, so the feed must subscribe to every one).
     a shortcut in this browser for the person, a workflow tile is greyed with the refusal where the
     person may not run it, and a tile's target becomes a link only when it is a console route or
     https.
+70. **Notifications follow what already happened, once per event and person.** The bell keeps the
+    access requests to decide (phase 1) and adds the person's newest notifications with the unread
+    count (`GET /console/v1/notifications`), marks one read when it is followed and all with one
+    `POST /console/v1/notifications:read`, and opens the BFF's live stream (`GET
+    /console/v1/events`, listening for `notification`) once per person, refetching every reader on
+    an event and announcing it politely; an access request already listed to decide is not repeated.
+    The Notifications page filters by unread and kind in the address. A notification's `link` is
+    read into the console's own route (`/r/<type>/<wfrn>`, `/jobs/<id>`, `/access-requests/<id>`,
+    `/digests/<week>`, with only a `tab` kept from its query), scoped to its account when it is
+    another one: nothing from the data becomes an href as it came. In mock mode
+    (`console/src/mock/notifications.ts`) the notifier runs at the end of every settle of the
+    clock, so a console job that succeeds, fails or pauses notifies its requester at the moment it
+    did, an approval it opens notifies the approver group's members and its answer the requester,
+    and an access request notifies its approvers and its answer the requester; something older
+    than three days arrives read.
+71. **Notification settings save the differences from the defaults, against the version read.**
+    The page shows every kind with its channels, the defaults filled in (the console for every
+    kind; email and the linked chats too for failures, pauses, approvals, access requests, budget
+    alerts and the digest), and saves only the kinds that differ, so an untouched kind follows the
+    default as it moves. One PUT with `If-Match`; a 409 reads them again and says so. A channel
+    that is off or not linked greys its boxes and its test, with the reason in the box's name. The
+    page lives at `#/settings/notifications`, found from the user menu, the Settings page, the bell
+    and the palette.
+72. **A chat is linked by confirming its token once.** `#/chat-link?token=` reads what the token
+    names (the platform, the workspace, the chat user) without trusting it, asks once, and posts
+    it; the BFF decides. An expired, foreign or taken token is refused in words with what to do.
+    Linking turns that channel on; unlinking the last link of a platform turns it off. The linked
+    chats are listed on the same page and each unlinked after one question.
+73. **The weekly digest is read as words with its numbers beside them.** The Digests page lists the
+    session account's weeks, newest first; a week reads as four parts (changes, drift, cost,
+    access), each its text, its highlights as links and the facts it was written from, and says
+    whether the copilot or the template wrote it. Every managed role reads them (`digests:get`,
+    decided by the console's IAM alone; the platform's role never decides them).
+74. **Notifications, settings and chat links are the person's own.** Like preferences, no IAM
+    action guards them: a viewer such as Mia reads and marks their notifications, chooses their
+    channels and links their chats, so the pages refuse nothing on role. Only the digests, which are
+    the account's, are read through IAM, and a refusal there shows the denial.
 
 ## Layout of the code
 
@@ -730,8 +779,10 @@ console/
                   tags, bulk, drift, monitoring, access), their helpers and screenshots
                   tags, bulk, drift, monitoring), their helpers and screenshots; cli (the device
                   sign-in, CLI sign-ins, the console shell and the developer portal)
+                  tags, bulk, drift, monitoring, notifications), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
+                  NotificationsBell and notifications (the feed, the live stream, marking read),
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
                   elevation (the refusal's offer of an hour, the held roles banner, the elevated
                   mark), accessTimeBell (reviews and elevations in the bell),
@@ -752,6 +803,9 @@ console/
                   API sessions, and their words), shell/ (the CLI's command core, its parser, the
                   terminal's text and the console adapter), portal (the API by tag, sample calls,
                   tiles and shortcuts)
+                  (scales, ticks, time labels and the keyboard's steps), notifications (the
+                  notifications, settings, chat links and digests client, kinds and channels in
+                  words, the defaults, and a notification's link read into a route)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
@@ -760,6 +814,8 @@ console/
                   elevations, break-glass and closing accounts), and the browser installer,
                   monitoring (series, alarms and the rightsizing pass), cli (device grants, API
                   sessions and the console API's outline), and the browser installer,
+                  monitoring (series, alarms and the rightsizing pass), notifications (the
+                  notifier, settings, chat links and digests), and the browser installer,
                   with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews and elevations among them), src/pages/organization/ the accounts page,
@@ -774,6 +830,8 @@ console/
                   resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
                   and Rightsizing pages and the alarm dialog, src/pages/developer/ the device
                   sign-in, the console shell and the developer portal (CLI sign-ins sit in iam/); the resource page's Monitoring tab
+                  and Rightsizing pages and the alarm dialog, src/pages/notify/ the Notifications,
+                  Notification settings, Linked chats and Weekly digests pages; the resource page's Monitoring tab
                   and its MetricChart sit with its other tabs
 packages/
   console-kit/    the composites and their tests
