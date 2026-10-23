@@ -56,6 +56,14 @@ describe('explaining a failed call', () => {
     expect(codeOf(undefined)).toBeUndefined()
   })
 
+  it('explains the monitoring and rightsizing refusals, waiting as long as a busy read asks', () => {
+    expect(explain(new ApiError(404, { error: 'metrics.notSupported', detail: 'Volumes have no metrics read: their provider publishes none' }))).toMatchObject({ title: 'This type keeps no metrics', message: 'There is nothing to chart, and no alarm can watch it. Volumes have no metrics read: their provider publishes none' })
+    expect(explain(new ApiError(429, { error: 'observe.budget' }, undefined, 12))).toMatchObject({ title: 'Too many metrics reads for now', next: 'Wait 12 seconds and try again.', retryable: true })
+    expect(explain(new ApiError(409, { error: 'recommendation.closed', detail: 'This recommendation is applied already, through request job_1' }), 'Resize web-02')).toMatchObject({ title: 'This recommendation is already settled', retryable: false })
+    expect(explain(new ApiError(409, { error: 'recommendation.notApplicable' }))).toMatchObject({ title: 'The console cannot carry this out', retryable: false })
+    expect(explain(new ApiError(409, { error: 'recommendation.changing' }))).toMatchObject({ next: 'Wait for it to finish, then apply the recommendation again.', retryable: true })
+  })
+
   it('explains a call that never reached a server, a cancelled one and a plain error', () => {
     expect(explain(new ApiError(0, null)).title).toBe('The platform did not answer')
     expect(explain(new DOMException('stopped', 'AbortError'))).toMatchObject({ title: 'Cancelled', retryable: true })

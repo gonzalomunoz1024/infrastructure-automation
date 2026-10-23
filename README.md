@@ -8,7 +8,36 @@ This branch is shaped like the repository it will become: an npm workspace at th
 CI, no platform files. The hub branch `console-root` holds the plan, the decisions and the
 contracts this build pins.
 
-## What is here (phases 0, 1, 3 and 4)
+## What is here (phases 0, 1, 3, 4 and 5)
+
+Phase 5 decides on drift and finds what nobody manages:
+
+- a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
+  with what was asked for, the card says Reverting with its request and follows it, and the
+  finding closes when the request succeeded (a revert whose request paused stays Reverting until someone steers it there; one that failed says so and is offered again); Accept
+  makes the provider's values the desired ones after asking once, and Ignore asks for how long
+  (until what was asked for changes, or 1, 7 or 30 days) and why; the findings closed in the last
+  30 days are listed below, with who decided, when and why
+- the account's Drift page counts the open findings by severity and type, says when the last scan
+  ran and what the last 30 days found and closed, and lists every finding across the watched
+  types, filtered by type, severity and status, each with its three decisions; selected rows are
+  reverted together, one call each, counted as they go
+- Unmanaged resources runs a discovery for each type whose provider has a discovery read, lists
+  what no account manages with what the provider reports, a guess at the owning account with its
+  reasons and what it costs a month, and imports an object (a new wfrn, then its page) or assigns
+  it to another team's account, where it shows too until either imports it
+
+Phase 5 watches the resources once they run:
+
+- a Monitoring tab on each resource whose type keeps metrics: a chart per series over 1 hour to
+  7 days with its latest, average and highest in words, a crosshair the keyboard moves and a table
+  view, the alarms drawn on the charts as labelled lines and listed below them, created, edited and
+  deleted in a small dialog
+- the Alarms page: the account's alarms, firing first, filtered by state, each leading to its
+  resource's Monitoring tab
+- the Rightsizing page: the idle and oversized resources found in the last 14 days of metrics, the
+  largest saving first, each resized or deleted through its type's own workflow, or dismissed for
+  good or for 7, 30 or 90 days
 
 Phase 4 changes resources in place, safely:
 
@@ -38,23 +67,6 @@ Phase 4 adds tags and resource groups, across every type of the account and regi
   version read, and deleted by typing the group's name
 - create similar: the wizard filled from a resource, in its account or handed to another
 - required tags: what each tag takes, its default and where that comes from
-
-Phase 5 decides on drift and finds what nobody manages:
-
-- a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
-  with what was asked for, the card says Reverting with its request and follows it, and the
-  finding closes when the request succeeded (a failed revert says so and is offered again); Accept
-  makes the provider's values the desired ones after asking once, and Ignore asks for how long
-  (until what was asked for changes, or 1, 7 or 30 days) and why; the findings closed in the last
-  30 days are listed below, with who decided, when and why
-- the account's Drift page counts the open findings by severity and type, says when the last scan
-  ran and what the last 30 days found and closed, and lists every finding across the watched
-  types, filtered by type, severity and status, each with its three decisions; selected rows are
-  reverted together, one call each, counted as they go
-- Unmanaged resources runs a discovery for each type whose provider has a discovery read, lists
-  what no account manages with what the provider reports, a guess at the owning account with its
-  reasons and what it costs a month, and imports an object (a new wfrn, then its page) or assigns
-  it to another team's account, where it shows too until either imports it
 
 Phase 3b makes the console change resources, with the request in view at every step:
 
@@ -584,13 +596,37 @@ type, so the feed must subscribe to every one).
     aborted one leaves the finding open, offered again), each resource carries a short seeded history,
     and a discovery run takes 4 seconds and finds twelve machines and four clusters across the two
     accounts, with owner guesses of each confidence.
+46. **A metric series is a function of the resource and the time, so every reader agrees.** The
+    mock (`mock/monitoring.ts`) works each point out of the resource, its size and the moment (a
+    working day in UTC, quieter weekends, disks filling slowly), so a chart, an alarm and the
+    rightsizing pass read the same numbers. A read keeps the contract's defaults (24 hours, a point
+    every 5 minutes up to a day, else hourly), answers at most 500 points, needs
+    `<service>:observe`, and past 120 reads a minute answers 429 `observe.budget` with a wait.
+47. **Alarms are judged when they are read, by the average the chart shows.** An alarm watches one
+    series of one resource, above or below a threshold, averaged over 1 to 1440 minutes; its state
+    (OK, In alarm, Not enough data) and since when are worked out from the series at each read, as
+    the drift service's minute-by-minute evaluation would leave them, so they never go stale. The
+    console picks the id (`PUT /console/v1/alarms/{id}`), so a retried create replaces rather than
+    doubles; writing one needs `<service>:update` on the resource, reading them `get`.
+48. **A recommendation runs through the type's own workflow, on behalf of the person.** The daily
+    pass (05:00 UTC) reads 14 days of p95 CPU and memory: both under 5% is idle (delete it), both
+    under 30% oversized (the smallest size that keeps p95 under 60%, never a larger one). Apply
+    starts the update workflow with that size, or the delete workflow with `confirm: true` once the
+    name is typed; the recommendation is `applied` with its job id at the 202, so the page links
+    the request at once. A dismissal keeps its reason, for good or until its date.
+49. **Charts are drawn by hand and say in words what they show.** `pages/resource/MetricChart.tsx`
+    draws SVG with the theme's tokens: one accent line over a faint area, four value ticks, a few
+    time ticks, thresholds as dashed labelled lines. Each chart is titled with its unit, sums itself
+    up in a line (latest, average, highest) and turns into a table; its plot is a slider whose
+    arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
+    chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
 
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift), their helpers and screenshots
+                  tags, bulk, drift, monitoring), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -604,12 +640,14 @@ console/
                   (failures in words), tour, verbs, submission (Idempotency-Keys), poll, tags
                   (the tag policy, Tag Editor, resource group and clone client, and their rules),
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
-                  words)
+                  words), monitoring (metrics, alarms and rightsizing, and their words), chart
+                  (scales, ticks, time labels and the keyboard's steps)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
-                  (tags), drift (findings, decisions, discovery and unmanaged objects), and the
-                  browser installer, with the samples
+                  (tags), drift (findings, decisions, discovery and unmanaged objects),
+                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
+                  with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
                   src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
@@ -619,7 +657,9 @@ console/
                   page's parts (the paused step, what went wrong, approvals, a bulk run's waves
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
-                  resource groups, src/pages/operations/ the Drift and Unmanaged resources pages
+                  resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
+                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
+                  and its MetricChart sit with its other tabs
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched
