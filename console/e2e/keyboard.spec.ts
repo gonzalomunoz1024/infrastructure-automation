@@ -51,7 +51,10 @@ test.describe('the console by keyboard, and in the dark', () => {
     await expect(page).toHaveURL(/#\/console\/compute\/vm$/)
     await expect(rows(page).first()).toBeVisible()
 
-    // the filter: property, operator, value, each picked with Enter
+    // the filter: property, operator, value, each picked with Enter, with the pointer resting where the
+    // suggestions open (a list that appears or changes under a pointer at rest keeps the keys' highlight)
+    const bar = await filterBox(page).boundingBox()
+    if (bar) await page.mouse.move(bar.x + 40, bar.y + bar.height + 56)
     await tabTo(page, filterBox(page), 80)
     await page.keyboard.type('Status')
     await page.keyboard.press('Enter')
@@ -63,7 +66,9 @@ test.describe('the console by keyboard, and in the dark', () => {
     await expect(page.getByRole('button', { name: 'Remove filter Status = active' })).toBeVisible()
     await expect(page).toHaveURL(/f=status%3Dactive/)
 
-    // the grid: Down to the first row, Enter opens it
+    // the grid, once the filtered rows are in (Down does nothing while it loads): Down to the first row, Enter opens it
+    await expect(grid(page)).not.toHaveAttribute('aria-busy', 'true')
+    await expect(rows(page).first()).toContainText('active')
     await tabTo(page, grid(page), 40)
     await page.keyboard.press('ArrowDown')
     await expect(grid(page)).toHaveAttribute('aria-activedescendant', /.+/)

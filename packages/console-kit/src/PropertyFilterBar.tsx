@@ -364,7 +364,12 @@ export function PropertyFilterBar({ properties, tokens, onChange, placeholder = 
               role="option"
               aria-selected={i === activeIndex}
               onMouseDown={(e) => e.preventDefault()}
-              onMouseEnter={() => setActive(i)}
+              // the highlight follows the pointer only when it moves: the browser also reports the pointer
+              // entering when the list appears or changes under a pointer at rest, and Enter must then still
+              // pick what the keys chose, not whatever the list happened to open under
+              onMouseMove={() => {
+                if (i !== activeIndex) setActive(i)
+              }}
               onClick={o.run}
               className={cx('flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5 text-sm text-primary', i === activeIndex && 'bg-accent-tint')}
             >
