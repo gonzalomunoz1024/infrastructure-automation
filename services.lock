@@ -11,4 +11,4 @@ console-search-indexer      console-search-indexer--transfers             200dba
 console-drift-service       console-drift-service--finder-and-monitoring  1f6e4ce6e05f1909b8fde4a77ec53bc97c75f3b4  the branch's tip; console-e2e is listed in service-callers (config/drift)
 console-cost-service        console-cost-service--phase-7                 3664b57fd30b68001f33638fe68b50dae57d9f0d  the branch's tip, with F-10 fixed; reached by people only through the BFF's cost routes (F-4)
 console-web                 console-web--phase-5                          757f3d6624053998cb13faf1a425e0ed4452d63c  the tip, with F-9, F-12 and F-14 fixed (#56 merged); the create wizard, the resource page, the drift tab and approvals
-console-web-cost            console-web--phase-9-cost                     1bb59eceb6c7c5844ee92cfba9a8b3e301102cf4  the newest web with a cost panel on the resource page (step 5), served on :3001
+console-web-cost            console-web--phase-9-cost                     b327e4d8568015df09cbae08699b73d8e8d94fe2  the newest web with a cost panel on the resource page (step 5), with F-9's fix (F-15 fixed), served on :3001
