@@ -2,16 +2,16 @@ openapi: 3.1.0
 x-status: draft
 info:
   title: console-search-indexer
-  version: 1.1.0
-  summary: Keeps a search index of every console resource from the state and drift events, and answers search, type-ahead and list counts for the BFF.
+  version: 1.2.0
+  summary: Keeps a search index of every console resource from the state and drift events, and answers search, type-ahead, list counts and plain-English readings for the BFF.
   description: |
     Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
 
     **Account scope.** Every query runs as a console account, the `acct` claim of the caller's
     internal JWT, and only that account's documents are searched; there is no cross-account hit,
     so nothing of another account can be found, named or counted. The console-internal principal
-    may name an account with `accountId`; a person naming another account gets 404, never 403. The
-    index's own surface (`/v1/index:rebuild`, its runs, `/internal/sources`) is for the
+    may name an account with `accountId` (on `/v1/counts`, up to 200 accounts, whose counts are
+    added up); a person naming another account gets 404, never 403. The index's own surface (`/v1/index:rebuild`, its runs, `/internal/sources`) is for the
     console-internal principal only and answers 404 to a person's token.
 
     **What is indexed.** One document per resource: wfrn, type, service, region, name, state, tags,
@@ -26,7 +26,28 @@ info:
 
     **Lists.** `GET /v1/counts` gives a list's header and state chips for the same filters as a
     search, exactly (an account's documents share one shard). Tombstones (90 days after a delete)
-    are listed only with `state=deleted` or an exact wfrn in `q`.
+    are listed only with `state=deleted` or an exact wfrn in `q`. With `groupBy` it also gives the
+    same numbers per type, service, state, region, account or tag value, for the resource map and
+    the executive home (WP 9.4, 9.5).
+
+    **Plain English.** `GET /v1/search:interpret` reads what a person typed ("failed vms tagged
+    env=prod created this week, newest first") as a list's filter, with a sentence that says how
+    it was read, how sure it is, the words it left out and how many resources the filter lists.
+    It is the copilot's fast path (WP 9.1): deterministic, quick enough to answer as the person
+    types, and it never changes anything. It knows the platform's types (by name, plural and
+    title, forgiving a typo), the states and their everyday names (`broken`, `running`, `being
+    deleted`), drift (`drifted`, `in sync`, `changed outside the console`), times (`today`, `in the
+    last 24 hours`, `since October 1`, `older than 90 days`, `not updated in 30 days`), sorts
+    (`newest first`, `by name`), the account's own tag names and values (`env=prod`, `team
+    payments`) and regions, and the query syntax itself. Quoted text is free text as typed; any
+    other word it cannot place is kept as free text while the filter still lists something, and
+    left out (`unparsed`) when it would list nothing. A union (`or`) or a negation (`not failed`)
+    is left out, since a filter cannot hold it. Within the account's query budget.
+
+    **Typos.** Free text matches a name or a tag a typo away (insert, delete, change or swap two
+    letters: none below 4 letters, one up to 6, two from 7, the first letter as typed), always
+    ranked below the words as typed. When the first page of a relevance search found a word only a
+    typo away, `didYouMean` is the query with that word as the hits spell it.
 
     **Highlights.** Each hit's `highlights` hold the matching text per field (`name`, or `text`
     for a match in the id, the tags or the searchable fields), HTML-escaped, with the match in
@@ -34,12 +55,19 @@ info:
 
     **Errors.** `{ error, problems?, correlationId? }`: 400 a query the parser refuses, 401 no
     valid JWT, 404 unknown run or another account, 429 over the account's query budget (search,
-    suggest and counts share it), 503 the BFF's signing keys cannot be read now (with
-    `Retry-After`).
+    suggest, counts and interpret share it; counts over several accounts spend each one's), 503
+    the BFF's signing keys cannot be read now (with `Retry-After`).
 
-    **Query syntax.** Free text over name, wfrn and searchable fields, plus `tag:<name>=<value>`,
-    `type:<type>`, `state:<state>`, `region:<region>` and `drift:true|false` terms; a wfrn pattern
-    is a term of its own. A query parameter and a term that disagree are a 400.
+    **Query syntax.** Free text over name, wfrn and searchable fields, plus `tag:<name>=<value>`
+    (or `tag:<name>` for any value), `type:<type>`, `state:<state>`, `region:<region>`,
+    `drift:true|false`, `created:<time>` and `updated:<time>` terms; a wfrn pattern is a term of
+    its own. A query parameter and a term that disagree are a 400. A time is a day (`2026-10-01`,
+    the whole day in UTC), a time (`2026-10-01T12:00Z`) or an age counted back from now (`30m`,
+    `24h`, `7d`, `2w`), compared with `>`, `>=`, `<` or `<=`, or two of them as `a..b` with both ends
+    kept: `created:7d` is the last seven days, `created:<30d` older than thirty days,
+    `updated:2026-10-01..2026-10-07` that week, `created:2026-10-23` that day. A time alone needs a
+    comparison; two terms on the same field keep what both keep; a resource without the time is in
+    no bounded range.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -105,6 +133,13 @@ paths:
                   next: { $ref: '#/components/schemas/Cursor' }
                   total: { type: integer, description: "The number of hits when it is cheap to count, absent otherwise" }
                   tookMs: { type: integer }
+                  didYouMean:
+                    type: string
+                    description: >-
+                      On the first page of a relevance search (`sort` score, no `after`) whose free
+                      text matched only a typo away: `q` with each such word replaced by the word the
+                      hits matched (`postgress` becomes `postgres`). Absent otherwise. It is read from
+                      the page's own hits, so it never shows a word of a resource the caller cannot see.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -118,22 +153,62 @@ paths:
         The filters of a search (`q` may be left out). `total` and `drift` apply every filter and,
         like the list, leave tombstones out unless the state asked for is deleted; `byState`
         applies every filter but the state, tombstones included, so each chip keeps its number
-        while another is picked. Within the account's query budget.
+        while another is picked. `groupBy` adds the same numbers per key (`groups`). The
+        console-internal principal may name several accounts (an organization's, for the executive
+        home and the resource map); their counts and groups are added up, and `groupBy=account`
+        gives one group per account. Within each account's query budget.
       tags: [Search]
       parameters:
-        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/AccountIds'
         - $ref: '#/components/parameters/Q'
         - $ref: '#/components/parameters/Type'
         - $ref: '#/components/parameters/Region'
         - $ref: '#/components/parameters/State'
         - $ref: '#/components/parameters/Tag'
         - $ref: '#/components/parameters/Drift'
+        - $ref: '#/components/parameters/GroupBy'
       responses:
         '200':
           description: The counts
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ResourceCounts' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/search:interpret:
+    get:
+      operationId: interpretSearch
+      summary: Plain English read as a list's filter, with how many resources it lists
+      description: >-
+        The copilot's fast path (WP 9.1). `q` is what the person typed; `type`, when given, is the
+        list they are on, which the reading stays in (another type named in `q` is left out). The
+        BFF applies the answer as the list applies its own filters: `type` picks the list,
+        `filter.q` goes in its search box, `filter.state`, `filter.drift`, `filter.region` and
+        `filter.tags` set its chips (`tag.<name>=<value>`), `sort` its order; `total` is what that
+        list shows now. `q` is the same reading as one query of `/v1/search`. Within the account's
+        query budget.
+      tags: [Search]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: q
+          in: query
+          required: true
+          description: What the person typed, in plain English or the query syntax
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - name: type
+          in: query
+          required: false
+          description: The type of the list the person is on; the reading stays in it
+          schema: { type: string, pattern: '^[a-z0-9-]{1,64}$' }
+      responses:
+        '200':
+          description: The reading
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Interpretation' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -274,6 +349,28 @@ components:
       required: false
       description: The account to search; a console account may only name its own, the internal principal any
       schema: { $ref: '#/components/schemas/AccountId' }
+    AccountIds:
+      name: accountId
+      in: query
+      required: false
+      description: >-
+        The accounts to count: a console account may only name its own (another answers 404); the
+        console-internal principal names one to 200, the parameter repeated
+        (`accountId=111111111111&accountId=222222222222`), and their counts are added up
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 200
+        items: { $ref: '#/components/schemas/AccountId' }
+    GroupBy:
+      name: groupBy
+      in: query
+      required: false
+      description: >-
+        Adds `groups`: the counts per `type` (each with its service), `service`, `state`, `region`,
+        `account`, or value of one tag (`tag:<name>`; a resource without the tag is in no group)
+      schema: { type: string, pattern: '^(type|service|state|region|account|tag:[a-z0-9-]{1,32})$' }
     Q:
       name: q
       in: query
@@ -442,19 +539,71 @@ components:
       required: [total, byState, drift, cappedAt]
       properties:
         total: { type: integer, description: What the list shows with every filter }
-        byState:
-          type: object
-          description: Every filter but the state, tombstones included (under deleted); every state is present, 0 when empty
-          required: [pending, active, updating, deleting, deleted, failed]
-          properties:
-            pending: { type: integer }
-            active: { type: integer }
-            updating: { type: integer }
-            deleting: { type: integer }
-            deleted: { type: integer }
-            failed: { type: integer }
+        byState: { $ref: '#/components/schemas/StateCounts' }
         drift: { type: integer, description: "Of total, the resources with an open drift finding" }
         cappedAt: { type: [integer, 'null'], description: The cap a count stopped at; null when the counts are exact }
+        groups:
+          type: array
+          maxItems: 100
+          description: >-
+            Only with `groupBy`: the same numbers per key, the largest `total` first (then by key),
+            every key that holds a resource in any state, so a group's `total` may be 0 while its
+            chips are not; at most 100
+          items: { $ref: '#/components/schemas/CountGroup' }
+    StateCounts:
+      type: object
+      description: Every filter but the state, tombstones included (under deleted); every state is present, 0 when empty
+      required: [pending, active, updating, deleting, deleted, failed]
+      properties:
+        pending: { type: integer }
+        active: { type: integer }
+        updating: { type: integer }
+        deleting: { type: integer }
+        deleted: { type: integer }
+        failed: { type: integer }
+    CountGroup:
+      type: object
+      required: [key, total, byState, drift]
+      properties:
+        key: { type: string, description: "The type, service, state, region, account id or tag value" }
+        total: { type: integer }
+        byState: { $ref: '#/components/schemas/StateCounts' }
+        drift: { type: integer }
+        service: { type: string, description: The service of a type's group (`groupBy=type` only) }
+    Interpretation:
+      type: object
+      required: [q, filter, explanation, confidence, total]
+      properties:
+        q: { type: string, description: 'The whole reading as one query of `/v1/search`: the type, state, region, drift and tag terms, then `filter.q`' }
+        type: { type: string, description: The type to list; absent when the text names none and none was given }
+        filter: { $ref: '#/components/schemas/InterpretationFilter' }
+        sort: { type: string, enum: [score, name, -name, created, -created, updated, -updated], description: Absent when the text asks for no order }
+        explanation: { type: string, description: 'The reading as one English sentence for the person to check: "Virtual machines that failed, tagged env=prod, created this week (since 2026-10-19), newest first."' }
+        confidence:
+          type: string
+          enum: [high, medium, low]
+          description: >-
+            high when every word was understood; medium when some words became free text, a typo
+            was fixed, or nothing but filler was typed; low when words were left out, the text
+            named another type than the list's, or the reading is free text alone. The copilot
+            asks its model when it is low.
+        unparsed:
+          type: array
+          items: { type: string }
+          description: The words left out, as typed (a union, a negation, a second state, type or sort, a term the syntax refuses, or guesses that would list nothing); absent when none
+        total: { type: integer, description: How many resources the filter lists now (the list's `total`) }
+    InterpretationFilter:
+      type: object
+      description: The list's own filters; each absent when the reading sets none
+      properties:
+        q: { type: string, description: 'What the list''s filters cannot hold: `created:` and `updated:` terms, wfrn patterns, quoted phrases and free text' }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        drift: { type: boolean }
+        region: { $ref: '#/components/schemas/RegionName' }
+        tags:
+          type: object
+          description: Tag name to value; an empty value is any value (`tag.<name>=`)
+          additionalProperties: { type: string }
     SourceStatus:
       type: object
       required: [kind, running, handled]
