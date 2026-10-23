@@ -25,6 +25,9 @@ public interface StatePort {
     /** One resource; {@code ifNoneMatch} is the ETag the page holds, answered with {@code notModified} when it still stands. */
     Mono<StateAnswer> get(AccountScope scope, StateCaller caller, String wfrn, String ifNoneMatch);
 
+    /** The resource as it was at an instant (decision 29), rebuilt from its log; 404 {@code resource.notYet} before it existed. */
+    Mono<StateResource> getAt(AccountScope scope, StateCaller caller, String wfrn, String at);
+
     /** A page of the resource's log, oldest first after {@code after} (a version). */
     Mono<Page<JsonNode>> events(AccountScope scope, StateCaller caller, String wfrn, Integer limit, String after);
 

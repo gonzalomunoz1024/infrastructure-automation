@@ -139,6 +139,13 @@ public class HttpStatePort implements StatePort {
     }
 
     @Override
+    public Mono<StateResource> getAt(AccountScope scope, StateCaller caller, String wfrn, String at) {
+        Function<UriBuilder, URI> uri = b -> b.path("/v1/wfrn/{wfrn}").queryParam("at", "{at}").build(Map.of("wfrn", wfrn, "at", at));
+        return exchange(client().get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(scope, caller)).accept(MediaType.APPLICATION_JSON),
+                r -> r.bodyToMono(StateResource.class));
+    }
+
+    @Override
     public Mono<Page<JsonNode>> events(AccountScope scope, StateCaller caller, String wfrn, Integer limit, String after) {
         Function<UriBuilder, URI> uri = b -> {
             Map<String, Object> vars = new HashMap<>();
