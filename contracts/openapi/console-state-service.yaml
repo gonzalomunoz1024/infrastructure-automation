@@ -264,7 +264,7 @@ paths:
     post:
       operationId: requestDelete
       summary: Record a delete request
-      description: Records `DeleteRequested` and moves the resource to `deleting`; the platform's `resource.retired` or the job's success records `Deleted`.
+      description: Records `DeleteRequested` and moves the resource to `deleting`; the platform's `resource.retired` or the job's success records `Deleted`. A request naming the job that has already deleted the resource answers the tombstone (200, `state` `deleted`) instead of 410.
       tags: [Commands]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -295,7 +295,7 @@ paths:
     post:
       operationId: requestRetry
       summary: Record a retry of a failed create
-      description: 'Records `RetryRequested` and moves a `failed` resource back to `pending` (409 `resource.notFailed` in any other state). The BFF records it before it reruns the failed job with the platform''s `POST /api/v1/jobs/{id}:rerun`, a new job that keeps the original context; that job''s events end the retry as they end a create.'
+      description: 'Records `RetryRequested` and moves a `failed` resource back to `pending` (409 `resource.notFailed` in any other state). The BFF first reruns the failed job with the platform''s `POST /api/v1/jobs/{id}:rerun` from `lastError.failedStep`, a new job that keeps the original context, then records the retry naming that job in `jobId`, so a rerun the platform refuses records nothing; a retry recorded before its job, without `jobId`, works too. The job''s events end the retry as they end a create, and a retry naming a job already on record (its outcome came first) changes nothing.'
       tags: [Commands]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
