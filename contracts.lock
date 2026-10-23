@@ -1,0 +1,9 @@
+# contracts.lock
+# The hub commit the contract under openapi/ was copied from (contracts/openapi/console-bff.yaml
+# is openapi/console-bff.yaml here). test/contracts-lock.test.mjs and the Java build's
+# ContractsLockTest fail when the copy drifts from the hash recorded here.
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root--stack (every open hub decision; moves to console-root--bff-clients once that PR opens)
+commit: 43483d8e35ccc5c609ff95b4c971d1faf2c72910
+files:
+  contracts/openapi/console-bff.yaml: sha256:b8bd5fdd91b3afc235bc46c2171cd1a5159e616104e48141ba4bf6b19af81072

@@ -1,0 +1,25 @@
+{
+  "name": "@iaf/console-cli-core",
+  "version": "0.1.0",
+  "description": "The console CLI's command model: one command per operation of the BFF's contract, argument parsing, help and output. Runs in Node and in browsers (the console shell)",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@iaf/console-sdk": "0.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

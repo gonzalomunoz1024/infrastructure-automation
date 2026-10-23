@@ -1,0 +1,28 @@
+{
+  "name": "console-sdk",
+  "private": true,
+  "description": "The console's TypeScript SDK, command core and CLI, generated from the BFF's contract",
+  "license": "UNLICENSED",
+  "type": "module",
+  "workspaces": [
+    "packages/sdk",
+    "packages/cli-core",
+    "packages/cli"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "generate:check": "node scripts/generate.mjs --check",
+    "build": "tsc -b",
+    "typecheck": "tsc -b && tsc -p packages/sdk/test/tsconfig.json",
+    "test": "tsc -b && node --test \"test/*.test.mjs\" \"packages/*/test/*.test.mjs\"",
+    "clean": "tsc -b --clean"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

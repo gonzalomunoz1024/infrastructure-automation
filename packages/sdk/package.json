@@ -1,0 +1,22 @@
+{
+  "name": "@iaf/console-sdk",
+  "version": "0.1.0",
+  "description": "The console's TypeScript SDK: the BFF's contract as types, and a typed client with bearer sign-in, refresh, idempotency keys, paging and retries",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

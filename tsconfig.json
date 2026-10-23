@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/sdk" },
+    { "path": "packages/cli-core" },
+    { "path": "packages/cli" }
+  ]
+}

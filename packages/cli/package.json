@@ -1,0 +1,27 @@
+{
+  "name": "@iaf/console-cli",
+  "version": "0.1.0",
+  "description": "console, the customer console from the command line: sign in with a device code, then one command per operation of the BFF",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "console": "dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@iaf/console-cli-core": "0.1.0",
+    "@iaf/console-sdk": "0.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,4102 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-bff
+  version: 1.0.0
+  summary: The API the console's web app talks to, one call per screen, signed in with a session cookie.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Session and account scope.** The web app signs in through `/auth/login` and holds a session
+    cookie (`console_session`, HttpOnly, SameSite=Lax); every `/console/v1/*` call carries it and
+    the `X-Csrf-Token` header the session answers. The session names the current account and
+    region; every call is scoped to them. A resource of another account answers 404, never 403.
+    Switching accounts is `PUT /console/v1/session`.
+
+    **How a call reaches the platform.** The BFF holds, per console account, the account's
+    platform service account (P-03) and signs an `X-On-Behalf-Of` assertion for the session's user
+    (P-02); a command mints a wfrn at the state service first, then starts the platform job with
+    `X-Resource-Wfrn`, `X-Console-Request-Id` and `X-Job-Label-*` (P-04). The platform's job id and
+    the console request id come back on every command.
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`. `limit` is 1 to 200, 50 by default.
+
+    **Errors.** `{ error, problems?, denied?, detail?, correlationId? }`: 400 bad input (`problems`
+    carry the platform's `Problem` rows, with the field as a JSON pointer, so the form can mark
+    them), 401 no session, 403 the account's policies deny it (the only place the console answers
+    403: within the user's own account), 404 unknown or another account's, 409 a conflict, 429 over
+    a quota (with `Retry-After`), 502 the platform answered an error (with its `correlationId`).
+
+    **Every 403 but a missing CSRF token carries `denied`**, a `Denial`: which layer decided
+    (`console-iam`, the account's roles and policies, or `platform`, the platform's own scopes),
+    the `<service>:<verb>` action and the wfrn or pattern checked, the reason, the role, policy and
+    statement (console IAM) or scope (platform) behind it, whether the person may request access
+    and which role would grant it. A step-up refusal (a fresh sign-in is needed for the action) is
+    a 403 with `detail: { stepUp: true, action, login }`, `login` being the `/auth/login` URL to
+    send the person to. The same `Denial` greys an action in the descriptors
+    (`ConsoleAction.allowed` and `denied`), decided per session with `<service>:<verb>` on
+    `wfrn:<partition>:<service>:<region>:<account>:<type>/*`.
+
+    **IAM in the console.** `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas}` and
+    their sub-paths pass through to the identity service's `/v1/accounts/{accountId}/…` for the
+    session's account, with the identity service's schemas unchanged
+    (`contracts/openapi/console-identity-service.yaml`): `If-Match`, `If-None-Match`,
+    `Idempotency-Key` and `Content-Type` are forwarded, the status, `ETag` and body come back as
+    they were, and a 403 without a `denied` block gets one. Writes need `X-Csrf-Token` like every
+    other write. Access requests (`/console/v1/access-requests`) let a person ask for an action a
+    denial marked `requestable`; an account admin decides them.
+
+    **Drift, monitoring and rightsizing.** `/console/v1/findings`, `/console/v1/discover`,
+    `/console/v1/unmanaged`, `/console/v1/alarms`, `/console/v1/recommendations` and a resource's
+    `/metrics` and `/alarms` go to the drift service (`contracts/openapi/console-drift-service.yaml`)
+    for the session's account and region, with the person's internal JWT. A list leaves out the rows
+    of types the person may not list (`<service>:list` on the type's pattern), so a page can hold
+    fewer rows than `limit` while `next` goes on. Reading a finding, an alarm or a recommendation
+    needs `<service>:get` on its wfrn; deciding a finding, dismissing a recommendation and changing
+    an alarm need `<service>:update`; a resource's metrics and a discovery run need
+    `<service>:observe`; importing or assigning an unmanaged object needs `<service>:create` on the
+    type's pattern. `can` on each row lists what the person may do. A revert and an apply run the
+    type's workflow on behalf of the person (the BFF sends its `X-On-Behalf-Of`), and never on
+    their own; applying a delete needs `confirm: true` and a fresh sign-in, like a destructive verb.
+
+    **Keys.** `GET /.well-known/jwks.json` publishes the public keys the other console services
+    verify this service's internal tokens and `X-On-Behalf-Of` assertions with.
+
+    **Service tokens.** The BFF is the only issuer of internal JWTs. A console service that calls
+    another on its own (the search indexer reading the state service and the accounts) gets a
+    token at `POST /internal/v1/token`: OAuth 2.0 client credentials authenticated by a JWT client
+    assertion (RFC 7523), either the pod's projected Kubernetes service-account token (audience
+    `console-bff`) or a JWT the service signs with its own registered EC key. The token lives 5
+    minutes, names only the audiences asked for, carries `sub` and `svc` the service id and no
+    `acct`. The path is in-cluster only; the ingress never routes `/internal`.
+
+    **wfrns in URLs.** `/console/v1/r/{type}/{wfrn}` takes the wfrn percent-encoded; the type is
+    repeated in the path so the same template never serves two shapes, and the BFF answers 404 when
+    the wfrn's type segment is not `{type}`.
+
+    **Verbs.** A resource's actions are the catalog's verbs for its type (P-08): `create` is
+    `POST /console/v1/r/{type}`, `update` is `PATCH /console/v1/r/{type}/{wfrn}`, every other verb,
+    `delete` included, is `POST /console/v1/r/{type}/{wfrn}:{verb}`. Each has `:preview`, and a
+    verb with `bulk` has `POST /console/v1/r/{type}:batch`.
+
+    **Beyond the AWS console (phase 9).** The executive home reads `GET /console/v1/insights` (the
+    BFF's own numbers) and spend from the cost service; the copilot asks
+    `POST /console/v1/assistant/turns` and reads the answer from its conversation, and its plain
+    English becomes the list's own filter through `GET /console/v1/search:interpret`; grouped
+    counts across the person's accounts come from `GET /console/v1/search:counts`; a failed job
+    explains itself at `GET /console/v1/jobs/{jobId}/explanation`, whose fix the console sends to
+    the phase 4 retry. The copilot never acts: it fills lists, forms and drawers for the person to
+    review, and every change still goes through its preview and IAM.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Auth
+  - name: Session
+  - name: Types
+  - name: Resources
+  - name: Drift
+    description: Findings, their decisions, and the shadow-infrastructure finder, through the drift service
+  - name: Monitoring
+    description: A resource's metrics and alarms, through the drift service
+  - name: Rightsizing
+    description: Idle and oversized resources, through the drift service
+  - name: Commands
+  - name: Jobs
+  - name: Approvals
+  - name: Events
+  - name: Search
+  - name: Preferences
+  - name: Cost
+    description: The cost service for the session's account or the organization (decision 25)
+  - name: Budgets
+  - name: Scorecards
+    description: 'Compliance scorecards (WP 9.6), from the drift service: IAM actions `scorecards:list` and `scorecards:remediate`'
+  - name: Insights
+    description: The executive home's numbers (phase 9)
+  - name: Assistant
+    description: The console copilot, behind the BFF's AssistantPort (phase 9)
+  - name: IAM
+    description: The identity service for the session's account, passed through
+  - name: Access requests
+  - name: Keys
+  - name: Service tokens
+    description: Tokens for console services calling each other on their own (in-cluster only)
+  - name: Health
+security:
+  - session: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /auth/login:
+    get:
+      operationId: login
+      summary: Start the sign-in
+      description: Redirects to the identity provider (OIDC, authorization code with PKCE); `returnTo` must be a console path. `login_hint` goes to the provider as is (the demo provider then skips its picker); `stepUp=true` asks for a fresh authentication (`prompt=login`, `max_age=0`) and marks the session stepped up for the actions that need it.
+      tags: [Auth]
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          schema: { type: string, pattern: '^/' }
+        - name: login_hint
+          in: query
+          schema: { type: string }
+        - name: stepUp
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '302':
+          description: To the identity provider
+          headers:
+            Location:
+              schema: { type: string }
+  /auth/callback:
+    get:
+      operationId: loginCallback
+      summary: The identity provider's answer
+      description: Exchanges the code, resolves the user at the identity service, opens the session and redirects to `returnTo`.
+      tags: [Auth]
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: To the console, with the session cookie set
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: The user belongs to no console account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: End the session
+      tags: [Auth]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: The session is gone and the cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+  /console/v1/session:
+    get:
+      operationId: getSession
+      summary: Who is signed in, in which account and region
+      tags: [Session]
+      responses:
+        '200':
+          description: The session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: switchSession
+      summary: Switch the account or the region
+      tags: [Session]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accountId: { $ref: '#/components/schemas/AccountId' }
+                region: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '200':
+          description: The session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: The accounts the user may switch to
+      tags: [Session]
+      responses:
+        '200':
+          description: The accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccountSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/regions:
+    get:
+      operationId: listRegions
+      summary: The regions, with what each offers
+      description: The platform's regions (P-07) with their availability, cached and refreshed on `region.changed`.
+      tags: [Session]
+      responses:
+        '200':
+          description: The regions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Region' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/types:
+    get:
+      operationId: listTypes
+      summary: The resource types the console shows
+      description: One `ConsoleType` per visible type of the current region, grouped by service, built from the platform's resource types, the catalog and the hub's overlays; answers an `ETag` and honours `If-None-Match`.
+      tags: [Types]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The types
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleType' }
+        '304':
+          description: Not modified
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/types/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        description: '`<service>/<type>`, percent-encoded (`compute%2Fvm`)'
+        schema: { type: string }
+    get:
+      operationId: getType
+      summary: One type's descriptor
+      tags: [Types]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The descriptor
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleType' }
+        '304':
+          description: Not modified
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    get:
+      operationId: listResources
+      summary: List resources of a type
+      description: The account's resources of the type in the current region, from the state service, with the search index for `q`.
+      tags: [Resources]
+      parameters:
+        - name: q
+          in: query
+          description: Free text over name, wfrn, tags and searchable fields
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceState' }
+        - name: tag.<name>
+          in: query
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - name: drift
+          in: query
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          description: 'A column, `-` for descending, for example `-created`'
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleResource' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createResource
+      summary: Create a resource
+      description: >-
+        Mints the wfrn, then starts the type's create workflow with the delegation and the context.
+        The resource shows at once in `pending`. A budget of the account with `blockCreates` that is
+        over refuses the create with 409 `budget.exceeded`, naming the budgets in `detail.budgets`
+        (the same rule the preview shows); when the cost service cannot answer within 2 seconds the
+        create goes ahead (decision 25).
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}:preview:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    post:
+      operationId: previewCreate
+      summary: Preview a create
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Preview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}:batch:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    post:
+      operationId: batchCommand
+      summary: Run a verb on many resources
+      description: One platform batch (P-04's `contexts` carry each row's wfrn); for `create`, each row is minted first.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchInput' }
+      responses:
+        '202':
+          description: The batch was accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResource
+      summary: A resource's detail page
+      description: The resource, its observed truth, its open finding, its last jobs, its neighbours and what the user may do with it, in one answer.
+      tags: [Resources]
+      responses:
+        '200':
+          description: The detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResourceDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Deleted; the tombstone says when
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      operationId: updateResource
+      summary: Update a resource
+      description: 'The type''s `update` verb (P-08): only `mutableFields` may be sent; the state service records `UpdateRequested` and the job is started with the context.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:{verb}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+      - $ref: '#/components/parameters/VerbPath'
+    post:
+      operationId: runVerb
+      summary: Run a verb on a resource
+      description: 'Any verb of the type''s catalog but `create` and `update`: `delete`, `restart`, `upgrade` and so on. A destructive verb needs `confirm: true` in the body.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:{verb}:preview:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+      - $ref: '#/components/parameters/VerbPath'
+    post:
+      operationId: previewVerb
+      summary: Preview a verb on a resource
+      description: '`update` included: `POST .../{wfrn}:update:preview` previews a PATCH.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Preview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}/activity:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: listResourceActivity
+      summary: A resource's activity
+      description: Its state events and the platform jobs about it, newest first.
+      tags: [Resources]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ActivityEntry' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/drift:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceDrift
+      summary: A resource's open and closed findings
+      tags: [Resources]
+      responses:
+        '200':
+          description: The findings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/compliance:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceCompliance
+      summary: A resource's compliance evaluations
+      description: Every rule that applies to the resource and its status, failing first, from the drift service. Needs `scorecards:list` and the resource's own get.
+      tags: [Resources, Scorecards]
+      responses:
+        '200':
+          description: The evaluations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCompliance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/lineage:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceLineage
+      summary: What a resource was built from and what depends on it
+      tags: [Resources]
+      responses:
+        '200':
+          description: The graph, within the account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lineage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/metrics:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceMetrics
+      summary: A resource's metric series, for its Monitoring tab
+      description: 'Through the drift service, from the provider''s metrics read (P-09). Needs `<service>:observe` on the wfrn. Without `from`, the last 24 hours; without `step`, 5 minutes for a day or less, else an hour. 404 `metrics.notSupported` when the type has no metrics read (its descriptor''s `observe.metrics` is false); 429 over the provider''s observe budget.'
+      tags: [Monitoring]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: step
+          in: query
+          description: An ISO-8601 duration, at least PT1M
+          schema: { type: string }
+      responses:
+        '200':
+          description: The series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceMetrics' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}/alarms:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceAlarms
+      summary: A resource's alarms
+      description: Needs `<service>:get` on the wfrn; firing alarms first.
+      tags: [Monitoring]
+      responses:
+        '200':
+          description: The alarms
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Alarm' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/tags:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    put:
+      operationId: setResourceTags
+      summary: Replace a resource's tags
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: The tags as they now stand
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/scorecards:
+    get:
+      operationId: getScorecard
+      summary: The session account's compliance scorecard
+      description: 'The score (0 to 100, null while nothing is scored), by pack, rule and severity, with the daily trend. A score is `100 × Σ weight × passed ÷ Σ weight × (passed + failed)` with critical 10, warning 3, info 1. Needs `scorecards:list`.'
+      tags: [Scorecards]
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 400, default: 30 }
+      responses:
+        '200':
+          description: The scorecard
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scorecard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/scorecards/packs:
+    get:
+      operationId: listRulePacks
+      summary: The rule packs, their rules and their one-click fixes
+      tags: [Scorecards]
+      responses:
+        '200':
+          description: The packs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/RulePackSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/scorecards/heatmap:
+    get:
+      operationId: getScorecardHeatmap
+      summary: The organization's heat map
+      description: One row per account of the person's memberships where `scorecards:list` is allowed, with the score by pack; the accounts the person may not see are left out, never shown empty.
+      tags: [Scorecards]
+      responses:
+        '200':
+          description: The heat map, with each account's name
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScorecardHeatmap' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/scorecards/packs/{pack}/rules/{ruleId}/failing:
+    parameters:
+      - $ref: '#/components/parameters/PackName'
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      operationId: listFailingResources
+      summary: The session account's resources that fail a rule, longest failing first
+      tags: [Scorecards]
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Evaluation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/scorecards/packs/{pack}/rules/{ruleId}:remediate:
+    parameters:
+      - $ref: '#/components/parameters/PackName'
+      - $ref: '#/components/parameters/RuleId'
+    post:
+      operationId: remediateEvaluation
+      summary: Start a rule's one-click fix for a failing resource
+      description: |
+        Needs `scorecards:remediate` on the resource's wfrn and the fix's own action: the
+        workflow's `<service>:<verb>` (with its step-up rule), or `<service>:tag` for a tags fix.
+        The BFF relays the person's `X-On-Behalf-Of` to the drift service; a workflow fix answers
+        202 with the job (it shows on the Requests page like any other), a tags fix 200 with the
+        tags. Never automatic.
+      tags: [Scorecards, Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RemediateRequest' }
+      responses:
+        '200':
+          description: The tags were set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Remediation' }
+        '202':
+          description: The workflow was started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Remediation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`evaluation.passing`, `remediation.none`, `remediation.unavailable` or `resource.inFlight`, from the drift service'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /console/v1/jobs:
+    get:
+      operationId: listJobs
+      summary: The account's jobs
+      tags: [Jobs]
+      parameters:
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: workflow
+          in: query
+          schema: { type: string }
+        - name: requester
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JobSummary' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/jobs/{jobId}:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    get:
+      operationId: getJob
+      summary: A job with its steps
+      tags: [Jobs]
+      responses:
+        '200':
+          description: The job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/jobs/{jobId}:cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    post:
+      operationId: cancelJob
+      summary: Cancel a job
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '202':
+          description: Accepted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/approvals:
+    get:
+      operationId: listApprovals
+      summary: Approvals waiting for the user, and the ones they asked for
+      tags: [Approvals]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected, expired] }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Approval' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/approvals/{approvalId}:decide:
+    parameters:
+      - name: approvalId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideApproval
+      summary: Approve or reject
+      tags: [Approvals]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                comment: { type: string, maxLength: 1000 }
+      responses:
+        '202':
+          description: Accepted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/findings:
+    get:
+      operationId: listFindings
+      summary: The account's drift findings
+      description: 'For the session''s account and region, open ones by default, from the drift service. A finding of a type the person may not list is left out. `can` lists `revert`, `accept` and `ignore` when `<service>:update` is allowed on its wfrn.'
+      tags: [Drift]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [info, warning, critical] }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: wfrn
+          in: query
+          description: An exact wfrn, or a pattern
+          schema: { type: string }
+        - name: openedAfter
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Finding' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /console/v1/findings/summary:
+    get:
+      operationId: getFindingsSummary
+      summary: Open findings counted by type and severity
+      description: The account's counts; any member of the account may read them.
+      tags: [Drift]
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FindingsSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/findings/stats:
+    get:
+      operationId: getFindingStats
+      summary: Findings opened and closed in a window
+      description: 'The drift numbers of the executive home: found is `opened`, fixed is `closed.total`. Without `since`, the last 30 days; without `until`, now.'
+      tags: [Drift]
+      parameters:
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FindingStats' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/findings/{findingId}:
+    parameters:
+      - $ref: '#/components/parameters/FindingIdPath'
+    get:
+      operationId: getFinding
+      summary: One finding
+      description: Needs `<service>:get` on its wfrn.
+      tags: [Drift]
+      responses:
+        '200':
+          description: The finding
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/findings/{findingId}:revert:
+    parameters:
+      - $ref: '#/components/parameters/FindingIdPath'
+    post:
+      operationId: revertFinding
+      summary: Put the resource back to its desired state
+      description: 'Needs `<service>:update` on the wfrn. The type''s update workflow runs with the desired values of the drifted fields, on behalf of the person. The finding stays open with `revertStatus: running`, and closes as `reverted` when the job succeeded and the next read agrees; a failed job leaves it open. 409: `finding.closed`, `finding.reverting`, `finding.notRevertable`, `finding.unwatched` or `revert.needsPerson`.'
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriftDecision' }
+      responses:
+        '202':
+          description: The revert job was started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [findingId, jobId]
+                properties:
+                  findingId: { type: string }
+                  jobId: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/findings/{findingId}:accept:
+    parameters:
+      - $ref: '#/components/parameters/FindingIdPath'
+    post:
+      operationId: acceptFinding
+      summary: Make the observed values the desired ones
+      description: 'Needs `<service>:update` on the wfrn. 409: `finding.closed`, or `finding.reverting` while a revert job runs.'
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriftDecision' }
+      responses:
+        '200':
+          description: The finding, closed as accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/findings/{findingId}:ignore:
+    parameters:
+      - $ref: '#/components/parameters/FindingIdPath'
+    post:
+      operationId: ignoreFinding
+      summary: Silence the drifted fields
+      description: 'Needs `<service>:update` on the wfrn. Until the desired state changes, or until `until`. 409: `finding.closed`.'
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DriftDecision'
+                - type: object
+                  properties:
+                    until: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The finding, closed as ignored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/discover:
+    post:
+      operationId: startDiscovery
+      summary: Scan a type's provider for what the console does not manage
+      description: 'Needs `<service>:observe` on the type''s pattern. One run per type and region at a time: a second answers 409.'
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string }
+      responses:
+        '202':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /console/v1/discover/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/RunIdPath'
+    get:
+      operationId: getDiscovery
+      summary: A discovery run's progress
+      tags: [Drift]
+      responses:
+        '200':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/unmanaged:
+    get:
+      operationId: listUnmanaged
+      summary: Objects the providers have that the console does not manage
+      description: 'The objects this account''s discovery runs found, and the ones another account assigned to it; every type the person may list when `type` is left out. `can` lists `import` and `assign` when `<service>:create` is allowed on the type''s pattern.'
+      tags: [Drift]
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: owner
+          in: query
+          description: '`mine` for the objects guessed to be or assigned to this account, `unknown` for the ones with no guess'
+          schema: { type: string, enum: [any, mine, unknown], default: any }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/UnmanagedObject' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/unmanaged:import:
+    post:
+      operationId: importUnmanaged
+      summary: Take a discovered object under management
+      description: Needs `<service>:create` on the type's pattern. The object gets a wfrn and leaves the unmanaged lists, this account's and the one it was assigned to or by.
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, providerId]
+              properties:
+                type: { type: string }
+                providerId: { type: string }
+                name: { type: string }
+      responses:
+        '201':
+          description: The resource is managed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wfrn]
+                properties:
+                  wfrn: { $ref: '#/components/schemas/Wfrn' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/unmanaged:assign:
+    post:
+      operationId: assignUnmanaged
+      summary: Hand a discovered object to another team
+      description: 'Needs `<service>:create` on the type''s pattern. The object stays in this account''s list with its `assignment` and shows in the named account''s list too, until either imports it; assigning it again moves the assignment. 400 `unmanaged.unknownAccount` when no active account has that id, or it is this one.'
+      tags: [Drift]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, providerId, accountId]
+              properties:
+                type: { type: string }
+                providerId: { type: string }
+                accountId: { $ref: '#/components/schemas/AccountId' }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: The object, with its assignment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UnmanagedObject' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/alarms:
+    get:
+      operationId: listAlarms
+      summary: The account's alarms
+      description: Firing alarms first; an alarm on a type the person may not list is left out.
+      tags: [Monitoring]
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [ok, alarm, insufficient] }
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Alarm' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/alarms/{alarmId}:
+    parameters:
+      - $ref: '#/components/parameters/AlarmIdPath'
+    put:
+      operationId: putAlarm
+      summary: Create or change an alarm
+      description: 'Needs `<service>:update` on the alarm''s wfrn. The web app picks the alarm id, so a retried create is the same alarm. Evaluated every minute: the metric''s average over `windowMinutes` against `threshold`.'
+      tags: [Monitoring]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlarmInput' }
+      responses:
+        '200':
+          description: Changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarm' }
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarm' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteAlarm
+      summary: Delete an alarm
+      description: Needs `<service>:update` on the alarm's wfrn.
+      tags: [Monitoring]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/recommendations:
+    get:
+      operationId: listRecommendations
+      summary: Idle and oversized resources
+      description: 'Open ones by default, the largest saving first; a recommendation on a type the person may not list is left out. `can` lists `apply` and `dismiss` as the person''s policies allow: `<service>:update` (resize, dismiss) or `<service>:delete` (delete) on the wfrn.'
+      tags: [Rightsizing]
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [idle, oversized] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, applied, dismissed, superseded], default: open }
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Recommendation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/recommendations/summary:
+    get:
+      operationId: getRecommendationsSummary
+      summary: Open recommendations and what they would save
+      tags: [Rightsizing]
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecommendationsSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/recommendations/{recommendationId}:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationIdPath'
+    get:
+      operationId: getRecommendation
+      summary: One recommendation
+      description: Needs `<service>:get` on its wfrn.
+      tags: [Rightsizing]
+      responses:
+        '200':
+          description: The recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recommendation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/recommendations/{recommendationId}:apply:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationIdPath'
+    post:
+      operationId: applyRecommendation
+      summary: Resize or delete the resource as recommended
+      description: 'A resize needs `<service>:update` on the wfrn and runs the type''s update workflow with the proposed size; a delete needs `<service>:delete`, `confirm: true` (400 `confirm.required`) and a fresh sign-in (403 with `detail.stepUp`), and runs the delete workflow. Both on behalf of the person, never on their own. The recommendation is `applied` once the job is started. 409: `recommendation.closed`, `recommendation.notApplicable`, `recommendation.changing` or `revert.needsPerson`.'
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DriftDecision'
+                - type: object
+                  properties:
+                    confirm: { type: boolean, description: 'Required, and true, for a delete' }
+      responses:
+        '202':
+          description: The job is started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recommendationId, jobId]
+                properties:
+                  recommendationId: { type: string }
+                  jobId: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/recommendations/{recommendationId}:dismiss:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationIdPath'
+    post:
+      operationId: dismissRecommendation
+      summary: Set a recommendation aside
+      description: 'Needs `<service>:update` on the wfrn. Without `until`, for good; with it, a later pass may open it again after that date. 409: `recommendation.closed`.'
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DriftDecision'
+                - type: object
+                  properties:
+                    until: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Dismissed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recommendation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/events:
+    get:
+      operationId: streamEvents
+      summary: Live updates for open pages
+      description: Server-sent events of the account's resources, findings and jobs; `id:` is a cursor the browser sends back as `Last-Event-ID`, `event:` is the event type and `data:` the event. `wfrn` narrows the stream to one resource.
+      tags: [Events]
+      parameters:
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: types
+          in: query
+          description: Comma-separated event types
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: A stream of LiveEvent
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/LiveEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/search:
+    get:
+      operationId: search
+      summary: Search the account's resources
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, maxLength: 256 }
+        - name: type
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page of hits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchHit' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/suggest:
+    get:
+      operationId: suggest
+      summary: Type-ahead over names, wfrns, tags and types
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 8 }
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Suggestion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/iam/{collection}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+    get:
+      operationId: listIam
+      summary: List an IAM collection of the session's account
+      description: 'Passes through to `GET /v1/accounts/{accountId}/{collection}` of the identity service; the page shape and the items are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createIam
+      summary: Create in an IAM collection of the session's account
+      description: 'Passes through to the identity service''s POST with the body unchanged; the status (201, or 200 for an access key, whose secret is answered this once) and the body are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '201': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /console/v1/iam/{collection}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+    get:
+      operationId: getIam
+      summary: One IAM record of the session's account
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '304': { description: Unchanged }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateIam
+      summary: Change an IAM record
+      description: 'For users, groups, roles and quotas, as the identity service''s PATCH; `If-Match` carries the version and 409 says it moved on'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    put:
+      operationId: replaceIam
+      summary: Replace an IAM record
+      description: 'For policies, as the identity service''s PUT'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteIam
+      summary: Remove an IAM record
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/iam/{collection}/{id}:{action}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+      - $ref: '#/components/parameters/IamAction'
+    post:
+      operationId: iamAction
+      summary: An IAM record's action
+      description: '`rotate` on an access key (the new secret is answered this once) and `request-increase` on a quota, as the identity service''s `:{action}` operations'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '202': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/access-requests:
+    get:
+      operationId: listAccessRequests
+      summary: Access requests
+      description: '`scope=mine` (the default) lists the person''s own requests; `scope=account` lists every request of the account, for its admins'
+      tags: [Access requests]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccessRequestStatus' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [mine, account], default: mine }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessRequest' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAccessRequest
+      summary: Ask for an action a denial marked requestable
+      description: 'Opens a request to the account''s admins; the same open request (same action, resource and role) answers 409 with the existing one'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequestInput' }
+      responses:
+        '202':
+          description: The request, pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The same request is already open
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+  /console/v1/access-requests/{requestId}:decide:
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideAccessRequest
+      summary: Approve or reject an access request
+      description: 'For the account''s admins; approving grants the suggested role (or the role asked for) and the requester''s next session carries it'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: The BFF's public keys
+      description: The keys the other console services verify this service's internal tokens and X-On-Behalf-Of assertions with (RFC 7517); the current key and the previous one during a rotation, each with a `kid`
+      tags: [Keys]
+      security: []
+      responses:
+        '200':
+          description: The key set
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 'public, max-age=300'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JsonWebKeySet' }
+  /internal/v1/token:
+    post:
+      operationId: issueServiceToken
+      summary: A service token for a console service
+      description: |
+        OAuth 2.0 client credentials (RFC 6749 §4.4) with a JWT client assertion (RFC 7523 §2.2).
+        The assertion is either the caller's projected Kubernetes service-account token, audience
+        `console-bff`, issued by the cluster the BFF trusts to a service account registered for a
+        client; or a JWT the client signs with a key registered for it: `iss` and `sub` the client
+        id, `aud` containing `console-bff`, `iat`, `exp` at most 5 minutes after `iat`, and a `jti`
+        never used before. Asymmetric algorithms only (ES256, ES384, RS256, PS256).
+
+        The answer is an internal JWT of the BFF (ES256, its JWKS): `iss` `console-bff`, `aud` the
+        services asked for (each registered for the client; all of them when none is asked),
+        `sub` and `svc` the client id, `iat`, `exp`, `jti`, and no `acct`, which every console service
+        treats as the console-internal principal. Errors are RFC 6749 §5.2 bodies. Not routed by
+        the ingress: in-cluster callers only.
+      tags: [Service tokens]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/ServiceTokenRequest' }
+            encoding:
+              audience: { style: form, explode: true }
+      responses:
+        '200':
+          description: The token
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceToken' }
+        '400':
+          description: '`invalid_request` (a field is missing or malformed), `unsupported_grant_type`, `invalid_target` (an audience the client is not registered for)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+        '401':
+          description: '`invalid_client`: the assertion does not verify, has expired or was used before, or names no registered client'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+  /console/v1/preferences:
+    get:
+      operationId: getPreferences
+      summary: The user's preferences
+      tags: [Preferences]
+      responses:
+        '200':
+          description: The preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: putPreferences
+      summary: Replace the user's preferences
+      tags: [Preferences]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Preferences' }
+      responses:
+        '200':
+          description: The preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/insights:
+    get:
+      operationId: getInsights
+      summary: The executive home's numbers for the person's estate
+      description: |
+        What the console has done for the accounts the person may read insights in (`insights:get`
+        on each; `scope=account` narrows it to the session's account): resources managed now and at
+        the start of the period, requests and how many were self-served, the lead time from request
+        to running against the baseline of today's tickets and the hours that saved, drift found and
+        fixed, and adoption week by week. The BFF computes them from the state service's records and
+        the platform's jobs. The ticket baseline is configuration (`console.insights.baseline`), a
+        one-off export of the current ticket queue; without one, `leadTime` has no baseline and
+        `hoursSaved` is absent. Spend is not here: the executive home reads it from
+        `GET /console/v1/cost?scope=organization&groupBy=costCentre` (the cost service's contract).
+      tags: [Insights]
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, enum: [7d, 30d, 90d], default: 30d }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: organization }
+      responses:
+        '200':
+          description: The numbers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Insights' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/search:interpret:
+    get:
+      operationId: interpretSearch
+      summary: Plain English read as the list's own filter
+      description: |
+        Passes through to the search indexer's `GET /v1/search:interpret` for the session's account
+        (`contracts/openapi/console-search-indexer.yaml` 1.2.0) with its answer unchanged. The
+        filter uses the list's own names, so the console turns it into a list link (its `f` and
+        `sort` query); nothing runs. Given `type`, the reading stays within that type, and another
+        type named in the text goes to `unparsed`.
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 500 }
+        - name: type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: The reading
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchInterpretation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/search:counts:
+    get:
+      operationId: countResourcesBy
+      summary: Resources counted by one grouping, in the account or across the person's accounts
+      description: |
+        Passes through to the search indexer's `GET /v1/counts` with `groupBy` and the same filters
+        as search (`contracts/openapi/console-search-indexer.yaml` 1.2.0). With
+        `scope=organization` the BFF resolves the accounts the person may list in and calls as the
+        console-internal principal with `accountId` repeated (at most 200), so a person's own token
+        never names another account. The BFF adds `asOf`, the indexer's `lastEventAt` from
+        `/v1/index/status`. At most 100 groups, largest first.
+      tags: [Search]
+      parameters:
+        - name: groupBy
+          in: query
+          required: true
+          schema: { type: string, pattern: '^(type|service|state|region|account|tag:[A-Za-z0-9._:/-]{1,128})$' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: account }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 500 }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceState' }
+        - name: drift
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: The groups
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupedCounts' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/assistant/turns:
+    post:
+      operationId: askAssistant
+      summary: Ask the copilot, or ask it to explain a resource
+      description: |
+        Starts a turn of a conversation with the console copilot, which sits behind the BFF's
+        `AssistantPort` (the firm's Devin API first; a faster model later is another adapter on the
+        same port, not a redesign). A turn takes seconds to minutes, so the answer is read from the
+        conversation, `GET /console/v1/assistant/conversations/{conversationId}`, which the console
+        polls while the turn is `thinking`.
+
+        The copilot reads only what the person may read, with the person's own session, and never
+        acts. It answers in words and in proposals: a filtered list, a pre-filled create wizard, a
+        pre-filled action, or a page. The console opens a proposal for the person to review, and
+        every change still goes through its preview and IAM. `intent: explain` explains
+        `context.wfrn`: what it is, its configuration, cost, history and dependents. A person's
+        turns are limited to 10 a minute (429 with `Retry-After`); conversations are the person's
+        own and kept for 24 hours.
+      tags: [Assistant]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantAsk' }
+      responses:
+        '202':
+          description: The turn is under way
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, turnId]
+                properties:
+                  conversationId: { type: string }
+                  turnId: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/assistant/conversations/{conversationId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getAssistantConversation
+      summary: A conversation with the copilot, its answers and proposals
+      description: Another person's conversation, or one older than 24 hours, answers 404.
+      tags: [Assistant]
+      responses:
+        '200':
+          description: The conversation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/jobs/{jobId}/explanation:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    get:
+      operationId: explainJobFailure
+      summary: Why a job failed, and the fix to try
+      description: |
+        For a job that failed, or that waits on a failed step (`needs-attention`): the cause in plain
+        words, the failing step, a suggested fix, whether the person may retry, and how often the
+        same failure happened in the account in the last 30 days. Rules over the platform's error
+        classes answer first (`source: rules`); the copilot answers what they cannot
+        (`source: assistant`). A fix may carry `input`, a merge over the job's input; the console
+        shows it to the person and sends it, with `fromStep`, as the body of
+        `POST /console/v1/jobs/{jobId}:retry`, the phase 4 retry, which reruns the job with the input
+        merged over the original (the platform's `:rerun`), so secrets never travel back. Asking for
+        an explanation retries nothing. Any other job answers 409 `job.not-failed`.
+      tags: [Jobs]
+      responses:
+        '200':
+          description: The explanation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobExplanation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/cost:
+    get:
+      operationId: getCost
+      summary: The Cost Explorer's query, for the session's account or the organization
+      description: >-
+        The cost service's `getCost` (contracts/openapi/console-cost-service.yaml) with the same
+        parameters and answer. `scope=account` (the default) reads the session's account and needs
+        `cost:list` there; `scope=organization` reads every account of the session's memberships on
+        which `cost:list` is allowed and leaves out the others, naming them in `skippedAccounts`
+        (the executive home's spend by team is `scope=organization&groupBy=costCentre`).
+      tags: [Cost]
+      parameters:
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: account }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+        - { name: granularity, in: query, schema: { type: string, enum: [day, month], default: day } }
+        - name: groupBy
+          in: query
+          schema: { type: string, pattern: '^(service|type|account|region|costCentre|tag:[a-z0-9-]{1,32})$' }
+        - { name: top, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }
+        - { name: service, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: region, in: query, schema: { $ref: '#/components/schemas/RegionName' } }
+        - name: tag.<key>
+          in: query
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - { name: wfrn, in: query, schema: { $ref: '#/components/schemas/Wfrn' } }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CostReport'
+                  - type: object
+                    properties:
+                      skippedAccounts:
+                        type: array
+                        description: 'scope=organization: memberships left out because cost:list is denied there'
+                        items: { $ref: '#/components/schemas/AccountId' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/cost/price-lists:
+    get:
+      operationId: listPriceLists
+      summary: The price lists in force and which types they price ("How is this priced?")
+      tags: [Cost]
+      responses:
+        '200':
+          description: The cost service's answer, unchanged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next, bindings]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceList' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+                  bindings:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/cost/chargeback:
+    get:
+      operationId: getChargeback
+      summary: A month's chargeback by cost centre, account, service and tag
+      description: Needs `cost:list`; `scope` works as on `/console/v1/cost`.
+      tags: [Cost]
+      parameters:
+        - { name: scope, in: query, schema: { type: string, enum: [account, organization], default: account } }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' } }
+        - { name: tag, in: query, schema: { type: string, pattern: '^[a-z0-9-]{1,32}$' } }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChargebackReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/cost/chargeback.csv:
+    get:
+      operationId: exportChargeback
+      summary: The chargeback as CSV, as finance receives it
+      description: Needs `cost:export` on every account it covers.
+      tags: [Cost]
+      parameters:
+        - { name: scope, in: query, schema: { type: string, enum: [account, organization], default: account } }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' } }
+        - { name: tag, in: query, schema: { type: string, pattern: '^[a-z0-9-]{1,32}$' } }
+      responses:
+        '200':
+          description: The CSV
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Content-Sha256: { schema: { type: string } }
+            X-Console-Skipped-Accounts:
+              description: 'With `scope=organization`, the comma-separated accounts left out for want of `cost:export`'
+              schema: { type: string }
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/r/{type}/{wfrn}/cost:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceCost
+      summary: A resource's monthly rate, month to date, and the price behind it
+      description: Needs `cost:list` on the resource's wfrn.
+      tags: [Cost]
+      responses:
+        '200':
+          description: The cost
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/budgets:
+    get:
+      operationId: listBudgets
+      summary: The account's budgets with this month's status
+      description: 'Needs `budgets:list`. Each budget carries `can: { update, delete }`.'
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleBudget' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createBudget
+      summary: Create a budget for the session's account, or a tag within it
+      description: Needs `budgets:create`. The scope's accountId is always the session's.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '201':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/budgets/{budgetId}:
+    parameters:
+      - name: budgetId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getBudget
+      summary: A budget with this month's status
+      tags: [Budgets]
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateBudget
+      summary: Change a budget's name, amount, thresholds or create block
+      description: Needs `budgets:update` and `If-Match`.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteBudget
+      summary: Delete a budget
+      description: Needs `budgets:delete`.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/budgets/{budgetId}/periods:
+    parameters:
+      - name: budgetId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: listBudgetPeriods
+      summary: How a budget did month by month, newest first
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BudgetStatus' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: console_session
+      description: The session cookie set by /auth/callback; state-changing calls also send X-Csrf-Token
+  parameters:
+    CsrfToken:
+      name: X-Csrf-Token
+      in: header
+      required: true
+      description: The token the session answers; a state-changing call without it is 403
+      schema: { type: string }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema: { type: string }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The version the caller holds; 409 when the record moved on
+      schema: { type: string }
+    IamCollection:
+      name: collection
+      in: path
+      required: true
+      schema: { type: string, enum: [users, groups, roles, policies, access-keys, quotas] }
+    IamId:
+      name: id
+      in: path
+      required: true
+      description: The record's id (a quota's key)
+      schema: { type: string }
+    IamAction:
+      name: action
+      in: path
+      required: true
+      schema: { type: string, enum: [rotate, request-increase] }
+    PackName:
+      name: pack
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,62}[a-z0-9]$' }
+    RuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,62}[a-z0-9]$' }
+    TypePath:
+      name: type
+      in: path
+      required: true
+      description: A resource type name
+      schema: { type: string, pattern: '^[a-z0-9-]{1,64}$' }
+    WfrnPath:
+      name: wfrn
+      in: path
+      required: true
+      description: The resource's wfrn, percent-encoded; its type segment must be the path's type
+      schema: { $ref: '#/components/schemas/Wfrn' }
+    VerbPath:
+      name: verb
+      in: path
+      required: true
+      description: 'A verb of the type''s catalog other than create and update'
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,31}$' }
+    JobIdPath:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string }
+    FindingIdPath:
+      name: findingId
+      in: path
+      required: true
+      schema: { type: string }
+    RunIdPath:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string }
+    AlarmIdPath:
+      name: alarmId
+      in: path
+      required: true
+      description: Chosen by the web app when it creates the alarm
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+    RecommendationIdPath:
+      name: recommendationId
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Passed through to the platform (P-21) and to the state service; the web app sends one per form submission
+      schema: { type: string, maxLength: 255 }
+  responses:
+    CommandAccepted:
+      description: The job was started
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/CommandAccepted' }
+    Preview:
+      description: What the run would do
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Preview' }
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 'The account''s policies deny it (`denied` says which layer, why, and what to request), a step-up is needed (`detail.stepUp`), or the CSRF token is missing (no `denied`)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    IamAnswer:
+      description: 'The identity service''s answer, unchanged: its schema for the collection (contracts/openapi/console-identity-service.yaml), its ETag'
+      headers:
+        ETag:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/IamBody' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: A conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Over a quota
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadGateway:
+      description: The platform or a console service answered an error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+    ResourceState:
+      type: string
+      enum: [pending, active, updating, deleting, deleted, failed]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/Problem' }
+        denied: { $ref: '#/components/schemas/Denial' }
+        detail:
+          type: object
+          description: 'More about the refusal; a step-up refusal is `{ stepUp: true, action, login }`'
+          properties:
+            stepUp: { type: boolean }
+            action: { type: string, description: 'The `<service>:<verb>` that needs a fresh sign-in' }
+            login: { type: string, description: 'The /auth/login URL to send the person to, with stepUp=true and returnTo set' }
+          additionalProperties: true
+        correlationId: { type: string }
+    Denial:
+      type: object
+      description: Why an action is refused or greyed, from the layer that decided
+      required: [layer, action, reason, requestable]
+      properties:
+        layer: { type: string, enum: [console-iam, platform], description: "The account's roles and policies, or the platform's own scopes" }
+        action: { type: string, description: '`<service>:<verb>`' }
+        resource: { type: string, description: The wfrn or pattern checked }
+        reason: { type: string, description: One sentence a person can act on }
+        role: { type: string, description: 'console-iam: the role the decision came from' }
+        policyId: { type: string, description: 'console-iam: the policy' }
+        statement: { type: string, description: 'console-iam: the statement id' }
+        scope: { type: string, description: 'platform: the scope the service account lacks' }
+        requestable: { type: boolean, description: Whether the person may open an access request for it }
+        suggestedRole: { type: string, description: The managed role that would allow it }
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        field: { type: string, description: A JSON pointer into the submitted body }
+        message: { type: string }
+        level: { type: string, enum: [error, warning] }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    Session:
+      type: object
+      required: [user, account, region, csrfToken, expiresAt]
+      properties:
+        user:
+          type: object
+          required: [userId, email]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+            groups:
+              type: array
+              items: { type: string }
+        account: { $ref: '#/components/schemas/AccountSummary' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        csrfToken: { type: string, description: "Computed at run time, sent back as X-Csrf-Token" }
+        expiresAt: { type: string, format: date-time }
+    AccountSummary:
+      type: object
+      required: [accountId, name]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        status: { type: string }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        roles:
+          type: array
+          description: 'The managed role names the person holds in the account: viewer, operator, account-admin, auditor (shown as Viewer, Operator, Admin, Auditor)'
+          items: { type: string }
+        groups:
+          type: array
+          description: The person's groups in the account
+          items: { type: string }
+    Region:
+      type: object
+      required: [name, status, environments]
+      properties:
+        name: { $ref: '#/components/schemas/RegionName' }
+        title: { type: string }
+        status: { type: string, enum: [available, opt-in, retired] }
+        environments:
+          type: array
+          items: { type: string }
+        types:
+          type: array
+          description: The types available there
+          items: { type: string }
+    ConsoleAction:
+      type: object
+      description: One verb of the type's catalog, as the Actions menu draws it (P-08)
+      required: [verb, title, method, destructive, approval, bulk, preview, allowed]
+      properties:
+        verb: { type: string }
+        title: { type: string }
+        description: { type: string }
+        method: { type: string, enum: [POST, PATCH, DELETE], description: "The catalog entry's own method when it names one, else create is POST, update is PATCH, delete is DELETE and any other verb is POST" }
+        allowed: { type: boolean, description: 'Whether this session may run it, decided with `<service>:<verb>` on `wfrn:<partition>:<service>:<region>:<account>:<type>/*`' }
+        denied: { $ref: '#/components/schemas/Denial', description: "Why not, when allowed is false" }
+        destructive: { type: boolean }
+        approval: { type: boolean }
+        bulk: { type: boolean }
+        preview: { type: boolean }
+        effect: { type: string, enum: [create, change, delete, read, none, unknown] }
+        subjectInput: { type: [string, 'null'] }
+        mutableFields:
+          type: array
+          items: { type: string }
+        input: { type: object, description: The JSON Schema of the inputs the form shows (the subject left out), additionalProperties: true }
+        workflow: { type: string }
+        version: { type: string }
+        deprecated:
+          type: object
+          properties:
+            since: { type: string }
+            sunset: { type: string }
+            message: { type: string }
+    ConsoleType:
+      type: object
+      description: 'Everything the web app needs to draw a type''s list, detail and forms'
+      required: [key, type, service, plural, title, schema, states, list, detail, lifecycle, actions, etag]
+      properties:
+        key: { type: string, description: '`<service>/<type>`' }
+        type: { type: string }
+        service: { type: string }
+        plural: { type: string }
+        title: { type: string }
+        icon: { type: string }
+        description: { type: string }
+        schema: { type: object, description: The JSON Schema of the attributes with the x-console hints merged in, additionalProperties: true }
+        states:
+          type: array
+          items: { type: string }
+        list:
+          type: object
+          required: [columns]
+          properties:
+            columns:
+              type: array
+              items: { type: string }
+            defaultSort: { type: string }
+        detail:
+          type: object
+          required: [tabs]
+          properties:
+            tabs:
+              type: array
+              items: { type: string, enum: [configuration, drift, activity, relationships, tags, monitoring, permissions, json] }
+        lifecycle:
+          type: object
+          description: Platform status to lifecycle class
+          additionalProperties: { $ref: '#/components/schemas/ResourceState' }
+        observe:
+          type: object
+          properties:
+            supported: { type: boolean }
+            interval: { type: string }
+            metrics: { type: boolean }
+            discover: { type: boolean }
+        actions:
+          type: array
+          items: { $ref: '#/components/schemas/ConsoleAction' }
+        etag: { type: string }
+    ConsoleResource:
+      type: object
+      required: [wfrn, type, service, state, version, attributes, tags, createdAt, updatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        service: { type: string }
+        name: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        version: { type: integer }
+        attributes: { type: object, additionalProperties: true }
+        observed: { type: object, additionalProperties: true }
+        drift: { type: boolean }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastJob: { $ref: '#/components/schemas/JobSummary' }
+    ConsoleResourceDetail:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleResource'
+        - type: object
+          required: [can]
+          properties:
+            finding: { $ref: '#/components/schemas/Finding' }
+            jobs:
+              type: array
+              items: { $ref: '#/components/schemas/JobSummary' }
+            builtFrom:
+              type: array
+              items: { $ref: '#/components/schemas/ResourceRef' }
+            dependents:
+              type: array
+              items: { $ref: '#/components/schemas/ResourceRef' }
+            can:
+              type: array
+              description: The verbs the user may run on this resource, from the account's policies
+              items: { type: string }
+            observedAt: { type: string, format: date-time }
+    ResourceRef:
+      type: object
+      required: [wfrn, type]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+    Lineage:
+      type: object
+      required: [resource, nodes, edges]
+      properties:
+        resource: { $ref: '#/components/schemas/ResourceRef' }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [from, to]
+            properties:
+              from: { $ref: '#/components/schemas/Wfrn' }
+              to: { $ref: '#/components/schemas/Wfrn' }
+              via: { type: string }
+    CommandInput:
+      type: object
+      description: The form's values; `confirm` for a destructive verb, `labels` become X-Job-Label-* headers
+      required: [input]
+      properties:
+        input: { type: object, additionalProperties: true }
+        confirm: { type: boolean }
+        reason: { type: string, maxLength: 1000 }
+        labels:
+          type: object
+          maxProperties: 16
+          additionalProperties: { type: string, maxLength: 128 }
+    BatchInput:
+      type: object
+      required: [verb, items]
+      properties:
+        verb: { type: string }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [input]
+            properties:
+              wfrn: { $ref: '#/components/schemas/Wfrn', description: "The subject, for every verb but create" }
+              input: { type: object, additionalProperties: true }
+        defaults: { type: object, additionalProperties: true }
+        rollout:
+          type: object
+          properties:
+            waves:
+              type: array
+              items: { type: integer }
+            maxParallel: { type: integer }
+            stopIfFailedPercent: { type: integer }
+        confirm: { type: boolean }
+    CommandAccepted:
+      type: object
+      required: [wfrn, jobId, requestId]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        jobId: { type: string }
+        requestId: { type: string, description: "The console request id, also the X-Console-Request-Id the platform saw" }
+        approval: { type: boolean, description: The job waits for an approval }
+    BatchAccepted:
+      type: object
+      required: [jobId, rows, requestId]
+      properties:
+        jobId: { type: string }
+        rows: { type: integer }
+        requestId: { type: string }
+        wfrns:
+          type: array
+          description: 'For create: the minted names, one per row'
+          items: { $ref: '#/components/schemas/Wfrn' }
+    Preview:
+      type: object
+      description: 'The platform''s Preview with wfrns on the affected resources'
+      required: [steps, affectedResources, policy]
+      properties:
+        workflow: { type: string }
+        version: { type: string }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, name, effect]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              effect: { type: string, enum: [create, change, delete, read, none, unknown] }
+              detail: { type: string }
+              skipped: { type: boolean }
+        affectedResources:
+          type: array
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        cost:
+          type: object
+          properties:
+            monthly: { type: number }
+            currency: { type: string }
+            detail: { type: string }
+        policy:
+          type: object
+          required: [decision]
+          properties:
+            decision: { type: string, enum: [allow, deny, needs-approval] }
+            rules:
+              type: array
+              items:
+                type: object
+                description: "The platform's rules, then the console's own: `quota.resources` (the identity service's quota) and `budget.exceeded` (deny) or `budget.forecast-over` (warn) from the cost service's `checkBudgets`, with the budget in `budgetId`"
+                properties:
+                  id: { type: string }
+                  result: { type: string }
+                  message: { type: string }
+                  budgetId: { type: string }
+    JobSummary:
+      type: object
+      required: [jobId, workflow, status]
+      properties:
+        jobId: { type: string }
+        workflow: { type: string }
+        title: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [queued, running, waiting-approval, needs-attention, succeeded, failed, cancelled, rolled-back] }
+        requester: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        durationMs: { type: integer }
+        kind: { type: string, enum: [single, batch] }
+        progress:
+          type: object
+          properties:
+            done: { type: integer }
+            total: { type: integer }
+            failed: { type: integer }
+        errorClass: { type: string }
+        failedStep: { type: string }
+    JobDetail:
+      allOf:
+        - $ref: '#/components/schemas/JobSummary'
+        - type: object
+          properties:
+            input: { type: object, additionalProperties: true }
+            output: { type: object, additionalProperties: true }
+            steps:
+              type: array
+              items:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  type: { type: string }
+                  status: { type: string }
+                  attempt: { type: integer }
+                  startedAt: { type: string, format: date-time }
+                  endedAt: { type: string, format: date-time }
+                  durationMs: { type: integer }
+                  error:
+                    type: object
+                    properties:
+                      class: { type: string }
+                      message: { type: string }
+                      retryable: { type: boolean }
+            approvals:
+              type: array
+              items: { $ref: '#/components/schemas/Approval' }
+            preview: { $ref: '#/components/schemas/Preview' }
+            attention:
+              type: object
+              properties:
+                step: { type: string }
+                options:
+                  type: array
+                  items: { type: string }
+                since: { type: string, format: date-time }
+            children:
+              type: array
+              items: { $ref: '#/components/schemas/JobSummary' }
+            can:
+              type: array
+              description: 'cancel, retry, skip, abort, rerun as the user may'
+              items: { type: string }
+    Approval:
+      type: object
+      required: [approvalId, jobId, status]
+      properties:
+        approvalId: { type: string }
+        jobId: { type: string }
+        workflow: { type: string }
+        step: { type: string }
+        group: { type: string }
+        message: { type: string }
+        requestedAt: { type: string, format: date-time }
+        timeout: { type: string }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        decidedBy: { type: string }
+        decidedAt: { type: string, format: date-time }
+        comment: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        preview: { $ref: '#/components/schemas/Preview' }
+        canDecide: { type: boolean }
+    Severity:
+      type: string
+      enum: [info, warning, critical]
+    RuleStatus:
+      type: string
+      enum: [pass, fail, error]
+      description: '`error`: the policy engine could not judge it (counted neither way)'
+    RemediationSpec:
+      type: object
+      required: [title, kind, inputs]
+      properties:
+        title: { type: string }
+        kind: { type: string, enum: [workflow, tags] }
+        verb: { type: string }
+        workflow: { type: string }
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [name, title, type, required]
+            properties:
+              name: { type: string }
+              title: { type: string }
+              type: { type: string, enum: [string, integer, number, boolean] }
+              enum: { type: array, items: {} }
+              default: { description: 'May be a `{{ $resource.<path> }}` template, filled per resource by the caller or left to the service' }
+              required: { type: boolean }
+    RuleSummary:
+      type: object
+      required: [id, title, severity, types]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        types:
+          type: array
+          items: { type: string }
+        remediation: { $ref: '#/components/schemas/RemediationSpec' }
+    RulePackSummary:
+      type: object
+      required: [name, title, version, rules]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        description: { type: string }
+        version: { type: integer }
+        owner: { type: string }
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/RuleSummary' }
+    Counts:
+      type: object
+      required: [passed, failed]
+      properties:
+        passed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+    RuleScore:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [id, title, severity, score, remediable]
+          properties:
+            id: { type: string }
+            title: { type: string }
+            severity: { $ref: '#/components/schemas/Severity' }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+            remediable: { type: boolean, description: The rule has a one-click fix }
+    PackScore:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [name, title, version, score, rules]
+          properties:
+            name: { type: string }
+            title: { type: string }
+            version: { type: integer }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+            rules:
+              type: array
+              items: { $ref: '#/components/schemas/RuleScore' }
+    TrendPoint:
+      type: object
+      required: [day, score]
+      properties:
+        day: { type: string, format: date }
+        score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+    Scorecard:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [accountId, score, resources, bySeverity, packs, trend]
+          properties:
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100, description: Null while nothing has been scored }
+            resources: { type: integer, description: Resources with at least one applicable rule }
+            failingResources: { type: integer, description: Resources failing at least one rule }
+            bySeverity:
+              type: object
+              required: [critical, warning, info]
+              properties:
+                critical: { $ref: '#/components/schemas/Counts' }
+                warning: { $ref: '#/components/schemas/Counts' }
+                info: { $ref: '#/components/schemas/Counts' }
+            packs:
+              type: array
+              items: { $ref: '#/components/schemas/PackScore' }
+            trend:
+              type: array
+              description: One point per day with a snapshot, oldest first; today's is the live score
+              items: { $ref: '#/components/schemas/TrendPoint' }
+            evaluatedAt: { type: string, format: date-time, description: When an evaluation of the account last changed }
+    ScorecardHeatmap:
+      type: object
+      required: [packs, rows]
+      properties:
+        packs:
+          type: array
+          items:
+            type: object
+            required: [name, title]
+            properties:
+              name: { type: string }
+              title: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [accountId, score, failed, packs]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              accountName: { type: string }
+              score: { type: [integer, 'null'] }
+              failed: { type: integer, description: Failing evaluations }
+              packs:
+                type: object
+                description: The pack's score by pack name; null where nothing applies
+                additionalProperties: { type: [integer, 'null'] }
+    Evaluation:
+      type: object
+      required: [wfrn, accountId, region, type, pack, ruleId, severity, status, since, evaluatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        name: { type: string }
+        pack: { type: string }
+        ruleId: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        message: { type: string }
+        since: { type: string, format: date-time, description: When the status last changed }
+        evaluatedAt: { type: string, format: date-time, description: When the resource's evaluations last changed }
+    RuleResult:
+      type: object
+      required: [pack, ruleId, title, severity, status, since, remediable]
+      properties:
+        pack: { type: string }
+        ruleId: { type: string }
+        title: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        message: { type: string }
+        since: { type: string, format: date-time }
+        remediable: { type: boolean }
+    ResourceCompliance:
+      type: object
+      required: [wfrn, accountId, region, type, passed, failed, results]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        evaluatedAt: { type: string, format: date-time }
+        passed: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          description: The rules that apply, failing first
+          items: { $ref: '#/components/schemas/RuleResult' }
+    RemediateRequest:
+      type: object
+      required: [wfrn]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        input:
+          type: object
+          description: Values for the remediation's inputs, by name; defaults fill the rest
+          additionalProperties: true
+        reason: { type: string, maxLength: 1000 }
+    Remediation:
+      type: object
+      required: [wfrn, pack, ruleId, kind]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        pack: { type: string }
+        ruleId: { type: string }
+        kind: { type: string, enum: [workflow, tags] }
+        jobId: { type: string, description: 'kind workflow: the job' }
+        workflow: { type: string }
+        tags:
+          type: object
+          description: 'kind tags: the tags set'
+          additionalProperties: { type: string }
+    Finding:
+      type: object
+      required: [findingId, wfrn, status, severity, fields, openedAt]
+      properties:
+        findingId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        status: { type: string, enum: [open, closed] }
+        severity: { type: string, enum: [info, warning, critical] }
+        fields:
+          type: array
+          items:
+            type: object
+            required: [path]
+            properties:
+              path: { type: string }
+              expected: {}
+              observed: {}
+              ignored: { type: boolean }
+        openedAt: { type: string, format: date-time }
+        observedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        resolution: { type: string, enum: [reverted, accepted, ignored, vanished] }
+        can:
+          type: array
+          items: { type: string, enum: [revert, accept, ignore] }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        version: { type: integer }
+        decidedBy: { type: string }
+        reason: { type: string }
+        revertJobId: { type: string }
+        revertStatus:
+          type: string
+          enum: [running, succeeded, failed]
+          description: How the revert job of `revertJobId` stands; a failed one leaves the finding open
+        ignoredUntil: { type: string, format: date-time }
+    DriftDecision:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 1000 }
+    FindingsSummary:
+      type: object
+      required: [open, byType, bySeverity]
+      properties:
+        open: { type: integer }
+        byType:
+          type: object
+          additionalProperties: { type: integer }
+        bySeverity:
+          type: object
+          additionalProperties: { type: integer }
+        lastScanAt: { type: string, format: date-time }
+    FindingStats:
+      type: object
+      required: [since, until, opened, closed, open, bySeverity]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        opened: { type: integer, description: Findings opened in the window }
+        closed:
+          type: object
+          description: Findings closed in the window, by resolution
+          required: [total, reverted, accepted, ignored, vanished]
+          properties:
+            total: { type: integer }
+            reverted: { type: integer }
+            accepted: { type: integer }
+            ignored: { type: integer }
+            vanished: { type: integer }
+        open: { type: integer, description: Findings open now }
+        bySeverity:
+          type: object
+          description: Findings opened in the window, by severity
+          additionalProperties: { type: integer }
+        meanMinutesToClose: { type: [number, 'null'], description: Over the findings closed in the window }
+    DiscoveryRun:
+      type: object
+      required: [runId, type, region, status, startedAt]
+      properties:
+        runId: { type: string }
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        status: { type: string, enum: [running, succeeded, failed] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        seen: { type: integer }
+        unmanaged: { type: integer }
+        error: { type: string }
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, description: Per month }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        basis: { type: string, description: The price list the figure comes from }
+    OwnerGuess:
+      type: object
+      description: The account an unmanaged object most likely belongs to, and why
+      required: [accountId, confidence, reasons]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        team: { type: string, description: The account's owning team }
+        confidence: { type: string, enum: [high, medium, low] }
+        reasons:
+          type: array
+          description: In plain words, such as "Tagged team=payments"
+          items: { type: string }
+    Assignment:
+      type: object
+      description: An unmanaged object handed to another team's account
+      required: [accountId, fromAccountId, by, at]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        fromAccountId: { $ref: '#/components/schemas/AccountId' }
+        by: { type: string }
+        note: { type: string }
+        at: { type: string, format: date-time }
+    UnmanagedObject:
+      type: object
+      required: [providerId, type, region, observed, seenAt, can]
+      properties:
+        providerId: { type: string }
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        name: { type: string }
+        observed: { type: object, additionalProperties: true }
+        seenAt: { type: string, format: date-time }
+        firstSeenAt: { type: string, format: date-time }
+        ownerGuess: { $ref: '#/components/schemas/OwnerGuess' }
+        monthlyCost: { $ref: '#/components/schemas/Money' }
+        assignment: { $ref: '#/components/schemas/Assignment' }
+        can:
+          type: array
+          items: { type: string, enum: [import, assign] }
+    MetricSeries:
+      type: object
+      required: [name, points]
+      properties:
+        name: { type: string, description: 'The series name the type''s metrics read maps, such as cpuPercent' }
+        unit: { type: string }
+        points:
+          type: array
+          items:
+            type: object
+            required: [at, value]
+            properties:
+              at: { type: string, format: date-time }
+              value: { type: [number, 'null'] }
+    ResourceMetrics:
+      type: object
+      required: [wfrn, from, to, step, series]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        step: { type: string, description: An ISO-8601 duration }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/MetricSeries' }
+        provider: { type: string }
+        action: { type: string }
+    AlarmInput:
+      type: object
+      required: [wfrn, metric, comparison, threshold]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        name: { type: string, maxLength: 128 }
+        metric: { type: string, description: A series name of the type's metrics read }
+        comparison: { type: string, enum: [above, below] }
+        threshold: { type: number }
+        windowMinutes: { type: integer, minimum: 1, maximum: 1440, default: 10, description: The average over this window is compared }
+    Alarm:
+      type: object
+      required: [alarmId, wfrn, accountId, type, metric, comparison, threshold, windowMinutes, state, createdAt, updatedAt]
+      properties:
+        alarmId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        name: { type: string }
+        metric: { type: string }
+        comparison: { type: string, enum: [above, below] }
+        threshold: { type: number }
+        windowMinutes: { type: integer }
+        state: { type: string, enum: [ok, alarm, insufficient] }
+        stateSince: { type: string, format: date-time }
+        lastValue: { type: [number, 'null'], description: The window's average at the last evaluation }
+        lastEvaluatedAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Utilisation:
+      type: object
+      required: [from, to, samples]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        samples: { type: integer }
+        cpuP95: { type: number, description: Percent }
+        cpuMax: { type: number }
+        memoryP95: { type: number, description: Percent }
+        memoryMax: { type: number }
+    Recommendation:
+      type: object
+      required: [recommendationId, wfrn, accountId, region, type, kind, action, status, utilisation, createdAt, updatedAt, can]
+      properties:
+        recommendationId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [idle, oversized] }
+        action: { type: string, enum: [delete, resize] }
+        status: { type: string, enum: [open, applied, dismissed, superseded] }
+        current: { type: object, additionalProperties: true, description: 'The size fields as they are, such as cpu and memoryGb' }
+        proposed: { type: object, additionalProperties: true, description: 'The size fields a resize sets; absent for a delete' }
+        utilisation: { $ref: '#/components/schemas/Utilisation' }
+        monthlyCost: { $ref: '#/components/schemas/Money' }
+        monthlySaving: { $ref: '#/components/schemas/Money' }
+        jobId: { type: string, description: 'The resize or delete job, once applied' }
+        decidedBy: { type: string }
+        reason: { type: string }
+        dismissedUntil: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        can:
+          type: array
+          items: { type: string, enum: [apply, dismiss] }
+    RecommendationsSummary:
+      type: object
+      required: [open, byKind, monthlySaving]
+      properties:
+        open: { type: integer }
+        byKind:
+          type: object
+          additionalProperties: { type: integer }
+        monthlySaving: { $ref: '#/components/schemas/Money' }
+        lastPassAt: { type: string, format: date-time }
+    ActivityEntry:
+      type: object
+      required: [at, kind]
+      properties:
+        at: { type: string, format: date-time }
+        kind: { type: string, enum: [event, job] }
+        type: { type: string, description: The state event type }
+        actor: { type: string }
+        job: { $ref: '#/components/schemas/JobSummary' }
+        data: { type: object, additionalProperties: true }
+    LiveEvent:
+      type: object
+      required: [type, at]
+      properties:
+        type: { type: string, description: 'A state.resources or drift.findings event type, job.updated, or budget.alert (data: budgetId, name, threshold, percent, period, the cost service''s BudgetThresholdCrossed)' }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        at: { type: string, format: date-time }
+        version: { type: integer }
+        key: { type: string }
+        data: { type: object, additionalProperties: true }
+    SearchHit:
+      type: object
+      required: [wfrn, type, score]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        score: { type: number }
+        highlights:
+          type: object
+          additionalProperties: { type: string }
+    Suggestion:
+      type: object
+      required: [kind, value, label]
+      properties:
+        kind: { type: string, enum: [resource, type, tag, wfrn] }
+        value: { type: string }
+        label: { type: string }
+    Preferences:
+      type: object
+      properties:
+        theme: { type: string, enum: [system, light, dark] }
+        density: { type: string, enum: [comfortable, compact] }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        pinnedTypes:
+          type: array
+          items: { type: string }
+        columns:
+          type: object
+          description: Per type key, the list columns the user chose
+          additionalProperties:
+            type: array
+            items: { type: string }
+        version: { type: integer }
+    IamBody:
+      type: object
+      description: 'A body of the identity service''s API, unchanged (contracts/openapi/console-identity-service.yaml)'
+      additionalProperties: true
+    AccessRequestStatus:
+      type: string
+      enum: [pending, approved, rejected, expired]
+    AccessRequestInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
+        resource: { type: string, description: "The wfrn or pattern, as the denial named it" }
+        role: { type: string, description: The role asked for; the denial's suggestedRole by default }
+        reason: { type: string, maxLength: 2000 }
+    AccessDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    AccessRequest:
+      type: object
+      required: [requestId, accountId, requester, action, reason, status, requestedAt]
+      properties:
+        requestId: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        requester:
+          type: object
+          required: [userId]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        status: { $ref: '#/components/schemas/AccessRequestStatus' }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        comment: { type: string }
+        approvers:
+          type: array
+          description: Who may decide it
+          items: { type: string }
+    ServiceTokenRequest:
+      type: object
+      required: [grant_type, client_assertion_type, client_assertion]
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+        client_assertion_type:
+          type: string
+          enum: ['urn:ietf:params:oauth:client-assertion-type:jwt-bearer']
+        client_assertion:
+          type: string
+          description: The projected service-account token, or the JWT the client signed
+        client_id:
+          type: string
+          description: The client's service id; when sent, it must be the assertion's client
+          examples: [console-search-indexer]
+        audience:
+          type: array
+          description: The services the token is for, sent once per service; every audience registered for the client when absent
+          items: { type: string, examples: [console-state-service] }
+    ServiceToken:
+      type: object
+      required: [access_token, token_type, expires_in, audience]
+      properties:
+        access_token:
+          type: string
+          description: The internal JWT
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds the token lives (300); ask again before it ends
+          examples: [300]
+        audience:
+          type: array
+          items: { type: string }
+    OAuthError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, invalid_client, unsupported_grant_type, invalid_target]
+        error_description:
+          type: string
+    JsonWebKeySet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, kid]
+            properties:
+              kty: { type: string }
+              kid: { type: string }
+              use: { type: string }
+              alg: { type: string }
+              crv: { type: string }
+              x: { type: string }
+              y: { type: string }
+              n: { type: string }
+              e: { type: string }
+            additionalProperties: true
+    Insights:
+      type: object
+      description: What the console did for the accounts it covers, over one period
+      required: [period, from, to, asOf, scope, accounts, managed, requests, leadTime, drift, adoption]
+      properties:
+        period: { type: string, enum: [7d, 30d, 90d] }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        asOf: { type: string, format: date-time }
+        scope: { type: string, enum: [account, organization] }
+        accounts:
+          type: array
+          description: The accounts the numbers cover
+          items:
+            type: object
+            required: [accountId, name]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              name: { type: string }
+              owningTeam: { type: string }
+              costCentre: { type: string }
+        managed:
+          type: object
+          required: [resources, atStart]
+          properties:
+            resources: { type: integer, description: 'Live resources now; tombstones left out' }
+            atStart: { type: integer, description: Live resources at the start of the period }
+            byService:
+              type: array
+              description: Largest first
+              items:
+                type: object
+                required: [service, resources]
+                properties:
+                  service: { type: string }
+                  title: { type: string }
+                  resources: { type: integer }
+        requests:
+          type: object
+          required: [total, selfServed, failed]
+          properties:
+            total: { type: integer, description: 'Console requests started in the period: creates, verbs, updates and deletes' }
+            selfServed: { type: integer, description: 'Requests that ended `succeeded` with no person stepping in: no failed step retried, skipped or aborted by hand' }
+            failed: { type: integer }
+        leadTime:
+          type: object
+          description: From the request to the resource running, over the period's self-served requests, against today's tickets
+          required: [p50Ms, p90Ms]
+          properties:
+            p50Ms: { type: integer }
+            p90Ms: { type: integer }
+            baselineP50Ms: { type: integer, description: 'The median lead time of today''s tickets for the same kinds of request' }
+            baselineSource: { type: string, description: 'Where the baseline comes from, such as "ticket export, September 2026"' }
+        hoursSaved: { type: number, description: 'Over the self-served requests, the baseline less the lead time, never below 0 for one request, in hours; absent without a baseline' }
+        drift:
+          type: object
+          required: [found, fixed, open]
+          properties:
+            found: { type: integer, description: Findings opened in the period }
+            fixed: { type: integer, description: 'Findings closed in the period: reverted, accepted, or the resource changed back' }
+            open: { type: integer, description: Findings open now }
+            meanTimeToFixMs: { type: integer }
+        adoption:
+          type: array
+          description: Week by week, oldest first, each week starting on a Monday (UTC)
+          items:
+            type: object
+            required: [weekStart, activeUsers, requests, selfServed]
+            properties:
+              weekStart: { type: string, format: date }
+              activeUsers: { type: integer, description: People who started at least one request }
+              requests: { type: integer }
+              selfServed: { type: integer }
+    SearchFilter:
+      type: object
+      description: 'The list''s own filter names; `q` holds only what they cannot say: free text, wfrn patterns and created:/updated: terms'
+      properties:
+        q: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        drift: { type: boolean }
+        region: { $ref: '#/components/schemas/RegionName' }
+        tags:
+          type: object
+          description: 'Tag key to value; an empty value means "has the tag", which the list sends as `tag.<key>=`'
+          additionalProperties: { type: string }
+    SearchInterpretation:
+      type: object
+      description: The search indexer's reading of plain English (console-search-indexer.yaml 1.2.0)
+      required: [filter, explanation, confidence, q, total]
+      properties:
+        type: { type: string, description: 'The resource type the text names, when it names one' }
+        filter: { $ref: '#/components/schemas/SearchFilter' }
+        sort: { type: string, enum: [name, -name, created, -created, updated, -updated] }
+        explanation: { type: string, description: One sentence saying what was understood }
+        confidence: { type: string, enum: [high, medium, low] }
+        unparsed:
+          type: array
+          description: Words the reading left out
+          items: { type: string }
+        q: { type: string, description: The whole reading as one search query }
+        total: { type: integer, description: How many resources it lists now }
+    CountGroup:
+      type: object
+      required: [key, total]
+      properties:
+        key: { type: string }
+        total: { type: integer }
+        byState:
+          type: object
+          additionalProperties: { type: integer }
+        drift: { type: integer, description: Resources of the group that drifted }
+        service: { type: string, description: 'The service of a type group (groupBy=type)' }
+    GroupedCounts:
+      type: object
+      required: [total, groups]
+      properties:
+        total: { type: integer }
+        byState:
+          type: object
+          additionalProperties: { type: integer }
+        drift: { type: integer }
+        cappedAt: { type: integer, description: 'Set when a count stopped at a cap; the console shows "1,000+"' }
+        groups:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CountGroup' }
+        asOf: { type: string, format: date-time }
+    AssistantAsk:
+      type: object
+      required: [intent]
+      properties:
+        conversationId: { type: string, description: The conversation to continue; a new one when left out }
+        intent: { type: string, enum: [ask, explain] }
+        message: { type: string, minLength: 1, maxLength: 2000, description: 'The question; needed for `ask`' }
+        context:
+          type: object
+          description: 'Where the person is, so "these" and "this one" mean something; `explain` needs `wfrn`'
+          properties:
+            path: { type: string, description: 'The console route, such as /console/compute/vm' }
+            service: { type: string }
+            type: { type: string }
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            filter: { $ref: '#/components/schemas/SearchFilter' }
+    AssistantConversation:
+      type: object
+      required: [conversationId, status, turns]
+      properties:
+        conversationId: { type: string }
+        status: { type: string, enum: [thinking, ready, failed], description: '`thinking` while the last turn is under way' }
+        startedAt: { type: string, format: date-time }
+        turns:
+          type: array
+          description: Oldest first
+          items: { $ref: '#/components/schemas/AssistantTurn' }
+    AssistantTurn:
+      type: object
+      required: [turnId, role, at]
+      properties:
+        turnId: { type: string }
+        role: { type: string, enum: [person, assistant] }
+        at: { type: string, format: date-time }
+        status: { type: string, enum: [thinking, answered, failed], description: An assistant turn's progress }
+        text: { type: string, description: 'Plain text in short paragraphs, no markup' }
+        proposals:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/AssistantProposal' }
+        explanation: { $ref: '#/components/schemas/ResourceExplanation' }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, description: 'assistant.unavailable, assistant.timeout, assistant.refused' }
+            message: { type: string }
+    AssistantProposal:
+      type: object
+      description: 'Something the console opens for the person to review; the copilot never runs it'
+      required: [kind, label]
+      properties:
+        kind: { type: string, enum: [filter, create, action, open] }
+        label: { type: string, description: 'What opening it does, such as "List the 12 stopped VMs in prod"' }
+        service: { type: string }
+        type: { type: string }
+        filter: { $ref: '#/components/schemas/SearchFilter' }
+        sort: { type: string }
+        input: { type: object, additionalProperties: true, description: 'create and action: the inputs the copilot could fill; the form shows the rest' }
+        missing:
+          type: array
+          description: Required inputs the copilot could not fill
+          items: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        verb: { type: string, description: 'action: the verb to open' }
+        path: { type: string, description: 'open: a console route' }
+    ResourceExplanation:
+      type: object
+      required: [wfrn, summary]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        summary: { type: string, description: Two or three sentences on what it is and how it is doing }
+        sections:
+          type: array
+          items:
+            type: object
+            required: [title, text]
+            properties:
+              title: { type: string }
+              text: { type: string }
+        facts:
+          type: object
+          properties:
+            monthlyCost: { type: number }
+            currency: { type: string }
+            createdAt: { type: string, format: date-time }
+            createdBy: { type: string }
+            lastChangeAt: { type: string, format: date-time }
+            lastChangeBy: { type: string }
+            dependents: { type: integer }
+            drift: { type: boolean }
+    JobExplanation:
+      type: object
+      required: [jobId, status, cause, source]
+      properties:
+        jobId: { type: string }
+        status: { type: string, enum: [failed, needs-attention] }
+        cause:
+          type: object
+          required: [title]
+          properties:
+            class: { type: string, description: "The platform's error class" }
+            title: { type: string, description: 'What went wrong, in plain words' }
+            detail: { type: string }
+        failedStep:
+          type: object
+          required: [id]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            attempt: { type: integer }
+            message: { type: string }
+        fix:
+          type: object
+          required: [summary, confidence]
+          properties:
+            summary: { type: string, description: 'The fix to try, in one or two sentences' }
+            input: { type: object, additionalProperties: true, description: "A merge over the job's input; the retry's body" }
+            fromStep: { type: string }
+            confidence: { type: string, enum: [high, medium, low] }
+        retry:
+          type: object
+          required: [allowed]
+          properties:
+            allowed: { type: boolean }
+            denied: { $ref: '#/components/schemas/Denial' }
+        similar:
+          type: object
+          required: [count]
+          properties:
+            count: { type: integer, description: 'Jobs of the same workflow that failed with the same class in the account, 30 days' }
+            lastFixed:
+              type: object
+              properties:
+                jobId: { type: string }
+                by: { type: string }
+                at: { type: string, format: date-time }
+        source: { type: string, enum: [rules, assistant] }
+        links:
+          type: array
+          items:
+            type: object
+            required: [title, url]
+            properties:
+              title: { type: string }
+              url: { type: string }
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO 4217; every price list in force today is USD
+    CostGroup:
+      type: object
+      required: [key, label, total]
+      properties:
+        key: { type: string, description: 'The group''s value (a service, type, account id, region, cost centre or tag value); `__none` for resources without the tag, `__other` for the groups past `top`' }
+        label: { type: string, description: 'What to show: the account''s name for an account, "No <key> tag", "Other"' }
+        total: { type: number }
+    CostPoint:
+      type: object
+      required: [start, total, groups]
+      properties:
+        start: { type: string, format: date, description: 'The day, or the first of the month' }
+        total: { type: number }
+        groups:
+          type: object
+          description: The point's amount per group key of `groups`
+          additionalProperties: { type: number }
+        provisional: { type: boolean, description: 'The point holds today, which is still open' }
+    Forecast:
+      type: object
+      required: [monthEnd, low, high, method]
+      properties:
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        monthToDate: { type: number }
+        monthEnd: { type: number, description: The month's expected total }
+        low: { type: number }
+        high: { type: number }
+        method: { type: string, enum: [run-rate], description: 'Month to date plus the current run rate for the days left; the band is two standard deviations of the last 14 closed days'' change' }
+    CostReport:
+      type: object
+      required: [currency, from, to, granularity, total, groups, series, runRate, asOf, source, unpriced]
+      properties:
+        currency: { $ref: '#/components/schemas/Currency' }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        granularity: { type: string, enum: [day, month] }
+        groupBy: { type: string }
+        total: { type: number }
+        groups:
+          type: array
+          description: Largest first; empty without groupBy
+          items: { $ref: '#/components/schemas/CostGroup' }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/CostPoint' }
+        forecast: { $ref: '#/components/schemas/Forecast' }
+        runRate:
+          type: object
+          required: [monthly]
+          description: What the resources the filters select cost a month at today's rates
+          properties:
+            monthly: { type: number }
+            resources: { type: integer, description: How many charged resources make it up }
+        asOf: { type: string, format: date-time, description: 'How fresh the numbers are: the newest change the ledger has applied' }
+        closedThrough: { type: string, format: date, description: The last closed day; later points are provisional }
+        source: { type: string, enum: [list-prices], description: 'Priced from the platform''s price lists' }
+        unpriced:
+          type: object
+          required: [resources]
+          description: Charged resources the filters select that no price covers, today
+          properties:
+            resources: { type: integer }
+            types:
+              type: array
+              items: { type: string }
+        accounts:
+          type: array
+          description: With groupBy account or costCentre, the accounts named, with their names and cost centres
+          items:
+            type: object
+            required: [accountId]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              name: { type: string }
+              costCentre: { type: string }
+    PriceRule:
+      type: object
+      required: [priceList, provider, action]
+      properties:
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: 'The attribute whose value picks the price, when the price depends on one' }
+        value: { description: The attribute's value the price was picked by }
+    ResourceCost:
+      type: object
+      required: [wfrn, accountId, type, service, charged, monthly, monthToDate, currency, source]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        service: { type: string }
+        state: { type: string }
+        charged: { type: boolean, description: 'Whether the resource is charged now (it exists at the provider)' }
+        monthly: { type: number, description: 'Its monthly rate now; 0 when not charged or unpriced' }
+        monthToDate: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        since: { type: string, format: date-time, description: When the current rate started }
+        source: { type: string, enum: [list-prices, unpriced] }
+        rule: { $ref: '#/components/schemas/PriceRule' }
+        pricedFrom: { type: string, enum: [observed, desired], description: 'Whether the attribute came from the provider''s last observation or the desired attributes' }
+        history:
+          type: array
+          description: The rates of the last 13 months, newest first
+          items:
+            type: object
+            required: [from, monthly]
+            properties:
+              from: { type: string, format: date-time }
+              to: { type: string, format: date-time }
+              monthly: { type: number }
+    PriceList:
+      type: object
+      required: [name, currency, prices, version]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        version: { type: string, description: The platform content version it was read at }
+        prices:
+          type: array
+          items:
+            type: object
+            required: [provider, action, monthly]
+            properties:
+              provider: { type: string }
+              action: { type: string }
+              by: { type: string }
+              monthly:
+                description: A flat monthly price, or a price per value of `by`
+                oneOf:
+                  - type: number
+                  - type: object
+                    additionalProperties: { type: number }
+    PriceBinding:
+      type: object
+      required: [type, priceList, provider, action]
+      description: "A type's `cost` block (P-06 as extended by P-22): which price prices its resources"
+      properties:
+        type: { type: string }
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The resource attribute whose value is looked up in the price's map }
+    BudgetScope:
+      type: object
+      required: [accountId]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        tag:
+          type: object
+          description: Only resources with this tag value count
+          required: [key, value]
+          properties:
+            key: { type: string, pattern: '^[a-z0-9-]{1,32}$' }
+            value: { type: string, maxLength: 256 }
+    BudgetInput:
+      type: object
+      required: [name, amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        scope: { $ref: '#/components/schemas/BudgetScope', description: 'On create only; accountId defaults to the caller''s' }
+        amount: { type: number, exclusiveMinimum: 0, maximum: 1000000000, description: The monthly amount }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          description: Percentages of the amount that send an alert, at most once each a month
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          default: [80, 100]
+          items: { type: integer, minimum: 1, maximum: 1000 }
+        blockCreates: { type: boolean, default: false, description: 'Refuse creates in its scope while it is over' }
+    BudgetStatus:
+      type: object
+      required: [period, amount, spent, forecast, percent, state, alertsSent]
+      properties:
+        period: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        amount: { type: number, description: The amount in force for the period }
+        spent: { type: number }
+        forecast: { type: number, description: The month's expected total; equal to spent for a closed month }
+        percent: { type: number, description: spent / amount × 100 }
+        forecastPercent: { type: number }
+        state: { type: string, enum: [ok, forecast-over, over] }
+        alertsSent:
+          type: array
+          description: The thresholds crossed this period, in the order they were crossed
+          items: { type: integer }
+        asOf: { type: string, format: date-time }
+    Budget:
+      type: object
+      required: [budgetId, name, scope, amount, currency, thresholds, blockCreates, version, createdAt, status]
+      properties:
+        budgetId: { type: string }
+        name: { type: string }
+        scope: { $ref: '#/components/schemas/BudgetScope' }
+        amount: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          items: { type: integer }
+        blockCreates: { type: boolean }
+        version: { type: integer }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/BudgetStatus' }
+    ChargebackRow:
+      type: object
+      required: [costCentre, accountId, service, amount]
+      properties:
+        costCentre: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        service: { type: string }
+        tag:
+          type: object
+          properties:
+            key: { type: string }
+            value: { type: string }
+        amount: { type: number }
+    ChargebackReport:
+      type: object
+      required: [month, currency, final, total, rows, generatedAt]
+      properties:
+        month: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        final: { type: boolean, description: 'The month is closed and was published to finance' }
+        total: { type: number }
+        rows:
+          type: array
+          description: By cost centre, account, service and tag value
+          items: { $ref: '#/components/schemas/ChargebackRow' }
+        generatedAt: { type: string, format: date-time }
+        sha256: { type: string, description: "For a final month, the sha256 of the published CSV of every account" }
+    ConsoleBudget:
+      allOf:
+        - $ref: '#/components/schemas/Budget'
+        - type: object
+          required: [can]
+          properties:
+            can:
+              type: object
+              required: [update, delete]
+              properties:
+                update: { type: boolean }
+                delete: { type: boolean }
