@@ -34,8 +34,10 @@ import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.access.domain.ManagedRoles;
 import com.iaf.console.bff.demo.directory.application.DemoDirectory;
+import com.iaf.console.bff.demo.directory.application.DemoGovernance;
 import com.iaf.console.bff.demo.directory.domain.AccessRequest;
 import com.iaf.console.bff.demo.directory.domain.DemoAccount;
+import com.iaf.console.bff.demo.directory.domain.DemoElevation;
 import com.iaf.console.bff.demo.directory.domain.DemoMembership;
 import com.iaf.console.bff.demo.directory.domain.DemoPerson;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
@@ -51,8 +53,11 @@ import reactor.core.publisher.Mono;
  * The identity service's contract, served in process for the demo under {@code /demo-identity}:
  * principals:resolve and authorize for the sign-in and the policy checks, platform-credentials for
  * the platform clients, the account-scoped IAM resources (users, groups, roles, policies, access
- * keys, quotas) and access requests. Managed roles decide; an admin writes, a member reads, a
- * stranger gets 404. The BFF calls it over HTTP exactly as it will call the real service.
+ * keys, quotas) and access requests. Managed roles decide (with the roles held for a while, which
+ * resolve lists in each account's {@code elevations}, and inside the organization's guardrails,
+ * which refuse with {@code scope: guardrail}); an admin writes, a member reads, a stranger gets
+ * 404. Decision 34's guardrails, simulator, access reviews and elevations are
+ * {@link DemoGovernanceRoutes}'. The BFF calls it over HTTP exactly as it will call the real service.
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
@@ -67,17 +72,20 @@ public class DemoIdentityRoutes {
     private final DemoTokens tokens;
     private final ObjectProvider<DemoPlatformSeed> platformSeed;
     private final ObjectProvider<Access> access;
+    private final DemoGovernance governance;
     private final Map<String, Map<String, Object>> accessKeys = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> customGroups = new ConcurrentHashMap<>();
     private final Map<String, Integer> quotaOverrides = new ConcurrentHashMap<>();
     private final Map<String, QuotaRequest> quotaRequests = new ConcurrentHashMap<>();
     private final Object quotaLock = new Object();
 
-    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access) {
+    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access,
+            DemoGovernance governance) {
         this.directory = directory;
         this.tokens = tokens;
         this.platformSeed = platformSeed;
         this.access = access;
+        this.governance = governance;
     }
 
     @Bean
@@ -141,7 +149,7 @@ public class DemoIdentityRoutes {
             return error(HttpStatus.NOT_FOUND, "account " + accountId + " not found");
         }
         DemoCaller c = caller.get();
-        if (!c.internal() && (!accountId.equals(c.accountId()) || directory.membership(c.personSubject(), accountId).isEmpty())) {
+        if (!c.internal() && (!accountId.equals(c.accountId()) || !directory.inAccount(c.personSubject(), accountId))) {
             return error(HttpStatus.NOT_FOUND, "account " + accountId + " not found");
         }
         return handler.handle(request, c, accountId);
@@ -191,21 +199,40 @@ public class DemoIdentityRoutes {
         return request.bodyToMono(JsonNode.class).flatMap(body -> {
             String subject = body.path("subject").asText("");
             Optional<DemoPerson> person = directory.person(subject);
-            List<DemoMembership> memberships = directory.membershipsOf(subject);
-            if (person.isEmpty() || memberships.isEmpty()) {
+            if (person.isEmpty()) {
                 return error(HttpStatus.NOT_FOUND, "the user belongs to no console account");
             }
+            // the accounts of their memberships, then those they hold a role in for a while only (break-glass), never a closed one
+            List<String> accountIds = new ArrayList<>();
+            directory.membershipsOf(subject).forEach(m -> accountIds.add(m.accountId()));
+            List<DemoElevation> held = directory.activeElevationsOf(person.get().userId());
+            held.forEach(e -> {
+                if (!accountIds.contains(e.accountId())) {
+                    accountIds.add(e.accountId());
+                }
+            });
             List<Map<String, Object>> accounts = new ArrayList<>();
-            for (DemoMembership m : memberships) {
-                DemoAccount account = directory.account(m.accountId()).orElseThrow();
+            for (String accountId : accountIds) {
+                if (directory.isClosed(accountId)) {
+                    continue;
+                }
+                DemoAccount account = directory.account(accountId).orElseThrow();
                 Map<String, Object> a = new LinkedHashMap<>();
-                a.put("accountId", m.accountId());
+                a.put("accountId", accountId);
                 a.put("name", account.name());
                 a.put("status", "active");
-                a.put("groups", m.groups());
-                a.put("roles", m.roles());
+                a.put("groups", directory.membership(subject, accountId).map(DemoMembership::groups).orElse(List.of()));
+                a.put("roles", directory.rolesOf(subject, accountId));
                 a.put("defaultRegion", account.defaultRegion());
+                List<Map<String, Object>> elevations = held.stream().filter(e -> e.accountId().equals(accountId))
+                        .map(e -> Map.<String, Object>of("elevationId", e.elevationId(), "role", e.role(), "kind", e.kind(), "until", e.until())).toList();
+                if (!elevations.isEmpty()) {
+                    a.put("elevations", elevations);
+                }
                 accounts.add(a);
+            }
+            if (accounts.isEmpty()) {
+                return error(HttpStatus.NOT_FOUND, "the user belongs to no console account");
             }
             Map<String, Object> answer = new LinkedHashMap<>();
             answer.put("user", user(person.get(), body.path("issuer").asText(null), null));
@@ -223,22 +250,43 @@ public class DemoIdentityRoutes {
             String accountId = principal.path("accountId").asText("");
             boolean service = principal.hasNonNull("service");
             String userId = principal.path("userId").asText("");
-            List<String> roles = service ? List.of(ManagedRoles.ADMIN)
+            boolean closed = directory.isClosed(accountId);
+            List<String> roles = closed ? List.of() : service ? List.of(ManagedRoles.ADMIN)
                     : directory.byUserId(userId).map(p -> directory.rolesOf(p.subject(), accountId)).orElse(List.of());
+            List<String> groupRoles = service ? roles : directory.byUserId(userId).map(p -> directory.groupRolesOf(p.subject(), accountId)).orElse(List.of());
             String strongest = roles.isEmpty() ? "none" : RoleConventions.strongest(roles);
             List<Map<String, Object>> decisions = new ArrayList<>();
             for (JsonNode check : body.path("checks")) {
                 String action = check.path("action").asText("");
+                String resource = check.path("resource").asText(null);
                 Map<String, Object> d = new LinkedHashMap<>();
-                boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || APPROVER_ACTIONS.contains(action)
-                        && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false));
-                d.put("allowed", allowed);
+                boolean approver = APPROVER_ACTIONS.contains(action)
+                        && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false);
+                boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || approver);
+                Optional<DemoGovernance.Refusal> guardrail = allowed && !service ? governance.refusal(accountId, action, resource) : Optional.empty();
+                if (guardrail.isPresent()) {
+                    DemoGovernance.Refusal refusal = guardrail.get();
+                    d.put("allowed", false);
+                    d.put("reason", "The organization's guardrail " + refusal.guardrail().name() + " refuses " + action);
+                    d.put("scope", "guardrail");
+                    d.put("guardrailId", refusal.guardrail().guardrailId());
+                    if (refusal.statement() != null) {
+                        d.put("statement", refusal.statement());
+                    }
+                    d.put("requestable", false);
+                } else {
+                    d.put("allowed", allowed);
+                    if (allowed && !approver && !ManagedRoles.anyAllows(groupRoles, action)) {
+                        d.put("elevated", true);
+                    }
+                }
                 if (!allowed) {
-                    d.put("reason", roles.isEmpty() ? "The user is not a member of account " + accountId
+                    d.put("reason", roles.isEmpty() ? closed ? "account " + accountId + " is closed" : "The user is not a member of account " + accountId
                             : "No statement allows " + action + " for role " + strongest);
                     d.put("role", strongest);
                     d.put("policyId", "managed/" + strongest);
                     d.put("statement", ManagedRoles.statementFor(strongest, action));
+                    d.put("scope", "policy");
                 }
                 decisions.add(d);
             }
@@ -256,7 +304,7 @@ public class DemoIdentityRoutes {
         }
         List<Map<String, Object>> items = new ArrayList<>();
         for (DemoAccount account : directory.accounts()) {
-            if (caller.get().internal() || directory.membership(caller.get().personSubject(), account.accountId()).isPresent()) {
+            if (caller.get().internal() || directory.inAccount(caller.get().personSubject(), account.accountId())) {
                 items.add(account(account));
             }
         }
@@ -1011,11 +1059,16 @@ public class DemoIdentityRoutes {
         return u;
     }
 
-    private static Map<String, Object> account(DemoAccount a) {
+    private Map<String, Object> account(DemoAccount a) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("accountId", a.accountId());
         m.put("name", a.name());
-        m.put("status", "active");
+        Optional<DemoDirectory.Closed> closure = directory.closure(a.accountId());
+        m.put("status", closure.isPresent() ? "closed" : "active");
+        closure.ifPresent(c -> {
+            m.put("closedAt", c.at());
+            m.put("closeReason", c.reason());
+        });
         m.put("owningTeam", a.owningTeam());
         m.put("defaultRegion", a.defaultRegion());
         m.put("version", 1);
