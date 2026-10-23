@@ -33,6 +33,14 @@ final class ContractSchemas {
     static final JsonSchema SYNC_REPORT = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/SyncReport");
     static final JsonSchema FINDING_STATS = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/FindingStats");
     static final JsonSchema FINDING_EVENT = schema("contracts/asyncapi/console-events.yaml", "/components/schemas/FindingEvent");
+    static final JsonSchema RULE_PACK = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/RulePackSummary");
+    static final JsonSchema SCORECARD = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Scorecard");
+    static final JsonSchema HEATMAP = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/ScorecardHeatmap");
+    static final JsonSchema EVALUATION = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Evaluation");
+    static final JsonSchema RESOURCE_COMPLIANCE = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/ResourceCompliance");
+    static final JsonSchema REMEDIATION = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Remediation");
+    static final JsonSchema EVALUATION_CHANGED = schema("contracts/asyncapi/console-events.yaml", "/components/messages/evaluationChanged/payload");
+    static final JsonSchema SCORE_SNAPSHOTTED = schema("contracts/asyncapi/console-events.yaml", "/components/messages/scoreSnapshotted/payload");
 
     private ContractSchemas() {
     }

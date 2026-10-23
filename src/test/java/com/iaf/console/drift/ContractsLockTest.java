@@ -28,7 +28,11 @@ class ContractsLockTest {
             "contracts/openapi/console-drift-service.yaml", "src/test/resources/contracts/openapi/console-drift-service.yaml",
             "contracts/openapi/console-state-service.yaml", "src/test/resources/contracts/openapi/console-state-service.yaml",
             "contracts/asyncapi/console-events.yaml", "src/test/resources/contracts/asyncapi/console-events.yaml",
-            "contracts/platform/openapi-target.yaml", "src/test/resources/contracts/platform/openapi-target.yaml");
+            "contracts/platform/openapi-target.yaml", "src/test/resources/contracts/platform/openapi-target.yaml",
+            "contracts/schemas/rule-pack.schema.json", "src/test/resources/contracts/schemas/rule-pack.schema.json",
+            "rule-packs/required-tags.yaml", "src/main/resources/rule-packs/required-tags.yaml",
+            "rule-packs/compute-baseline.yaml", "src/main/resources/rule-packs/compute-baseline.yaml",
+            "rule-packs/data-baseline.yaml", "src/main/resources/rule-packs/data-baseline.yaml");
 
     @Test
     void everyCopyMatchesTheLock() throws IOException {

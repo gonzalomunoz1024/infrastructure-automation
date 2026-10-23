@@ -27,6 +27,7 @@ dependencies {
     implementation("com.nimbusds:nimbus-jose-jwt:10.10")
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
     // the shard loops of the plan run as Temporal workflows under the temporal profile (the
     // platform's own Temporal version)
     implementation("io.temporal:temporal-sdk:$temporalVersion")

@@ -46,6 +46,7 @@ public final class HttpStateService implements StateServicePort {
     public static final String SERVICE_HEADER = "X-Console-Service";
     public static final String REQUEST_ID_HEADER = "X-Console-Request-Id";
     public static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
+    public static final String ON_BEHALF_OF_HEADER = "X-On-Behalf-Of";
 
     private final WebClient web;
     private final String baseUrl;
@@ -154,6 +155,16 @@ public final class HttpStateService implements StateServicePort {
     }
 
     @Override
+    public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String onBehalfOf, String requestId,
+            String idempotencyKey) {
+        ObjectNode body = Json.object();
+        ObjectNode tags = body.putObject("set");
+        set.forEach(tags::put);
+        body.put("actor", actor);
+        return command(wfrn, ":tag", body, requestId, idempotencyKey, onBehalfOf);
+    }
+
+    @Override
     public Mono<StateResource> requestDelete(String wfrn, String workflow, String reason, String actor, String requestId) {
         ObjectNode body = Json.object();
         body.put("workflow", workflow);
@@ -188,12 +199,20 @@ public final class HttpStateService implements StateServicePort {
     }
 
     private Mono<StateResource> command(String wfrn, String suffix, ObjectNode body, String requestId, String idempotencyKey) {
+        return command(wfrn, suffix, body, requestId, idempotencyKey, null);
+    }
+
+    /** A command; {@code onBehalfOf} is the person's assertion (P-02) when the command is made for one. */
+    private Mono<StateResource> command(String wfrn, String suffix, ObjectNode body, String requestId, String idempotencyKey, String onBehalfOf) {
         WebClient.RequestBodySpec request = web.post().uri(resource(wfrn, suffix)).contentType(MediaType.APPLICATION_JSON);
         if (requestId != null) {
             request.header(REQUEST_ID_HEADER, requestId);
         }
         if (idempotencyKey != null) {
             request.header(IDEMPOTENCY_HEADER, idempotencyKey);
+        }
+        if (onBehalfOf != null && !onBehalfOf.isBlank()) {
+            request.header(ON_BEHALF_OF_HEADER, onBehalfOf);
         }
         return request.bodyValue(body).exchangeToMono(r -> body(r, StateResource.class));
     }

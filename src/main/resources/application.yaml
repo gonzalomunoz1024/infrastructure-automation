@@ -119,6 +119,15 @@ console:
     namespace: default
     task-queue: console-drift
     iterations: 96        # loop turns before a workflow continues as new
+  scorecards:
+    # embedded: the rule packs' declarative half; opa: the firm's OPA at opa-url (hub decision 26)
+    engine: embedded
+    opa-url: http://localhost:8181
+    opa-timeout: 5s
+    opa-token: ${CONSOLE_OPA_TOKEN:}   # sent as a bearer token when set
+    push-policies: false      # load the packs' Rego into OPA at start; only for an OPA of the console's own
+    # packs-dir: /etc/console/rule-packs   # packs besides the ones built in (rule-packs/*.yaml)
+    snapshot-interval: 10m    # accounts without today's snapshot are recounted
   kafka:
     bootstrap-servers: localhost:9092
     group-id: console-drift-service

@@ -20,6 +20,7 @@ public record DriftProperties(
         ServiceTokenSettings serviceTokens,
         TemporalSettings temporal,
         KafkaSettings kafka,
+        ScorecardSettings scorecards,
         DemoSettings demo,
         CostSettings cost) {
 
@@ -34,8 +35,38 @@ public record DriftProperties(
         serviceTokens = serviceTokens == null ? new ServiceTokenSettings(null, null, null, null, null, null, null, null) : serviceTokens;
         temporal = temporal == null ? new TemporalSettings(null, null, null, null) : temporal;
         kafka = kafka == null ? new KafkaSettings(null, null, null, null) : kafka;
+        scorecards = scorecards == null ? new ScorecardSettings(null, null, null, null, null, null, null) : scorecards;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
         cost = cost == null ? new CostSettings(null, null, null, null, null) : cost;
+    }
+
+    /**
+     * Compliance scorecards (WP 9.6, hub decision 26): the policy engine ({@code embedded}, the rules'
+     * declarative half, or {@code opa} at {@code opaUrl}, which this service loads the packs' Rego
+     * into at start when {@code pushPolicies}, off unless set, and calls with {@code opaToken} as a
+     * bearer token when one is set), a directory of rule packs besides the ones built in,
+     * and how often accounts without today's snapshot are recounted.
+     */
+    public record ScorecardSettings(String engine, String opaUrl, Duration opaTimeout, String opaToken, Boolean pushPolicies, String packsDir, Duration snapshotInterval) {
+        public static final String EMBEDDED = "embedded";
+        public static final String OPA = "opa";
+
+        public ScorecardSettings {
+            engine = engine == null || engine.isBlank() ? EMBEDDED : engine.trim().toLowerCase(Locale.ROOT);
+            if (!EMBEDDED.equals(engine) && !OPA.equals(engine)) {
+                throw new IllegalArgumentException("console.scorecards.engine is embedded or opa, not " + engine);
+            }
+            opaUrl = opaUrl == null || opaUrl.isBlank() ? "http://localhost:8181" : opaUrl;
+            opaTimeout = opaTimeout == null ? Duration.ofSeconds(5) : opaTimeout;
+            opaToken = opaToken == null || opaToken.isBlank() ? null : opaToken;
+            pushPolicies = pushPolicies != null && pushPolicies;
+            packsDir = packsDir == null || packsDir.isBlank() ? null : packsDir;
+            snapshotInterval = snapshotInterval == null ? Duration.ofMinutes(10) : snapshotInterval;
+        }
+
+        public boolean opa() {
+            return OPA.equals(engine);
+        }
     }
 
     /** The partition of every wfrn this service mints ({@code wf} for the firm's one partition). */

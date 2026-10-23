@@ -14,6 +14,8 @@ console:
   # the demos keep the dev headers (hub decision 23): X-Console-Service names this service
   service-tokens:
     mode: dev-headers
+  scorecards:
+    snapshot-interval: 30s
   drift:
     tiers:
       hot: 10s

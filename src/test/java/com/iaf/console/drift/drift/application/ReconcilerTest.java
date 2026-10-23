@@ -323,5 +323,12 @@ class ReconcilerTest {
             calls.add("import:" + command.wfrn());
             return Mono.empty();
         }
+
+        @Override
+        public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String onBehalfOf, String requestId,
+                String idempotencyKey) {
+            calls.add("tag:" + wfrn);
+            return Mono.empty();
+        }
     }
 }

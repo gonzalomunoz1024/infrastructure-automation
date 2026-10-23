@@ -235,6 +235,17 @@ public final class EmbeddedStateService implements StateServicePort {
     }
 
     @Override
+    public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String onBehalfOf, String requestId,
+            String idempotencyKey) {
+        return existing(wfrn).map(r -> {
+            ObjectNode node = Json.objectNode(r);
+            ObjectNode tags = node.withObject("/tags");
+            set.forEach(tags::put);
+            return bump(node);
+        });
+    }
+
+    @Override
     public Mono<StateResource> requestDelete(String wfrn, String workflow, String reason, String actor, String requestId) {
         return existing(wfrn).flatMap(r -> {
             if (!"active".equals(r.state())) {

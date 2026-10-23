@@ -45,6 +45,7 @@ public final class Reconciler {
     private final Timing timing;
     private final DriftMetrics metrics;
     private final Clock clock;
+    private final ResourceListener listener;
 
     /** How often an unchanged observation is sent, and when a resource in flight or after a failed read is looked at again. */
     public record Timing(Duration observationRefresh, Duration inFlightRetry, Duration errorRetry) {
@@ -53,6 +54,13 @@ public final class Reconciler {
 
     public Reconciler(FindingStorePort findings, WatchStorePort watches, StateServicePort state, FindingEvents events, TierRules tiers,
             Timing timing, DriftMetrics metrics, Clock clock) {
+        this(findings, watches, state, events, tiers, timing, metrics, clock, ResourceListener.NONE);
+    }
+
+    /** {@code listener} hears every successful read (the compliance scorecards). */
+    public Reconciler(FindingStorePort findings, WatchStorePort watches, StateServicePort state, FindingEvents events, TierRules tiers,
+            Timing timing, DriftMetrics metrics, Clock clock, ResourceListener listener) {
+        this.listener = listener;
         this.findings = findings;
         this.watches = watches;
         this.state = state;
@@ -137,7 +145,17 @@ public final class Reconciler {
                     Watch staged = next.lastCheckedAt(now).build();
                     Tier tier = tiers.tierOf(staged, now);
                     Watch due = staged.toBuilder().tier(tier).nextCheckAt(tiers.nextCheck(staged, tier, typeInterval, now)).build();
-                    return watches.save(due).map(w -> new Outcome(w, finding, settled.action()));
+                    return watches.save(due).flatMap(w -> heard(w, observation).thenReturn(new Outcome(w, finding, settled.action())));
+                });
+    }
+
+    /** Tells the listener about the read; its failure is logged, never the read's. */
+    private Mono<Void> heard(Watch watch, Observation observation) {
+        return Mono.defer(() -> listener.observed(watch, observation.found() ? observation.observed() : null))
+                .onErrorResume(e -> {
+                    metrics.error("listener");
+                    log.warn("{}: the read's listener failed: {}", watch.wfrn(), e.toString());
+                    return Mono.empty();
                 });
     }
 
