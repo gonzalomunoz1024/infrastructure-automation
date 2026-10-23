@@ -1,5 +1,6 @@
 import type { Directory } from './directory'
-import { replayConsole, type ConsoleCommand } from './commands'
+import { replayConsole, settleConsole, type ConsoleCommand } from './commands'
+import { lastNotificationSeq, notificationEventsAfter } from './notifications'
 import type { MockData } from './data'
 import { createMockServer, memorySessionStore, nextMockEvent, type MockServer, type MockSession, type MockSessionStore } from './server'
 
@@ -131,10 +132,34 @@ class MockEventSource extends EventTarget {
       const open = new Event('open')
       this.onopen?.(open)
       this.dispatchEvent(open)
+      if (new URL(this.url, 'http://mock.local').pathname === '/console/v1/events') {
+        this.followNotifications(server)
+        return
+      }
       const backlog = after > 0 ? server.data.events.filter((e) => e.seq > after) : server.data.events.slice(-5)
       for (const e of backlog) this.emit(e)
       this.ticker = setInterval(() => this.emit(nextMockEvent(server.data)), LIVE_EVERY_MS)
     }, 40)
+  }
+
+  /**
+   * The BFF's live stream, for the person signed in: each `notification` delivered after the one
+   * named by `after` (`n<seq>`), or after the newest when it opens fresh, as the clock moves.
+   */
+  private followNotifications(server: MockServer) {
+    const asked = /^n(\d+)$/.exec(new URL(this.url, 'http://mock.local').searchParams.get('after') ?? '')
+    let last = asked ? Number(asked[1]) : lastNotificationSeq(server.data, Date.now())
+    const tick = () => {
+      const userId = server.sessions.get()?.userId
+      if (!userId || this.readyState !== MockEventSource.OPEN) return
+      const now = Date.now()
+      settleConsole(server.data, now)
+      const next = notificationEventsAfter(server.data, userId, last, now)
+      last = next.last
+      for (const e of next.events) this.dispatchEvent(new MessageEvent('notification', { data: JSON.stringify(e.event), lastEventId: e.id }))
+    }
+    tick()
+    this.ticker = setInterval(tick, LIVE_EVERY_MS)
   }
 
   /** Named after its type, as the platform's stream names its events (`event: job.started`), so only a listener for that name hears it. */
