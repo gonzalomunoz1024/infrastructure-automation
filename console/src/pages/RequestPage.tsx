@@ -143,7 +143,7 @@ export default function RequestPage({ route }: PageProps) {
 
       {paused && <AttentionCard job={job} busy={cmd.busy} onRetry={() => void retry()} onRetryWithChanges={() => setAsking('retry')} onSkip={() => setAsking('skip')} onAbort={() => setAsking('abort')} />}
 
-      <FailureCard job={job} />
+      <FailureCard job={job} busy={cmd.busy} onRetry={retry} />
 
       <ApprovalsCard job={job} busy={cmd.busy} onDecide={decide} />
 

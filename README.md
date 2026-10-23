@@ -251,8 +251,11 @@ type, so the feed must subscribe to every one).
    white text at 3.65:1 and 3.4:1, and no one colour does both; so the fills under white text
    (`.bg-accent.text-white`, `.bg-critical.text-white`: primary and danger buttons, the accent and
    critical badges, a done step, the sidebar's count) take `#0066cc` and `#d70015` in the dark too
-   (5.6:1 and 5.4:1, 4.8:1 and 4.6:1 under the buttons' hover brightness). Notes for P-14, since
-   the console only overrides and never edits Atlas: an on-accent fill token would replace them.
+   (5.6:1 and 5.4:1, 4.8:1 and 4.6:1 under the buttons' hover brightness). The warning outline
+   button, the yes of a warning confirmation, writes its label in Atlas's amber `#ff9500` (2.2:1
+   on white); in the light it takes `#c93400`, Apple's accessible orange (5.3:1 on white, 4.9:1 on
+   its hover tint). Notes for P-14, since the console only overrides and never edits Atlas: an
+   on-accent fill token would replace the fills, and an accessible warning text token the label.
 6. **Status colour is in the dot.** `LifecycleBadge` (resource states) and `StatusBadge` (jobs
    and steps), both in console-kit, show a coloured dot next to a label in the primary text
    colour, instead of Atlas's `StateTag`, whose coloured text does not reach AA on its tints; the
@@ -519,7 +522,8 @@ To be written with WP 9.1.
 ### The failure explainer (65 to 69)
 
 65. **A failed request explains itself where it failed.** The request page's "What went wrong"
-    card (`console/src/pages/explain/FailureExplainer.tsx`) reads
+    card (`console/src/pages/explain/FailureExplainer.tsx`, which phase 4's `FailureCard` hosts for
+    a failed or paused step; a rejection, a bulk run and a rollback keep that card's own words) reads
     `GET /console/v1/jobs/{jobId}/explanation` for a failed job and one waiting on a failed step:
     the cause in plain words, the step that stopped and what it said, a suggested fix, and how
     often the same failure happened in the account in the last 30 days, with the rerun that last
@@ -528,8 +532,9 @@ To be written with WP 9.1.
     job) the card shows the platform's own words, as before.
 66. **Rules first, the copilot for the rest, and the card says which.** The BFF's rules read the
     platform's error classes (`not_found`, `conflict`, `rate_limited`, `unavailable`, `timeout`,
-    `unreachable`, `server_error`, `unauthorized`, and the mock's `provider`); what they cannot
-    read, such as a pause with no class or a provider's own validation error, the copilot answers.
+    `unreachable`, `server_error`, `unauthorized`, and the mock's `provider`), reading the failed
+    step as the request page draws it (a paused step carries its class too); what they cannot
+    read, such as a provider's own validation error (`client_error`), the copilot answers.
     The card's corner says "Explained by the rules" or "Explained by the copilot", because a
     reader weighs a rule's answer and a model's differently. The mock (`mock/explain.ts`) follows
     the same rules over the same jobs the pages show.
@@ -542,9 +547,12 @@ To be written with WP 9.1.
 68. **The fix travels as a merge, never as the whole input.** "Retry with fix" sends only
     `{ input, fromStep }` to the phase 4 retry, which merges it over the original on the server
     (the platform's `:rerun`), so the original input, secrets included, never comes back to the
-    browser to be edited and resent. Asking for an explanation retries nothing, and the retry
-    button is an `ActionButton` on the explanation's own `retry` decision: a viewer sees it locked
-    with the refusal behind it, and until the request page hands it the phase 4 call it says so.
+    browser to be edited and resent. Asking for an explanation retries nothing. The button runs the
+    request page's own retry (one key per pause; an ended request's rerun opens as the new request)
+    and is an `ActionButton` on the explanation's own `retry` decision, which the mock judges as
+    the page's retry does: a viewer sees it locked with the refusal behind it. The card offers it
+    only for a fix that changes the input or the step; a fix that only runs the failed step again
+    points to the page's Retry instead, so the page never shows the same retry twice.
 69. **An explanation's links are followed only when safe.** A link is a console route (`#/...`) or
     an https page opened in a new tab; anything else (`javascript:`, `data:`, plain http) is
     dropped (`lib/explain.ts`, `linkOf`), because the copilot and a provider's runbooks write

@@ -49,6 +49,14 @@
   background-color: #d70015;
 }
 
+/* Atlas's warning outline button, the yes of a warning confirmation (retry, cancel, skip), writes
+   its label in the warning amber: #ff9500 reads at 2.2:1 on white. In the light the label takes
+   Apple's accessible orange, #c93400: 5.3:1 on white and 4.9:1 on the button's hover tint. The
+   dark appearance's amber (#ff9f0a) reads at 8:1 on its surfaces, so it stays. */
+:root:not(.dark) button.border-warning.text-warning {
+  color: #c93400;
+}
+
 html,
 body,
 #root {

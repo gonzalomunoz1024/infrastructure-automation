@@ -2,30 +2,30 @@ import { useState } from 'react'
 import { Button, Card, Icon, SkeletonText, cx } from '@iaf/ui'
 import { ConfirmDialog, DotTag, When } from '@iaf/console-kit'
 import { useCopilot } from '../../app/copilot/context'
-import { useCommand } from '../../app/commands'
 import { ActionButton } from '../../app/Refusal'
-import { Link, navigate, pathFor } from '../../app/router'
+import { Link, pathFor } from '../../app/router'
 import { isApiError } from '../../lib/api'
 import { capitalise } from '../../lib/descriptors'
-import { explainApi, linkOf, retryBodyOf, type FixConfidence, type RetryFix } from '../../lib/explain'
+import { explainApi, linkOf, retryBodyOf, type FixConfidence } from '../../lib/explain'
 import type { Decision } from '../../lib/permissions'
 import { useQuery } from '../../lib/queries'
-import type { CommandAccepted } from '../../lib/types'
+import type { RetryFix } from '../../lib/types'
 
 /*
  * What went wrong with a request, and the fix to try (WP 9.2): the cause in plain words, the step
  * that stopped, a suggested fix with how sure it is, and how often the same failure happened in
- * the account lately. "Retry with fix" sends the fix's input merge and step to the phase 4 retry,
- * after the person has read exactly what will change; until the page hands it the retry call the
- * button waits for phase 4. Without an explanation the card shows the platform's own words.
+ * the account lately. "Retry with fix" hands the fix's input merge and step to the request page's
+ * own retry (phase 4), after the person has read exactly what will change; a fix that only runs
+ * the failed step again leaves that to the page's Retry, so the page never offers the same retry
+ * twice. Without an explanation the card shows the platform's own words.
  */
 
 const EXPLAINED = new Set(['failed', 'needs-attention'])
 const TONE: Record<FixConfidence, 'healthy' | 'warning' | 'neutral'> = { high: 'healthy', medium: 'warning', low: 'neutral' }
 
-/** The explanation of a job that failed or waits on a failed step; nothing is asked for any other. */
-export function useJobExplanation(jobId: string, status: string | undefined) {
-  return useQuery(['job-explanation', jobId, status ?? ''], () => explainApi.job(jobId), { enabled: !!status && EXPLAINED.has(status) })
+/** The explanation of a job that failed or waits on a failed step; nothing is asked for any other. A new `since` (a second pause) asks again. */
+export function useJobExplanation(jobId: string, status: string | undefined, since?: string) {
+  return useQuery(['job-explanation', jobId, status ?? '', since ?? ''], () => explainApi.job(jobId), { enabled: !!status && EXPLAINED.has(status) })
 }
 
 const shown = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
@@ -34,16 +34,21 @@ export interface FailureExplainerProps {
   jobId: string
   /** the job's status: the card shows for a failed job and one waiting on a failed step */
   status: string
-  /** sends the retry (the phase 4 call); until the page gives it, the retry waits for phase 4 */
-  retry?: (body: RetryFix | undefined) => Promise<CommandAccepted>
+  /** when the job paused or ended, so a second pause on the same step is explained afresh */
+  since?: string
+  /** runs the page's own retry with the fix (phase 4); until a page gives it, the retry waits for phase 4 */
+  onRetry?: (fix: RetryFix | undefined) => unknown
+  /** the page's retry is running */
+  busy?: boolean
+  /** the step the page's own retry runs from: a fix that changes nothing beyond it leaves the retry to the page */
+  defaultStep?: string
   /** the platform's own words, shown when no explanation can be had */
   fallback?: { errorClass?: string; message?: string; step?: string }
   className?: string
 }
 
-export function FailureExplainer({ jobId, status, retry, fallback, className }: FailureExplainerProps) {
-  const q = useJobExplanation(jobId, status)
-  const cmd = useCommand()
+export function FailureExplainer({ jobId, status, since, onRetry, busy, defaultStep, fallback, className }: FailureExplainerProps) {
+  const q = useJobExplanation(jobId, status, since)
   const copilot = useCopilot()
   const [confirming, setConfirming] = useState(false)
   // only a failed job, or one waiting on a failed step, has an explanation; another with an error keeps the platform's words
@@ -56,16 +61,15 @@ export function FailureExplainer({ jobId, status, retry, fallback, className }: 
   const step = x?.failedStep?.id ?? fallback?.step
   const body = retryBodyOf(x?.fix)
   const decision: Decision = x?.retry ? { allowed: x.retry.allowed, denied: x.retry.denied } : { allowed: true }
-  const label = body?.input ? 'Retry with fix' : attention ? 'Retry the step' : 'Retry'
+  // the page's own retry runs the failed step again as it was; the card offers its own only for a fix that changes the input or the step
+  const changes = !!body?.input || (!!body?.fromStep && body.fromStep !== defaultStep)
+  const offers = !!body && (!onRetry || changes)
+  const label = body?.input ? 'Retry with fix' : onRetry && body?.fromStep ? `Retry from ${body.fromStep}` : attention ? 'Retry the step' : 'Retry'
   const ask = () => copilot.open({ intent: 'ask', message: `Why did request ${jobId} ${attention ? 'stop' : 'fail'}, and how do I fix it?`, context: { path: `/requests/${jobId}` } })
 
+  // the page's retry keeps one key per pause, says how it went, and follows the request it starts
   const send = async () => {
-    if (!retry) return
-    const accepted = await cmd.run(label, () => retry(body), {
-      invalidates: ['job', 'bff-job', 'jobs', 'job-explanation', 'console-resource', 'console-activity', 'resources'],
-      done: () => ({ title: 'Running it again', message: body?.fromStep ? `From step ${body.fromStep}; the page follows the request.` : 'The page follows the request.' }),
-    })
-    if (accepted && accepted.jobId !== jobId) navigate(pathFor('request', { id: accepted.jobId }))
+    await onRetry?.(body)
   }
 
   return (
@@ -145,10 +149,15 @@ export function FailureExplainer({ jobId, status, retry, fallback, className }: 
               })}
             </ul>
           )}
+          {onRetry && body && !changes && decision.allowed && (
+            <p className="mt-3 text-caption text-secondary">{attention ? 'Retry the step, above, runs it this way.' : 'Retry, at the top of the page, runs it this way.'}</p>
+          )}
           <div className="mt-4 flex flex-wrap gap-2">
-            <ActionButton decision={decision} what="Retry this request" phase={retry ? undefined : 4} variant="primary" icon="refresh" loading={cmd.busy} onClick={() => setConfirming(true)} verb="retry">
-              {label}
-            </ActionButton>
+            {offers && (
+              <ActionButton decision={decision} what="Retry this request" phase={onRetry ? undefined : 4} variant="primary" icon="refresh" loading={busy} onClick={() => setConfirming(true)} verb="retry">
+                {label}
+              </ActionButton>
+            )}
             <Button variant="ghost" icon="sparkles" onClick={ask}>
               Ask the copilot about this failure
             </Button>

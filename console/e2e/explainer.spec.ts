@@ -4,9 +4,10 @@ import { expectNoHorizontalOverflow, expectNoSeriousA11y, signInAs, tabTo } from
 
 /*
  * The failure explainer's journey in mock mode (WP 9.2): a failed request says what went wrong in
- * plain words, the step that stopped and a fix with how sure it is; a viewer sees the retry locked
- * with the refusal behind it; a request waiting on a step is explained by the copilot; and a
- * resource whose create failed names the cause above its facts. The retry itself is phase 4's.
+ * plain words, the step that stopped and a fix with how sure it is; Retry with fix runs the
+ * request page's own retry (phase 4) with the fix, and the rerun then shows as the last fix; a
+ * viewer sees the retry locked with the refusal behind it; a paused step leaves its retry to the
+ * paused step's own buttons; and a resource whose create stopped names the cause above its facts.
  */
 
 const shots = fileURLToPath(new URL('./screenshots/', import.meta.url))
@@ -16,6 +17,8 @@ const SEED_FAILED = 'job_83amhygy2c'
 const SEED_PAUSED = 'job_demo_attention'
 
 const card = (page: Page) => page.locator('[data-explanation]')
+/** the request's own status, from its facts (its steps carry statuses too) */
+const requestStatus = (page: Page) => page.locator('dl > div').filter({ has: page.locator('dt', { hasText: /^Status$/ }) }).locator('[data-status]')
 
 test.describe('the failure explainer in mock mode', () => {
   test('Gonzalo reads why a create failed, the fix it suggests, and asks the copilot about it', async ({ page }) => {
@@ -33,10 +36,10 @@ test.describe('the failure explainer in mock mode', () => {
     await expect(changes.getByText('image-demo01')).toBeVisible()
     await expect(what.getByText(/Runs again from step\s*createVm/)).toBeVisible()
     await expect(what.getByText('The first failure like this in this account in the last 30 days.')).toBeVisible()
-    // the retry waits for phase 4; until then it says so and does nothing
+    // the request page's own retry, with the fix
     const retry = what.getByRole('button', { name: /Retry with fix/ })
-    await expect(retry).toHaveAttribute('aria-disabled', 'true')
-    await expect(retry).toHaveAttribute('data-phase', '4')
+    await expect(retry).toBeEnabled()
+    await expect(retry).not.toHaveAttribute('data-phase')
     await expectNoSeriousA11y(page, 'request with its explanation')
     await page.screenshot({ path: shot('explainer-desktop'), fullPage: true })
 
@@ -58,6 +61,28 @@ test.describe('the failure explainer in mock mode', () => {
     await expect(page.locator('#copilot-panel')).toBeVisible()
   })
 
+  test('Gonzalo retries the create with the fix, and the rerun then shows as the last fix', async ({ page }) => {
+    test.slow()
+    await signInAs(page, /Continue as Gonzalo Munoz/, `/requests/${SEED_FAILED}`)
+    await card(page).getByRole('button', { name: /Retry with fix/ }).click()
+    const confirm = page.getByRole('dialog', { name: 'Run this request again?' })
+    await expect(confirm.getByText(/runs again with the changes above merged over its input, from step createVm/)).toBeVisible()
+    await expectNoSeriousA11y(page, 'retry with fix, confirming')
+    await confirm.getByRole('button', { name: 'Retry with fix' }).click()
+
+    // an ended request runs again as a new one, which the page follows to its end
+    await expect(page).not.toHaveURL(new RegExp(`#/requests/${SEED_FAILED}$`))
+    const rerun = /#\/requests\/([^/?]+)$/.exec(page.url())?.[1] ?? ''
+    expect(rerun).toMatch(/^job_/)
+    await expect(requestStatus(page)).toHaveAttribute('data-status', 'succeeded', { timeout: 30_000 })
+
+    await page.goto(`/#/requests/${SEED_FAILED}`)
+    const fixed = card(page).locator('[data-similar]')
+    await expect(fixed).toContainText('Last fixed by gonzalo')
+    await expect(fixed.getByRole('link', { name: rerun })).toBeVisible()
+    await expectNoSeriousA11y(page, 'failed request with its last fix')
+  })
+
   test('a viewer sees the retry locked, and the refusal says why', async ({ page }) => {
     await signInAs(page, /Continue as Mia Chen/, `/requests/${SEED_FAILED}`)
     const what = card(page)
@@ -73,16 +98,19 @@ test.describe('the failure explainer in mock mode', () => {
     await expect(refusal).toBeHidden()
   })
 
-  test('a request waiting on a step is explained by the copilot, with a retry of the step', async ({ page }) => {
+  test('a request paused on a step is explained, and its retry stays with the paused step’s own buttons', async ({ page }) => {
     await signInAs(page, /Continue as Gonzalo Munoz/, `/requests/${SEED_PAUSED}`)
     const what = card(page)
-    await expect(what).toHaveAttribute('data-explanation', 'assistant')
-    await expect(what.getByText('A step stopped and waits for a decision')).toBeVisible()
-    await expect(what.getByText('Explained by the copilot')).toBeVisible()
-    await expect(what.getByText('Low confidence')).toBeVisible()
-    await expect(what.getByRole('button', { name: /Retry the step/ })).toBeVisible()
+    await expect(what).toHaveAttribute('data-explanation', 'rules')
+    await expect(what.getByText('The provider failed while making the change')).toBeVisible()
+    await expect(what.getByText('Medium confidence')).toBeVisible()
+    await expect(what.getByText(/Runs again from step\s*apply/)).toBeVisible()
+    // the fix changes nothing the page's own retry does not, so the card points to it rather than offer a second one
+    await expect(what.getByText('Retry the step, above, runs it this way.')).toBeVisible()
+    await expect(what.getByRole('button', { name: /Retry/ })).toHaveCount(0)
+    await expect(page.locator('[data-attention]').getByRole('button', { name: 'Retry the step' })).toBeVisible()
     await expect(what.getByLabel('What the retry changes')).toHaveCount(0)
-    await expectNoSeriousA11y(page, 'request waiting on a step')
+    await expectNoSeriousA11y(page, 'request paused on a step')
   })
 
   test('a VM whose create failed names the cause on its page, and the link leads to the fix', async ({ page }) => {
@@ -99,18 +127,23 @@ test.describe('the failure explainer in mock mode', () => {
       return (await res.json()) as { wfrn: string; jobId: string }
     })
     await page.goto(`/#/console/compute/vm/${encodeURIComponent(accepted.wfrn)}`)
-    const banner = page.locator('[data-job-status="failed"]')
+    // the provider fails the apply, and the create pauses on it (phase 4)
+    const banner = page.locator('[data-job-status="needs-attention"]')
     await expect(banner).toBeVisible({ timeout: 30_000 })
     await expect(banner.getByText(/The provider failed while making the change\. The request has a fix to try\./)).toBeVisible()
-    await expectNoSeriousA11y(page, 'resource with a failed create')
+    await expectNoSeriousA11y(page, 'resource with a paused create')
     await banner.getByRole('link', { name: /See the fix/ }).click()
     await expect(page).toHaveURL(new RegExp(`#/requests/${accepted.jobId}$`))
     const what = card(page)
     await expect(what.getByText('The provider failed while making the change')).toBeVisible()
     await expect(what.getByText(/Runs again from step\s*apply/)).toBeVisible()
-    // nothing to change in the input: the retry runs it again as it was
-    await expect(what.getByRole('button', { name: /^Retry\b/ })).toBeVisible()
     await expect(what.getByLabel('What the retry changes')).toHaveCount(0)
+
+    // the paused step's own retry runs it again, and the request goes on to the end
+    await page.locator('[data-attention]').getByRole('button', { name: 'Retry the step' }).click()
+    await expect(page.locator('[data-attention]')).toHaveCount(0, { timeout: 30_000 })
+    await expect(card(page)).toHaveCount(0)
+    await expect(requestStatus(page)).toHaveAttribute('data-status', 'succeeded', { timeout: 30_000 })
   })
 
   test('the explanation fits a phone', async ({ page }) => {

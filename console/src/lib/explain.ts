@@ -1,6 +1,6 @@
 import { get } from './api'
 import { BFF_BASE } from './bff'
-import type { Denial } from './types'
+import type { Denial, RetryFix } from './types'
 
 /*
  * The failure explainer (WP 9.2): why a job failed, or why it waits on a failed step, in plain
@@ -16,12 +16,7 @@ const enc = encodeURIComponent
 
 export type FixConfidence = 'high' | 'medium' | 'low'
 
-/** What the person can send to try again: a merge over the job's input, and the step to run from. */
-export interface RetryFix {
-  input?: Record<string, unknown>
-  fromStep?: string
-}
-
+/** A fix is the phase 4 retry's own body (a merge over the job's input, and the step to run from), in words. */
 export interface FailureFix extends RetryFix {
   /** the fix to try, in one or two sentences */
   summary: string

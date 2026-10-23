@@ -2,10 +2,11 @@ import { serviceOf, singularOf, titleOf } from '../lib/descriptors'
 import type { FailureFix, JobExplanation } from '../lib/explain'
 import { encodePrefill } from '../lib/prefill'
 import type { CatalogEntry, JobSummary, Resource, ResourceType } from '../lib/types'
-import { typeOf, wfrnPatternOf, type RouteAnswer, type RouteContext } from './commands'
+import { typeOf, type RouteAnswer, type RouteContext } from './commands'
 import { DAY_MS } from './cost'
 import type { MockData } from './data'
 import { authorize } from './directory'
+import { retryTargetOf, stepsOf } from './jobs'
 import { accountOfResource, stateOf } from './resources'
 
 /*
@@ -40,23 +41,25 @@ interface Failure {
 
 type Reading = Pick<JobExplanation, 'cause' | 'fix' | 'links' | 'source'>
 
-/** The platform's error class of a job: its own, and the mock's `provider` for a failure that names none. */
-const classOf = (j: JobSummary) => j.errorClass ?? (j.status === 'failed' ? 'provider' : undefined)
+/** The platform's error class of a job: its own, and the mock's `provider` for a failed or paused step that names none (as ./jobs draws it). */
+const classOf = (j: JobSummary) => j.errorClass ?? (j.status === 'failed' || j.status === 'needs-attention' ? 'provider' : undefined)
 
 function failureOf(data: MockData, job: JobSummary): Failure {
   const extra = data.console?.jobs[job.id]
   const entry = data.catalog.find((e) => e.workflow === job.workflow)
   const rt = (extra ? typeOf(data, extra.type) : undefined) ?? (entry ? typeOf(data, entry.noun) : undefined) ?? data.resourceTypes.find((t) => t.producedBy === job.workflow)
-  const cls = classOf(job)
-  // the steps the job page draws (server.ts stepsOf): the step that failed keeps its id, else it is the apply
-  const id = job.failedStep ?? 'apply'
+  // the step the request page draws as failed (./jobs stepsOf): the one a paused job waits on, else the one that failed
+  const steps = stepsOf(job, extra)
+  const failed = steps.find((st) => st.status === 'failed' && st.id === (job.failedStep ?? extra?.attention?.step)) ?? steps.find((st) => st.status === 'failed')
+  const id = failed?.id ?? job.failedStep ?? 'apply'
+  const cls = job.errorClass ?? failed?.error?.class ?? classOf(job)
   return {
     job,
     entry,
     rt,
     verb: extra?.verb ?? entry?.verb ?? 'run',
     input: extra?.input,
-    step: { id, name: job.failedStep ? `Run ${job.failedStep}` : 'Apply the change', attempt: 1, message: cls ? `${id} failed: ${cls}` : undefined },
+    step: { id, name: failed?.name ?? 'Apply the change', attempt: failed?.attempt ?? 1, message: failed?.error?.message ?? (cls ? `${id} failed: ${cls}` : undefined) },
     cls,
   }
 }
@@ -194,16 +197,16 @@ function similarOf(data: MockData, accountId: string, f: Failure, now: number): 
   const jobs = data.jobs.filter(visibleIn(accountId))
   const alike = f.cls ? jobs.filter((j) => j.workflow === f.job.workflow && STOPPED.has(j.status) && classOf(j) === f.cls && Date.parse(j.startedAt) >= since) : []
   // a fix shows as a later run of the same workflow that succeeded: a rerun naming the failed job, or one on the same resource
-  const retryOf = (k: JobSummary) => (data.console?.jobs[k.id] as { retryOf?: string } | undefined)?.retryOf
+  const retryOf = (k: JobSummary) => data.console?.jobs[k.id]?.retryOf
   const fixes = alike.flatMap((j) => jobs.filter((k) => k.workflow === j.workflow && k.status === 'succeeded' && Date.parse(k.startedAt) > Date.parse(j.startedAt) && (retryOf(k) === j.id || (!!j.wfrn && k.wfrn === j.wfrn))))
   const last = fixes.sort((a, b) => (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt))[0]
   return { count: alike.filter((j) => j.id !== f.job.id).length, ...(last ? { lastFixed: { jobId: last.id, by: last.requester, at: last.endedAt ?? last.startedAt } } : {}) }
 }
 
-/** Whether this person may run it again: judged like the first request, `<service>:<verb>` on its resource. */
+/** Whether this person may run it again: what the request page's retry asks (./jobs retryTargetOf), judged like the first request. */
 function retryOf(data: MockData, s: RouteContext['session'], f: Failure): JobExplanation['retry'] {
-  if (!f.rt) return { allowed: true }
-  const d = authorize(data.directory, { userId: s.userId, accountId: s.accountId }, `${serviceOf(f.rt)}:${f.verb}`, f.job.wfrn ?? wfrnPatternOf(data, s, f.rt))
+  const target = retryTargetOf(data, s, f.job, data.console?.jobs[f.job.id])
+  const d = authorize(data.directory, { userId: s.userId, accountId: s.accountId }, target.action, target.resource)
   return d.allowed ? { allowed: true } : { allowed: false, denied: d.denied }
 }
 
