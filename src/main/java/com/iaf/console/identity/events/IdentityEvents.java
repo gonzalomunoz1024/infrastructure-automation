@@ -36,7 +36,8 @@ public final class IdentityEvents {
         QUOTA("quota", "QuotaChanged"),
         ACCESS_REQUEST("access-request", "AccessRequestChanged"),
         GUARDRAIL("guardrail", "GuardrailChanged"),
-        ACCESS_REVIEW("access-review", "AccessReviewChanged");
+        ACCESS_REVIEW("access-review", "AccessReviewChanged"),
+        ELEVATION("elevation", "ElevationChanged");
 
         private final String aggregate;
         private final String type;

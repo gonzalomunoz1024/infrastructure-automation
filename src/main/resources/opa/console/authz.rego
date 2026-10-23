@@ -179,13 +179,14 @@ first_permitted_allow(acct, p, c) := m[0] if {
 }
 
 # The statements of the user's roles: roles sorted by name, policies in role order, statements in order.
+# A role from a group is tried first, so `elevated` marks only what the time-boxed role alone allows.
 statements(acct, p) := [s |
 	some ri
 	role := role_names(acct, p)[ri]
 	s := statements_of_role(acct, role)[_]
 ]
 
-role_names(acct, p) := sort(group_roles(acct, p) | grant_roles(acct, p))
+role_names(acct, p) := array.concat(sort(group_roles(acct, p)), sort(grant_roles(acct, p) - group_roles(acct, p)))
 
 group_roles(acct, p) := {r |
 	some g in acct.users[p.userId].groups

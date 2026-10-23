@@ -23,6 +23,7 @@ import com.iaf.console.identity.authz.application.Snapshots;
 import com.iaf.console.identity.authz.ports.outbound.AuthzVersionPort;
 import com.iaf.console.identity.authz.ports.outbound.DecisionPort;
 import com.iaf.console.identity.common.IdentityProperties;
+import com.iaf.console.identity.elevations.ports.outbound.ElevationStore;
 import com.iaf.console.identity.iam.ports.outbound.GroupStore;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.iam.application.IamSupport;
@@ -54,8 +55,8 @@ public class AuthzConfiguration {
 
     @Bean
     public Compiler authzCompiler(AccountStore accounts, UserStore users, MembershipStore memberships, GroupStore groups, RoleStore roles,
-            PolicyStore policies, GuardrailStore guardrails, AuthzVersionPort versions) {
-        return new Compiler(accounts, users, memberships, groups, roles, policies, guardrails, versions);
+            PolicyStore policies, GuardrailStore guardrails, ElevationStore elevations, AuthzVersionPort versions) {
+        return new Compiler(accounts, users, memberships, groups, roles, policies, guardrails, elevations, versions);
     }
 
     @Bean

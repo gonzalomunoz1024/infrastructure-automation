@@ -20,6 +20,7 @@ import com.iaf.console.identity.accounts.adapters.memory.InMemoryAccountStore;
 import com.iaf.console.identity.accounts.domain.Account;
 import com.iaf.console.identity.authz.adapters.memory.InMemoryAuthzVersions;
 import com.iaf.console.identity.authz.domain.Compiled;
+import com.iaf.console.identity.elevations.adapters.memory.InMemoryElevationStore;
 import com.iaf.console.identity.events.IdentityChange;
 import com.iaf.console.identity.iam.adapters.memory.InMemoryGroupStore;
 import com.iaf.console.identity.iam.adapters.memory.InMemoryGuardrailStore;
@@ -51,7 +52,7 @@ class SnapshotsTest {
     private final InMemoryAuthzVersions versions = new InMemoryAuthzVersions();
     private final HeldGuardrails guardrails = new HeldGuardrails();
     private final Snapshots snapshots = new Snapshots(new Compiler(accounts, new InMemoryUserStore(), new InMemoryMembershipStore(), new InMemoryGroupStore(),
-            new InMemoryRoleStore(), new InMemoryPolicyStore(), guardrails, versions), versions, clock, TTL);
+            new InMemoryRoleStore(), new InMemoryPolicyStore(), guardrails, new InMemoryElevationStore(), versions), versions, clock, TTL);
 
     @Test
     void aChangeInThisProcessWhileACompilationRunsIsCompiledNext() {

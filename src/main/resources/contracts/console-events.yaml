@@ -133,6 +133,7 @@ channels:
       accessRequestChanged: { $ref: '#/components/messages/accessRequestChanged' }
       guardrailChanged: { $ref: '#/components/messages/guardrailChanged' }
       accessReviewChanged: { $ref: '#/components/messages/accessReviewChanged' }
+      elevationChanged: { $ref: '#/components/messages/elevationChanged' }
     bindings:
       kafka:
         topic: identity.changes
@@ -561,6 +562,18 @@ components:
             properties:
               type: { const: AccessReviewChanged }
               aggregate: { const: access-review }
+    elevationChanged:
+      name: ElevationChanged
+      title: An elevation or break-glass access was asked for, decided, ended or expired
+      summary: 'The snapshot is the elevation. Actions: `created` (pending, or active when a rule approved it at once or it is break-glass access), `approved`, `rejected`, `cancelled` (withdrawn while pending), `revoked` (ended early) and `expired`. The account''s authorization version moves with it; the BFF tells the person and the approvers and refreshes the person''s session, and the account''s trail shows it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: ElevationChanged }
+              aggregate: { const: elevation }
     budgetChanged:
       name: BudgetChanged
       title: A budget was created, changed or deleted
@@ -753,14 +766,14 @@ components:
         - type: object
           required: [data]
           properties:
-            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request, guardrail, access-review], description: The subject kind }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request, guardrail, access-review, elevation], description: The subject kind }
             aggregateId: { type: string, description: The subject id (the accountId for an account) }
             data:
               type: object
               required: [version, action]
               properties:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
-                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired, closed] }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired, closed, cancelled] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
     DriftField:
       type: object

@@ -26,11 +26,12 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal), `GET /v1/quota-rules` |
 | Guardrails | `GET/POST /v1/guardrails`, `GET/PATCH/DELETE /v1/guardrails/{guardrailId}` (internal), `GET .../guardrails` (the ones that apply to the account) |
 | Access reviews | `GET/POST .../access-reviews`, `GET .../access-reviews/{reviewId}`, `GET .../access-reviews/{reviewId}/items`, `POST .../access-reviews/{reviewId}/items/{itemId}:decide`, `POST .../access-reviews/{reviewId}:cancel` |
+| Elevations | `GET /v1/elevation-rules`, `GET/POST .../elevations`, `GET .../elevations/{elevationId}`, `POST .../elevations/{elevationId}:decide`, `POST .../elevations/{elevationId}:revoke`, `POST .../break-glass` (internal) |
 | Authorization | `POST /v1/authorize`, `POST .../policy-simulations`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `72485db` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `fce1187` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first).
 
@@ -63,7 +64,7 @@ to the hub first).
   `conditions` (`region`, `account`, `service`, `type`, `requester.user`, `requester.email`,
   `requester.group`, `tag.<name>`, `context.<name>`). Actions are validated against the platform's
   resource types and catalog plus the console's own services (`iam`, `account`, `quota`, `audit`,
-  `cost`, `budgets`, `search`, `access-request`, `access-review`). A deny wins; without an allow the decision says which managed
+  `cost`, `budgets`, `search`, `access-request`, `access-review`, `elevation`). A deny wins; without an allow the decision says which managed
   role would have allowed it (`requestable`, `suggestedRole`), so the console can offer an access
   request.
 - **Permission boundaries.** A role may name one of the account's policies as its `boundary`:
@@ -133,6 +134,33 @@ to the hub first).
   policies are). Every change publishes `AccessReviewChanged`
   (`created`; `updated` on each decision, with the item, and on cancel; `expired` when the due date
   closes it) with the campaign and its counts. The code is the `accessreviews` slice.
+- **Just-in-time elevation.** A person asks to hold one of the account's roles for a while
+  (`POST .../elevations` with `role`, `reason` and `durationMinutes`, 5 to 480, 60 by default;
+  `admin` reads as `account-admin`). The first auto-approval rule that covers it
+  (`console.identity.elevations.auto-approval`, served at `GET /v1/elevation-rules`; by default an
+  operator may be account-admin for up to two hours) approves it at once (`decidedBy`
+  `rule:<name>`); otherwise it waits, `pending`, for someone who may `elevation:decide` (its
+  `approvers` lists who may now, never the requester, who can never decide their own) and expires
+  undecided after `pending-for` (24 hours). One open ask or elevation per person and role (409
+  with it); a role the person holds through a group is a 400. While active the role decides as a
+  role from a group does, inside the guardrails and the role's boundary, after the person's own
+  roles, so a decision says `elevated` only when the time-boxed role alone allows it. It stops
+  deciding at `until` by itself (the compiled data carries `grants` with their `until`, and both
+  the evaluator and the Rego compare it with now); a sweep (`sweep-every` one minute) then stores
+  it `expired`. The person or an admin (`elevation:revoke`) ends it early (`revoked`; a pending ask
+  is `cancelled`), and a person who leaves the account loses theirs. Sign-in
+  (`POST /v1/principals:resolve`) adds the role to the account's `roles` and lists it in
+  `elevations` with its `until`, so the BFF refreshes a session on `ElevationChanged` and never
+  lets a token outlive it. The managed viewer and operator policies may ask (`elevation:create`)
+  and read their own; auditors read them all; account admins decide and revoke.
+- **Break-glass support access.** The BFF (`POST .../break-glass`, internal only) opens time-boxed
+  access for support or an emergency: a `reason`, a named `approvedBy` who is not the person, an
+  optional `ticket`, at most `break-glass-max-minutes` (240), `account-admin` by default. It is
+  the same record, of kind `break-glass`, active at once, and it works for people outside the
+  account: the account then appears in their sign-in with no groups. It ends like an elevation,
+  and closing the account ends every open one. Every change of either publishes
+  `ElevationChanged` (`created`, `approved`, `rejected`, `cancelled`, `revoked`, `expired`) on the
+  account's own trail. The code is the `elevations` slice.
 
 ## Accounts, keys, quotas, events
 
@@ -155,7 +183,7 @@ to the hub first).
   gives no one a membership, and marks an account `owningTeamMissing` while its owning team is not
   in the directory. `POST /v1/accounts/{accountId}:close` (internal, `{reason}`, 202) closes an
   account for good: every call in it is refused from then on (`account closed`) and sign-in leaves
-  it out; its usable access keys are revoked, its pending access requests expire and its open quota
+  it out; its usable access keys are revoked, its pending access requests expire, its open elevations and break-glass access end, and its open quota
   requests are withdrawn, each with its event, then `AccountChanged closed`. A user's `PATCH` of an
   account takes `account:update` (account admins), so only internal callers change a suspended or
   closed account; a `PATCH` never sets `closed` and no longer changes a closed account's status
@@ -187,7 +215,7 @@ to the hub first).
   approves it (it is moot); a lower limit leaves it open.
 - Every change appends an `identity.changes` event (`AccountChanged`, `UserChanged`,
   `GroupChanged`, `RoleChanged`, `PolicyChanged`, `AccessKeyChanged`, `QuotaChanged`,
-  `AccessRequestChanged`, `GuardrailChanged`, `AccessReviewChanged`) in the
+  `AccessRequestChanged`, `GuardrailChanged`, `AccessReviewChanged`, `ElevationChanged`) in the
   platform envelope: key `<type>:<accountId>:<subjectId>:<version>`, partition key the account id,
   `data: {version, action, snapshot}`. The outbox relay publishes to Kafka with the `kafka` profile.
   The outbox takes an event whose key it has seen for a replay, so every change moves its
@@ -237,7 +265,7 @@ tests run the real engine. CI also runs `opa check --strict` and gitleaks.
 ## Layout
 
 One slice per aggregate (`accounts`, `principals`, `iam`, `accesskeys`, `quotas`, `accessrequests`,
-`authz`), each with `domain` (pure), `application` (commands and queries), `ports/outbound` and
+`accessreviews`, `elevations`, `authz`), each with `domain` (pure), `application` (commands and queries), `ports/outbound` and
 `adapters` (`web`, `memory`, `mongo`, `platform`, ...), as the service kit's ArchUnit rules enforce.
 `common` holds auth, idempotency, paging, ids and the error bodies; `events` the outbox envelope;
 `demo` the seed.

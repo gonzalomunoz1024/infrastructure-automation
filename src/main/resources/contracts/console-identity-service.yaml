@@ -30,7 +30,9 @@ info:
     their names and policies; `owners` keeps the account-admin role and at least one member. Every
     managed role reads cost and budgets (`cost:get`, `cost:list`, `budgets:get`, `budgets:list`,
     decision 25); exporting the chargeback (`cost:export`) is `account-admin`'s and `auditor`'s,
-    and `budgets:create`, `budgets:update` and `budgets:delete` are `account-admin`'s alone. A
+    and `budgets:create`, `budgets:update` and `budgets:delete` are `account-admin`'s alone. Every
+    managed role but `auditor` may ask for an elevation (`elevation:create`); reading the account's
+    elevations is `account-admin`'s and `auditor`'s, deciding and revoking them `account-admin`'s. A
     release that changes a managed policy reaches the accounts made before it: at start the service
     replaces each managed policy of an account that is not closed which differs from the release's,
     in place, with a `PolicyChanged` of action `updated` by `svc:console-identity-service`. The
@@ -40,11 +42,11 @@ info:
 
     **Names and ids.** The console's own IAM records are wfrns too, in the `iam` service with an
     empty region (they live in no region) and kebab-case kinds: `user`, `group`, `role`, `policy`,
-    `access-key`, `quota`, `access-request`, as in
+    `access-key`, `quota`, `access-request`, `access-review`, `elevation`, as in
     `wfrn:wf:iam::123456789012:access-request/areq_01jbx9r2m4k9d3c8f5r6t1w0yd`; policies name them
     with patterns such as `wfrn:wf:iam::123456789012:access-request/*`. Ids are a prefix and a
     ULID: `user_`, `grp_`, `role_`, `pol_`, `ck_` (access keys), `qreq_` (quota requests), `areq_`
-    (access requests). A group's `roles` are served as role ids (input takes ids or names) and its
+    (access requests), `arev_` (access reviews), `elev_` (elevations). A group's `roles` are served as role ids (input takes ids or names) and its
     `members` as user ids; a user's `groups` are group names.
 
     **Versions.** Accounts, policies, roles, groups and users carry a `version` that grows by one
@@ -79,6 +81,8 @@ tags:
     description: 'The organization''s guardrails over every account''s roles, like AWS service control policies; written by the internal principal for an organization admin'
   - name: Access reviews
     description: Campaigns in which an account's admins keep or revoke who holds which group; what is left undecided expires at the due date
+  - name: Elevations
+    description: 'A role held for a while: a person asks with a reason and a rule or an account admin approves (just-in-time elevation), or an organization admin gives support or emergency access (break-glass); either ends at `until`'
   - name: Authorization
   - name: Internal
     description: For the console's own services (the `svc` claim) and OPA; a user's JWT answers 404
@@ -1425,6 +1429,203 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/elevation-rules:
+    get:
+      operationId: getElevationRules
+      summary: How long an elevation lasts, the rules that approve one at once, and the break-glass limit
+      description: 'For anyone signed in, so the console can say what is approved on the spot. An ask lasts `defaultMinutes` unless it names `durationMinutes` (at most `maxMinutes`). The first rule, in order, whose `roles` hold the role asked for, whose `requesterRoles` hold a role the requester has through a group of the account, and whose `maxMinutes` covers the duration approves it at once (decided by `rule:<name>`); an ask no rule approves waits for a person who may decide it (`elevation:decide`) and expires after `pendingFor` undecided. Break-glass access lasts at most `breakGlassMaxMinutes`.'
+      tags: [Elevations]
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ElevationRules' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/accounts/{accountId}/elevations:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listElevations
+      summary: An account's elevations and break-glass access
+      description: 'The newest first. A person always sees their own. Seeing the account''s needs `elevation:list` on `wfrn:wf:iam::{accountId}:elevation/*` (elevations are wfrns of kind `elevation`, ids `elev_` and a ULID), which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions`); anyone else sees their own only.'
+      tags: [Elevations]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ElevationStatus' }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [elevation, break-glass] }
+        - name: userId
+          in: query
+          description: The person it is for; whoever may list the account's
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Elevation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: requestElevation
+      summary: Ask to hold a role of the account for a while
+      description: 'A person asks with a reason (`elevation:create`, which every managed role but `auditor` grants). `role` is a role name of the account (`admin` reads as `account-admin`); 400 when it is unknown or the person holds it through a group already. One open ask or elevation per person and role: another answers 409 with the open one. A rule may approve it at once (`GET /v1/elevation-rules`): it is then `active` from now until `until`. Otherwise it is `pending`, with its `approvers` (who may decide it, never the requester), and expires undecided after `pendingFor`. An `ElevationChanged` event (subject `elevation`, action `created`) follows. While active the role decides for the person as a role from a group does, inside the organization''s guardrails and the role''s boundary, with `elevated` true on the decision, and `POST /v1/principals:resolve` lists it in the account''s `roles` and `elevations`. At `until` it stops deciding at once; a sweep every minute then stores it `expired`, with an `ElevationChanged` of action `expired`.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationInput' }
+      responses:
+        '201':
+          description: The elevation, active when a rule approved it, else pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The account's policies refuse `elevation:create`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same person has this role asked for or held already
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    get:
+      operationId: getElevation
+      summary: One elevation
+      description: 'The person it is for, or `elevation:get` on `wfrn:wf:iam::{accountId}:elevation/{elevationId}`.'
+      tags: [Elevations]
+      responses:
+        '200':
+          description: The elevation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Another person's, and the account's policies refuse `elevation:get`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    post:
+      operationId: decideElevation
+      summary: Approve or reject an ask for an elevation
+      description: 'Needs `elevation:decide` (the managed `account-admin` policy). Nobody decides their own: the requester is refused with a 403 whose `denied.reason` says so. Approving starts it now, `active` until now plus its `durationMinutes`; rejecting stores it `rejected`. Only a `pending` ask is decided: anything else (expired included) answers 409. An `ElevationChanged` of action `approved` or `rejected` follows.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationDecision' }
+      responses:
+        '200':
+          description: The elevation, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The requester deciding their own, or the account's policies refuse `elevation:decide`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:revoke:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    post:
+      operationId: revokeElevation
+      summary: End an ask or an elevation now
+      description: 'Ends a `pending` ask (`cancelled`) or an `active` elevation or break-glass access (`revoked`) now. The person it is for may always end their own; anyone else needs `elevation:revoke` (the managed `account-admin` policy), and the internal principal may. One already ended answers 409. An `ElevationChanged` of action `cancelled` or `revoked` follows. Removing the person from the account ends their elevations there, and closing the account ends all of them, the same way, by `svc:console-identity-service`.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationRevoke' }
+      responses:
+        '200':
+          description: The elevation, ended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Another person's, and the account's policies refuse `elevation:revoke`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/break-glass:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    post:
+      operationId: openBreakGlass
+      summary: Give a person support or emergency access to an account for a while
+      description: 'Internal principal only (a user''s JWT answers 404): the call an organization admin makes through the console. Gives `userId` (any console user, a member of the account or not) `role` (`account-admin` by default) for `durationMinutes` (at most 240, 60 by default), `active` from now, with a `reason` and the user who approved it (`approvedBy`, never the person themselves: 400). It is an elevation of kind `break-glass`: it decides as one does, inside the organization''s guardrails, is listed with the account''s elevations and in the person''s `POST /v1/principals:resolve` (an account they are no member of appears with no groups), publishes `ElevationChanged` (action `created`) on the account''s own trail, and ends at `until` or by `:revoke`; removing a member from the account leaves it. 404 for an unknown user; 400 for an unknown role or approver; 409 when the person is suspended or the account is not active, and 409 with the open one as the body when the same access (person, role, kind) is open.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BreakGlassInput' }
+      responses:
+        '201':
+          description: The break-glass access, active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same access is open (the body is the open one), or the person is suspended or the account not active
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Elevation'
+                  - $ref: '#/components/schemas/Error'
   /v1/accounts/{accountId}:close:
     parameters:
       - $ref: '#/components/parameters/AccountIdPath'
@@ -1436,8 +1637,10 @@ paths:
         stored with status `closed`, `closedAt` and `closeReason`, and from then on every call in it
         is refused (`account closed`) and sign-in leaves it out. Every usable access key of the
         account is revoked (`AccessKeyChanged revoked`), every pending access request expires
-        (`AccessRequestChanged expired`) and every open quota request is withdrawn (`QuotaChanged`),
-        then `AccountChanged closed` carries the closed account. Closing a closed account is a 409.
+        (`AccessRequestChanged expired`), every open quota request is withdrawn (`QuotaChanged`),
+        the open access review is cancelled (`AccessReviewChanged updated`) and every open elevation
+        ends (`ElevationChanged cancelled` or `revoked`), then `AccountChanged closed` carries the
+        closed account. Closing a closed account is a 409.
         The account's platform service account is left as it is, and its resources stay where they
         are.
       tags: [Accounts]
@@ -1505,6 +1708,12 @@ components:
       in: path
       required: true
       description: 'An access request (`areq_…`) or a quota request (`qreq_…`)'
+      schema: { type: string }
+    ElevationId:
+      name: elevationId
+      in: path
+      required: true
+      description: 'An elevation (`elev_…`)'
       schema: { type: string }
     QuotaKey:
       name: quotaKey
@@ -1648,9 +1857,13 @@ components:
           items: { type: string }
         roles:
           type: array
-          description: 'The managed role names the person holds there: viewer, operator, account-admin, auditor'
+          description: 'The managed role names the person holds there, through a group or for a while (an active elevation or break-glass access): viewer, operator, account-admin, auditor'
           items: { type: string }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        elevations:
+          type: array
+          description: 'The roles the person holds there for a while, each until its `until`, when it stops deciding whatever a token says, so a token the BFF signs should not outlive the earliest. An account the person is no member of appears with no groups when break-glass access is open in it. Absent when none'
+          items: { $ref: '#/components/schemas/HeldElevation' }
     User:
       type: object
       required: [userId, email, status, version]
@@ -2030,7 +2243,7 @@ components:
         suggestedRole: { type: string, description: 'When denied: the managed role that would allow it' }
         scope: { type: string, enum: [policy, boundary, guardrail], description: 'What decided: a role''s policy, a role''s permission boundary, or a guardrail' }
         guardrailId: { type: string, description: The guardrail whose deny statement decided }
-        elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group' }
+        elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group. The roles from groups are tried first, so it marks only what the time-boxed role alone allows' }
     AccessReviewInput:
       type: object
       properties:
@@ -2100,6 +2313,103 @@ components:
           properties:
             reviewId: { type: string, description: The open campaign }
         correlationId: { type: string }
+    ElevationStatus:
+      type: string
+      description: '`pending` waits for a person; `active` decides until `until`; `expired` is an active one past `until`, or a pending one past `pendingFor`, as served before the sweep stores it'
+      enum: [pending, active, rejected, cancelled, revoked, expired]
+    ElevationInput:
+      type: object
+      required: [role, reason]
+      properties:
+        role: { type: string, description: 'A role name of the account; `admin` reads as `account-admin`' }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+        durationMinutes: { type: integer, minimum: 5, maximum: 480, description: 'How long it lasts once approved: `defaultMinutes` by default, at most `maxMinutes` (`GET /v1/elevation-rules`)' }
+    ElevationDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    ElevationRevoke:
+      type: object
+      properties:
+        comment: { type: string, maxLength: 2000 }
+    BreakGlassInput:
+      type: object
+      required: [userId, reason, approvedBy]
+      properties:
+        userId: { type: string, description: The console user given access }
+        role: { type: string, description: 'A role name of the account; `account-admin` by default' }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+        durationMinutes: { type: integer, minimum: 5, maximum: 240, default: 60 }
+        approvedBy: { type: string, description: 'The console user who approved it (a user id), never `userId`' }
+        ticket: { type: string, maxLength: 200, description: The incident or support ticket, for the trail }
+    Elevation:
+      type: object
+      required: [elevationId, accountId, kind, user, role, reason, durationMinutes, status, requestedAt, requestedBy]
+      properties:
+        elevationId: { type: string, description: '`elev_` and a ULID' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        kind: { type: string, enum: [elevation, break-glass] }
+        user:
+          type: object
+          required: [userId]
+          description: The person it is for
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        ticket: { type: string }
+        durationMinutes: { type: integer }
+        status: { $ref: '#/components/schemas/ElevationStatus' }
+        requestedAt: { type: string, format: date-time }
+        requestedBy: { type: string, description: 'The person, or `svc:<name>` for break-glass access' }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string, description: 'Who approved or rejected it: a user, the rule that approved it at once (`rule:<name>`), or the approver of break-glass access' }
+        comment: { type: string, description: The decision's comment }
+        startsAt: { type: string, format: date-time, description: When it began to decide }
+        until: { type: string, format: date-time, description: When it stops deciding }
+        endedAt: { type: string, format: date-time, description: When it was cancelled or revoked }
+        endedBy: { type: string, description: 'Who ended it: a user, a service, or `svc:console-identity-service` when the person left the account or the account closed' }
+        endComment: { type: string }
+        approvers:
+          type: array
+          description: 'While pending: who may decide it (at most 100), never the requester'
+          items: { type: string }
+    HeldElevation:
+      type: object
+      required: [elevationId, role, kind, until]
+      properties:
+        elevationId: { type: string }
+        role: { type: string }
+        kind: { type: string, enum: [elevation, break-glass] }
+        until: { type: string, format: date-time }
+    ElevationRules:
+      type: object
+      required: [defaultMinutes, maxMinutes, pendingFor, breakGlassMaxMinutes, items]
+      properties:
+        defaultMinutes: { type: integer, description: How long an ask lasts when it names no duration }
+        maxMinutes: { type: integer, description: The longest an ask may last }
+        pendingFor: { type: string, description: 'An ISO 8601 duration (`PT24H`): how long an ask waits for a person before it expires' }
+        breakGlassMaxMinutes: { type: integer, description: The longest break-glass access may last }
+        items:
+          type: array
+          items:
+            type: object
+            required: [name, roles, requesterRoles, maxMinutes]
+            properties:
+              name: { type: string }
+              roles:
+                type: array
+                description: The role names it approves
+                items: { type: string }
+              requesterRoles:
+                type: array
+                description: The requester holds one of these role names through a group of the account
+                items: { type: string }
+              maxMinutes: { type: integer, description: The longest ask it approves }
     CloseAccount:
       type: object
       required: [reason]

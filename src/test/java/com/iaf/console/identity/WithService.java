@@ -63,6 +63,8 @@ abstract class WithService {
         registry.add("console.identity.auth.bundle-token", () -> BUNDLE_TOKEN);
         // the nightly group sync would touch every test's accounts at 02:00 UTC; the lifecycle flows run it on purpose
         registry.add("console.identity.lifecycle.group-sync.enabled", () -> "false");
+        // the elevation flows run the expiry sweep themselves, at the instants they choose
+        registry.add("console.identity.elevations.sweep-every", () -> "3650d");
     }
 
     private static ECKey generate() {

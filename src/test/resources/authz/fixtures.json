@@ -180,7 +180,8 @@
                     "cost:get",
                     "cost:list",
                     "access-request:create",
-                    "quota:request-increase"
+                    "quota:request-increase",
+                    "elevation:create"
                   ],
                   "resources": [
                     "wfrn:wf:*:*:123456789012:*"
@@ -188,7 +189,9 @@
                   "notActions": [
                     "access-request:get",
                     "access-request:list",
-                    "access-review:*"
+                    "access-review:*",
+                    "elevation:get",
+                    "elevation:list"
                   ]
                 }
               ]
@@ -213,7 +216,11 @@
                     "access-review:*",
                     "cost:export",
                     "budgets:create",
-                    "budgets:update"
+                    "budgets:update",
+                    "elevation:get",
+                    "elevation:list",
+                    "elevation:decide",
+                    "elevation:revoke"
                   ],
                   "resources": [
                     "wfrn:wf:*:*:123456789012:*"
@@ -1382,7 +1389,7 @@
       "version": 3
     },
     {
-      "name": "a role held for a while allows until it ends",
+      "name": "a role held for a while allows until it ends, after the roles from groups",
       "input": {
         "principal": {
           "userId": "usr_elevated",
@@ -1409,8 +1416,7 @@
         },
         {
           "allowed": true,
-          "role": "ops",
-          "elevated": true
+          "role": "reader"
         }
       ],
       "version": 3
@@ -1803,6 +1809,157 @@
           "role": "account-admin",
           "statement": "everything"
         },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        }
+      ]
+    },
+    {
+      "name": "viewers ask for an elevation but do not read the account's (notActions); auditors would",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "elevation:create",
+            "resource": "wfrn:wf:iam::123456789012:elevation/*"
+          },
+          {
+            "action": "elevation:list",
+            "resource": "wfrn:wf:iam::123456789012:elevation/*"
+          },
+          {
+            "action": "elevation:get",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "viewer",
+          "statement": "reads"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        }
+      ]
+    },
+    {
+      "name": "operators ask for an elevation but neither decide nor revoke one (notActions)",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "elevation:create",
+            "resource": "wfrn:wf:iam::123456789012:elevation/*"
+          },
+          {
+            "action": "elevation:decide",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          },
+          {
+            "action": "elevation:revoke",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "operator",
+          "statement": "changes"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "auditors read elevations, admins decide and revoke them",
+      "input": {
+        "principal": {
+          "userId": "usr_auditor",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "elevation:list",
+            "resource": "wfrn:wf:iam::123456789012:elevation/*"
+          },
+          {
+            "action": "elevation:get",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          },
+          {
+            "action": "elevation:decide",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "reads"
+        },
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "reads"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "admins decide and revoke elevations",
+      "input": {
+        "principal": {
+          "userId": "usr_admin",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "elevation:decide",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          },
+          {
+            "action": "elevation:revoke",
+            "resource": "wfrn:wf:iam::123456789012:elevation/elev_01jbx9r2m4k9d3c8f5r6t1w0yg"
+          }
+        ]
+      },
+      "expect": [
         {
           "allowed": true,
           "role": "account-admin",

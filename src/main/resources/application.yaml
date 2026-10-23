@@ -73,6 +73,20 @@ console:
         enabled: true
         cron: "0 0 2 * * *"
         zone: UTC
+    elevations:
+      # how long an ask lasts when it names none, and at most; break-glass access lasts at most 4 hours
+      default-minutes: 60
+      max-minutes: 480
+      break-glass-max-minutes: 240
+      # an ask nobody decided expires after this; the sweep also stores ended elevations expired
+      pending-for: 24h
+      sweep-every: 1m
+      # the first rule that covers the role, the person's roles and the duration approves an ask at once
+      auto-approval:
+        - name: operators-admin-two-hours
+          roles: [account-admin]
+          requester-roles: [operator]
+          max-minutes: 120
   outbox:
     relay:
       enabled: true

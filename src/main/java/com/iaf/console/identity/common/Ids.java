@@ -71,6 +71,11 @@ public final class Ids {
         return "arevi_" + ulid();
     }
 
+    /** A role held for a while: an elevation or break-glass access. */
+    public String elevation() {
+        return "elev_" + ulid();
+    }
+
     public String event() {
         return "evt_" + ulid();
     }

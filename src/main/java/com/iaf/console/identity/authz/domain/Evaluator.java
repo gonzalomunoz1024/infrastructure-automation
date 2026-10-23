@@ -2,6 +2,7 @@ package com.iaf.console.identity.authz.domain;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -68,8 +69,9 @@ public final class Evaluator {
             return new Decision(false, "outside the organization's guardrails", null, null, null, false, null, Decision.GUARDRAIL, null, null);
         }
         Set<String> groupRoles = groupRoles(account, user.groups());
-        TreeSet<String> roles = new TreeSet<>(groupRoles);
-        roles.addAll(grantRoles(user, now));
+        // a role from a group is tried first, so elevated marks only what the time-boxed role alone allows
+        List<String> roles = new ArrayList<>(groupRoles);
+        grantRoles(user, now).stream().filter(r -> !groupRoles.contains(r)).forEach(roles::add);
         List<Bound> statements = statementsOfRoles(account, roles);
         Bound deny = first(principal, user, check, statements, "deny");
         if (deny != null) {
@@ -131,12 +133,16 @@ public final class Evaluator {
         return groupRoles.contains(role) ? null : Boolean.TRUE;
     }
 
-    /** The statements of these groups' roles, in the order the Rego policy uses: roles sorted by name, policies in role order, statements in order. */
+    /**
+     * The statements of these groups' roles, in the order the Rego policy uses: roles sorted by name
+     * (a user's group roles, then the roles they hold for a while), policies in role order,
+     * statements in order.
+     */
     static List<Bound> statements(CompiledAccount account, List<String> groups) {
         return statementsOfRoles(account, new TreeSet<>(groupRoles(account, groups)));
     }
 
-    static List<Bound> statementsOfRoles(CompiledAccount account, TreeSet<String> roles) {
+    static List<Bound> statementsOfRoles(CompiledAccount account, Collection<String> roles) {
         List<Bound> bound = new ArrayList<>();
         for (String role : roles) {
             bound.addAll(statementsOfRole(account, role));

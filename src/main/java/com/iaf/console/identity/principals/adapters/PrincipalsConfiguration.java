@@ -13,6 +13,7 @@ import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.LifecycleProperties;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
+import com.iaf.console.identity.elevations.ports.outbound.ElevationStore;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.identity.iam.application.Memberships;
@@ -65,8 +66,8 @@ public class PrincipalsConfiguration {
 
     @Bean
     public PrincipalQueries principalQueries(UserStore users, MembershipStore memberships, GroupStore groups, RoleStore roles, AccountStore accounts,
-            AccessGuard guard, IamSupport support) {
-        return new PrincipalQueries(users, memberships, groups, roles, accounts, guard, support);
+            AccessGuard guard, IamSupport support, ElevationStore elevations, Clock clock) {
+        return new PrincipalQueries(users, memberships, groups, roles, accounts, guard, support, elevations, clock);
     }
 
     @Bean
