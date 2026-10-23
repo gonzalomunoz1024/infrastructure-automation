@@ -2,11 +2,14 @@ package com.iaf.console.identity.quotas.adapters.memory;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.iaf.console.identity.quotas.domain.QuotaOverride;
 import com.iaf.console.identity.quotas.domain.QuotaRequest;
 import com.iaf.console.identity.quotas.ports.outbound.QuotaStore;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
@@ -20,6 +23,7 @@ public final class InMemoryQuotaStore implements QuotaStore {
 
     private final Map<String, QuotaOverride> overrides = new ConcurrentSkipListMap<>();
     private final Map<String, QuotaRequest> requests = new ConcurrentSkipListMap<>();
+    private final Map<String, AtomicLong> changeVersions = new ConcurrentHashMap<>();
 
     @Override
     public Mono<QuotaOverride> upsert(QuotaOverride o) {
@@ -41,8 +45,10 @@ public final class InMemoryQuotaStore implements QuotaStore {
 
     @Override
     public Mono<QuotaRequest> insertRequest(QuotaRequest r) {
-        return Mono.fromSupplier(() -> {
-            requests.put(r.requestId(), r);
+        return Mono.fromCallable(() -> {
+            if (requests.putIfAbsent(r.requestId(), r) != null) {
+                throw new ConflictException("the request id exists");
+            }
             return r;
         });
     }
@@ -84,5 +90,10 @@ public final class InMemoryQuotaStore implements QuotaStore {
                     .toList();
             return Page.from(fetched, limit, r -> new Cursor(r.requestId(), r.requestId()));
         });
+    }
+
+    @Override
+    public Mono<Long> nextChangeVersion(AccountScope scope, String key) {
+        return Mono.fromSupplier(() -> changeVersions.computeIfAbsent(scope.accountId() + ":" + key, k -> new AtomicLong()).incrementAndGet());
     }
 }

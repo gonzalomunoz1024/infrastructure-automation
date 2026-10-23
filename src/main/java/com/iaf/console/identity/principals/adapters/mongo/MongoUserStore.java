@@ -1,6 +1,7 @@
 package com.iaf.console.identity.principals.adapters.mongo;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.bson.Document;
 
@@ -20,7 +21,7 @@ import com.mongodb.client.model.Sorts;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** Collection {@code users}: {@code _id} the user id, unique email, unique issuer and subject when linked. */
+/** Collection {@code users}: {@code _id} the user id, unique email (compared lower-cased), unique {@code identity} (issuer and subject) when linked. */
 public final class MongoUserStore implements UserStore, MongoIndexed {
 
     static final String COLLECTION = "users";
@@ -35,8 +36,7 @@ public final class MongoUserStore implements UserStore, MongoIndexed {
     public Mono<Void> ensureIndexes() {
         return mongo.indexes(COLLECTION, List.of(
                 new IndexModel(Indexes.ascending("email"), new IndexOptions().unique(true)),
-                new IndexModel(Indexes.ascending("issuer", "subject"), new IndexOptions().unique(true)
-                        .partialFilterExpression(Filters.and(Filters.exists("issuer"), Filters.type("issuer", "string"))))));
+                new IndexModel(Indexes.ascending("identity"), new IndexOptions().unique(true).sparse(true))));
     }
 
     @Override
@@ -60,13 +60,12 @@ public final class MongoUserStore implements UserStore, MongoIndexed {
 
     @Override
     public Mono<User> findByEmail(String email) {
-        return Mono.from(mongo.collection(COLLECTION).find(Filters.eq("email", email)).first()).map(d -> mongo.read(d, User.class));
+        return Mono.from(mongo.collection(COLLECTION).find(Filters.eq("email", lower(email))).first()).map(d -> mongo.read(d, User.class));
     }
 
     @Override
     public Mono<User> findByIssuerAndSubject(String issuer, String subject) {
-        return Mono.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("issuer", issuer), Filters.eq("subject", subject))).first())
-                .map(d -> mongo.read(d, User.class));
+        return Mono.from(mongo.collection(COLLECTION).find(Filters.eq("identity", identity(issuer, subject))).first()).map(d -> mongo.read(d, User.class));
     }
 
     @Override
@@ -80,10 +79,19 @@ public final class MongoUserStore implements UserStore, MongoIndexed {
     }
 
     private Document document(User u) {
-        Document d = new Document("_id", u.userId()).append("email", u.email()).append("status", u.status().name());
+        Document d = new Document("_id", u.userId()).append("email", lower(u.email())).append("status", u.status().name());
         if (u.issuer() != null) {
-            d.append("issuer", u.issuer()).append("subject", u.subject());
+            d.append("identity", identity(u.issuer(), u.subject()));
         }
         return d.append(Mongo.DOC, mongo.doc(u));
+    }
+
+    /** The linked identity as one indexed field (unique and sparse, so unlinked users do not collide). */
+    private static String identity(String issuer, String subject) {
+        return issuer + "|" + subject;
+    }
+
+    private static String lower(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
     }
 }

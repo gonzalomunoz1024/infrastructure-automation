@@ -13,6 +13,7 @@ import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.identity.iam.domain.Group;
+import com.iaf.console.identity.iam.domain.ManagedIam;
 import com.iaf.console.identity.iam.domain.Role;
 import com.iaf.console.identity.iam.ports.outbound.GroupStore;
 import com.iaf.console.identity.iam.ports.outbound.RoleStore;
@@ -78,7 +79,7 @@ public final class PrincipalQueries implements MembershipLookupPort {
                 }));
     }
 
-    /** The resolve answer: the user and every account they may use (closed accounts left out). */
+    /** The resolve answer: the user and every account they may use (closed accounts left out), with their group names and managed role names there. */
     public Mono<Resolution> resolution(User user) {
         return memberships.findByUser(user.userId())
                 .concatMap(m -> accounts.findById(m.accountId())
@@ -95,7 +96,7 @@ public final class PrincipalQueries implements MembershipLookupPort {
                                 for (String gid : m.groupIds()) {
                                     Group g = byId.get(gid);
                                     if (g != null) {
-                                        g.roles().stream().filter(roleNames::containsKey).map(roleNames::get).forEach(roleSet::add);
+                                        g.roles().stream().filter(roleNames::containsKey).map(roleNames::get).filter(ManagedIam::isManagedRole).forEach(roleSet::add);
                                     }
                                 }
                                 return new AccountMembership(a.accountId(), a.name(), groupNames, List.copyOf(roleSet), a.defaultRegion());

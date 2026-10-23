@@ -26,4 +26,11 @@ public interface QuotaStore {
     Mono<QuotaRequest> findOpenRequest(AccountScope scope, String key);
 
     Mono<Page<QuotaRequest>> listRequests(AccountScope scope, QuotaRequest.Status status, int limit, String after);
+
+    /**
+     * The next version of one quota's change events, from 1: a counter per account and key, so every
+     * {@code QuotaChanged} (a limit set, a request opened, decided or withdrawn) has its own event key
+     * and the outbox never takes one for a replay of another.
+     */
+    Mono<Long> nextChangeVersion(AccountScope scope, String key);
 }

@@ -4,12 +4,12 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /** A policy document of an account: a name and 1 to 200 statements. */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record Policy(String policyId, @JsonIgnore String accountId, String name, String description, List<Statement> statements, boolean builtIn, long version,
+public record Policy(String policyId, @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String accountId, String name, String description, List<Statement> statements, boolean builtIn, long version,
         Instant createdAt, Instant updatedAt) {
 
     public static final int MAX_STATEMENTS = 200;

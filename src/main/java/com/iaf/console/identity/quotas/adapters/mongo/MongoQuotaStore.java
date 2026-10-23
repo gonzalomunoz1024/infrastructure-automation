@@ -8,12 +8,14 @@ import org.bson.conversions.Bson;
 import com.iaf.console.identity.quotas.domain.QuotaOverride;
 import com.iaf.console.identity.quotas.domain.QuotaRequest;
 import com.iaf.console.identity.quotas.ports.outbound.QuotaStore;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.mongo.Mongo;
 import com.iaf.console.kit.mongo.MongoIndexed;
 import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
+import com.mongodb.MongoException;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.FindOneAndReplaceOptions;
 import com.mongodb.client.model.IndexModel;
@@ -25,7 +27,11 @@ import com.mongodb.client.model.Sorts;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** Collections {@code quota_overrides} ({@code _id} account and key) and {@code quota_requests} ({@code _id} the request id). */
+/**
+ * Collections {@code quota_overrides} ({@code _id} account and key) and {@code quota_requests}
+ * ({@code _id} the request id; the version beside the record, which never serves it); the change
+ * versions are sequences named {@code quota-changes:<accountId>:<key>}.
+ */
 public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
 
     static final String OVERRIDES = "quota_overrides";
@@ -65,26 +71,27 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
 
     @Override
     public Mono<QuotaRequest> insertRequest(QuotaRequest r) {
-        return Mono.from(mongo.collection(REQUESTS).insertOne(request(r))).thenReturn(r);
+        return Mono.from(mongo.collection(REQUESTS).insertOne(request(r))).thenReturn(r)
+                .onErrorMap(MongoException.class, e -> Mongo.duplicateKey(e) ? new ConflictException("the request id exists") : e);
     }
 
     @Override
     public Mono<QuotaRequest> updateRequest(QuotaRequest r, long expectedVersion) {
         Bson filter = Filters.and(Filters.eq("_id", r.requestId()), Filters.eq("version", expectedVersion));
         return Mono.from(mongo.collection(REQUESTS).findOneAndReplace(filter, request(r), new FindOneAndReplaceOptions().returnDocument(ReturnDocument.AFTER)))
-                .map(d -> mongo.read(d, QuotaRequest.class));
+                .map(this::readRequest);
     }
 
     @Override
     public Mono<QuotaRequest> findRequest(AccountScope scope, String requestId) {
         return Mono.from(mongo.collection(REQUESTS).find(Filters.and(Filters.eq("_id", requestId), Filters.eq("accountId", scope.accountId()))).first())
-                .map(d -> mongo.read(d, QuotaRequest.class));
+                .map(this::readRequest);
     }
 
     @Override
     public Mono<QuotaRequest> findOpenRequest(AccountScope scope, String key) {
         return Mono.from(mongo.collection(REQUESTS).find(Filters.and(Filters.eq("accountId", scope.accountId()), Filters.eq("key", key),
-                Filters.eq("status", QuotaRequest.Status.open.name()))).sort(Sorts.ascending("_id")).first()).map(d -> mongo.read(d, QuotaRequest.class));
+                Filters.eq("status", QuotaRequest.Status.open.name()))).sort(Sorts.ascending("_id")).first()).map(this::readRequest);
     }
 
     @Override
@@ -96,8 +103,19 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
         if (after != null) {
             filter = Filters.and(filter, Filters.gt("_id", CursorPaging.decode(after).id()));
         }
-        return Flux.from(mongo.collection(REQUESTS).find(filter).sort(Sorts.ascending("_id")).limit(limit + 1)).map(d -> mongo.read(d, QuotaRequest.class))
+        return Flux.from(mongo.collection(REQUESTS).find(filter).sort(Sorts.ascending("_id")).limit(limit + 1)).map(this::readRequest)
                 .collectList().map(fetched -> Page.from(fetched, limit, r -> new Cursor(r.requestId(), r.requestId())));
+    }
+
+    @Override
+    public Mono<Long> nextChangeVersion(AccountScope scope, String key) {
+        return mongo.nextSequence("quota-changes:" + scope.accountId() + ":" + key);
+    }
+
+    private QuotaRequest readRequest(Document d) {
+        Document doc = d.get(Mongo.DOC, Document.class);
+        doc.put("version", ((Number) d.get("version")).longValue());
+        return mongo.as(doc, QuotaRequest.class);
     }
 
     private Document request(QuotaRequest r) {

@@ -44,7 +44,7 @@ class InternalJwtsTest {
 
     @Test
     void verifiesAUserToken() {
-        String token = signer.user("usr_1", "123456789012", "global", List.of("owners", "members"), Duration.ofMinutes(5));
+        String token = signer.user("usr_1", "123456789012", "global", List.of("owners", "members"), List.of("account-admin", "operator"), Duration.ofMinutes(5));
         Caller caller = verifier.verify(token).block();
         assertThat(caller).isNotNull();
         assertThat(caller.isUser()).isTrue();
@@ -52,6 +52,8 @@ class InternalJwtsTest {
         assertThat(caller.accountId()).isEqualTo("123456789012");
         assertThat(caller.region()).isEqualTo("global");
         assertThat(caller.groups()).containsExactly("owners", "members");
+        assertThat(caller.roles()).containsExactly("account-admin", "operator");
+        assertThat(caller.isAccountAdmin()).isTrue();
         assertThat(caller.service()).isEqualTo("console-bff");
         assertThat(caller.actor()).isEqualTo("usr_1");
         assertThat(caller.covers("123456789012")).isTrue();
@@ -67,6 +69,22 @@ class InternalJwtsTest {
         assertThat(caller.service()).isEqualTo("console-state-service");
         assertThat(caller.actor()).isEqualTo("svc:console-state-service");
         assertThat(caller.covers("210987654321")).isTrue();
+        assertThat(caller.roles()).isEmpty();
+        assertThat(caller.isAccountAdmin()).isFalse();
+    }
+
+    @Test
+    void aTokenWithoutRolesCarriesNone() {
+        String token = signer.sign(new com.nimbusds.jwt.JWTClaimsSet.Builder().subject("usr_2").claim("acct", "123456789012").claim("region", "global")
+                .claim("groups", List.of("owners")).claim("svc", "console-bff"), Duration.ofMinutes(5));
+        Caller caller = verifier.verify(token).block();
+        assertThat(caller).isNotNull();
+        assertThat(caller.groups()).containsExactly("owners");
+        assertThat(caller.roles()).as("a group name never stands in for a role").isEmpty();
+        assertThat(caller.isAccountAdmin()).isFalse();
+        String odd = signer.sign(new com.nimbusds.jwt.JWTClaimsSet.Builder().subject("usr_2").claim("acct", "123456789012").claim("roles", "account-admin")
+                .claim("svc", "console-bff"), Duration.ofMinutes(5));
+        assertThat(verifier.verify(odd).block().roles()).as("roles that are not a list of strings are none").isEmpty();
     }
 
     @Test
@@ -76,11 +94,11 @@ class InternalJwtsTest {
         InternalJwts.Signer unknownKey = new InternalJwts.Signer(generate("k2"), "console-bff", "console-identity-service", CLOCK);
         InternalJwts.Signer earlier = new InternalJwts.Signer(key, "console-bff", "console-identity-service", Clock.offset(CLOCK, Duration.ofHours(-2)));
 
-        refuses(otherIssuer.user("usr_1", "123456789012", "global", List.of(), Duration.ofMinutes(5)), "another issuer");
-        refuses(otherAudience.user("usr_1", "123456789012", "global", List.of(), Duration.ofMinutes(5)), "another audience");
-        refuses(unknownKey.user("usr_1", "123456789012", "global", List.of(), Duration.ofMinutes(5)), "does not trust");
-        refuses(earlier.user("usr_1", "123456789012", "global", List.of(), Duration.ofMinutes(5)), "expired");
-        refuses(signer.user("usr_1", "123456789012", "global", List.of(), Duration.ofHours(2)), "longer than allowed");
+        refuses(otherIssuer.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another issuer");
+        refuses(otherAudience.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another audience");
+        refuses(unknownKey.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "does not trust");
+        refuses(earlier.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "expired");
+        refuses(signer.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofHours(2)), "longer than allowed");
         refuses(signer.sign(new JWTClaimsSet.Builder().subject("usr_1").claim("acct", "12"), Duration.ofMinutes(5)), "not an account id");
         refuses(signer.sign(new JWTClaimsSet.Builder().subject("usr_1"), Duration.ofMinutes(5)), "needs svc");
         refuses(signer.sign(new JWTClaimsSet.Builder().claim("acct", "123456789012"), Duration.ofMinutes(5)), "needs a subject");

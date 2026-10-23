@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.quotas.application.QuotaCommands;
+import com.iaf.console.identity.quotas.application.QuotaDecision;
 import com.iaf.console.identity.quotas.application.QuotaQueries;
 import com.iaf.console.identity.quotas.application.RequestIncrease;
 import com.iaf.console.identity.quotas.application.SetQuota;
@@ -60,6 +61,12 @@ public class QuotasController {
     @GetMapping("/v1/accounts/{accountId}/quota-requests/{requestId}")
     public Mono<QuotaRequest> getRequest(Caller caller, @PathVariable String accountId, @PathVariable String requestId) {
         return queries.getRequest(caller, accountId, requestId);
+    }
+
+    @PostMapping("/v1/accounts/{accountId}/quota-requests/{requestId}:decide")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public Mono<QuotaRequest> decide(Caller caller, @PathVariable String accountId, @PathVariable String requestId, @RequestBody QuotaDecision body) {
+        return commands.decide(caller, accountId, requestId, body);
     }
 
     @DeleteMapping("/v1/accounts/{accountId}/quota-requests/{requestId}")

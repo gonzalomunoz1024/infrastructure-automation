@@ -4,12 +4,12 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /** A role of an account: a named set of policies a group holds. */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record Role(String roleId, @JsonIgnore String accountId, String name, String description, List<String> policies, boolean builtIn, long version,
+public record Role(String roleId, @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String accountId, String name, String description, List<String> policies, boolean builtIn, long version,
         Instant createdAt, Instant updatedAt) {
 
     public Role {

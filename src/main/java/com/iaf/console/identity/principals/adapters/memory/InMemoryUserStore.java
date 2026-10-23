@@ -43,7 +43,7 @@ public final class InMemoryUserStore implements UserStore {
     }
 
     private boolean taken(User user) {
-        return users.values().stream().anyMatch(u -> !u.userId().equals(user.userId()) && (u.email().equals(user.email())
+        return users.values().stream().anyMatch(u -> !u.userId().equals(user.userId()) && (u.email().equalsIgnoreCase(user.email())
                 || user.issuer() != null && user.issuer().equals(u.issuer()) && user.subject().equals(u.subject())));
     }
 
@@ -54,7 +54,7 @@ public final class InMemoryUserStore implements UserStore {
 
     @Override
     public Mono<User> findByEmail(String email) {
-        return Mono.justOrEmpty(users.values().stream().filter(u -> u.email().equals(email)).findFirst());
+        return Mono.justOrEmpty(users.values().stream().filter(u -> u.email().equalsIgnoreCase(email == null ? "" : email.trim())).findFirst());
     }
 
     @Override

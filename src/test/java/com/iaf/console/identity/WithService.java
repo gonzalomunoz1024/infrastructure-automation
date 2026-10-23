@@ -73,9 +73,23 @@ abstract class WithService {
         return "Bearer " + SIGNER.service("console-bff", Duration.ofMinutes(10));
     }
 
-    /** A user acting in an account. */
+    /** A user acting in an account, with the managed roles the managed groups carry, as the BFF derives them from the membership. */
     static String bearer(String userId, String accountId, List<String> groups) {
-        return "Bearer " + SIGNER.user(userId, accountId, "global", groups, Duration.ofMinutes(10));
+        return bearer(userId, accountId, groups, groups.stream().map(WithService::managedRole).filter(java.util.Objects::nonNull).toList());
+    }
+
+    static String bearer(String userId, String accountId, List<String> groups, List<String> roles) {
+        return "Bearer " + SIGNER.user(userId, accountId, "global", groups, roles, Duration.ofMinutes(10));
+    }
+
+    private static String managedRole(String group) {
+        return switch (group) {
+            case "owners" -> "account-admin";
+            case "members" -> "operator";
+            case "viewers" -> "viewer";
+            case "auditors" -> "auditor";
+            default -> null;
+        };
     }
 
     static int next() {

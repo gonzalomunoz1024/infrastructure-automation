@@ -4,7 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
@@ -14,8 +14,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * sweep.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record AccessKey(String keyId, @JsonIgnore String accountId, String userId, String description, @JsonIgnore String secretHash,
-        @JsonIgnore String previousSecretHash, Instant graceUntil, Instant revokedAt, Instant createdAt, Instant expiresAt, Instant lastUsedAt, long version) {
+public record AccessKey(String keyId, @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String accountId, String userId, String description, @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String secretHash,
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String previousSecretHash, Instant graceUntil, Instant revokedAt, Instant createdAt, Instant expiresAt, Instant lastUsedAt, long version) {
 
     /** How long the previous secret part keeps working after a rotation. */
     public static final Duration ROTATION_GRACE = Duration.ofMinutes(10);

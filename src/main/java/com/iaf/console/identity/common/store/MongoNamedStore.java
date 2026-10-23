@@ -63,7 +63,7 @@ public final class MongoNamedStore<T> {
         Bson filter = Filters.and(Filters.eq("_id", keys.id(record)), Filters.eq("accountId", keys.accountId(record)), Filters.eq("version", expectedVersion));
         return Mono.from(mongo.collection(collection).findOneAndReplace(filter, document(record, extraFields),
                         new FindOneAndReplaceOptions().returnDocument(ReturnDocument.AFTER)))
-                .map(d -> mongo.read(d, type))
+                .map(this::read)
                 .onErrorMap(MongoException.class, e -> Mongo.duplicateKey(e) ? new ConflictException("a " + what + " named '" + keys.name(record) + "' exists") : e);
     }
 
@@ -74,12 +74,12 @@ public final class MongoNamedStore<T> {
 
     public Mono<T> find(AccountScope scope, String id) {
         return Mono.from(mongo.collection(collection).find(Filters.and(Filters.eq("_id", id), Filters.eq("accountId", scope.accountId()))).first())
-                .map(d -> mongo.read(d, type));
+                .map(this::read);
     }
 
     public Mono<T> findByName(AccountScope scope, String name) {
         return Mono.from(mongo.collection(collection).find(Filters.and(Filters.eq("accountId", scope.accountId()), Filters.eq("name", name))).first())
-                .map(d -> mongo.read(d, type));
+                .map(this::read);
     }
 
     public Mono<Page<T>> list(AccountScope scope, int limit, String after, Bson extraFilter) {
@@ -92,22 +92,22 @@ public final class MongoNamedStore<T> {
             filter = Filters.and(filter, Filters.gt("_id", cursor.id()));
         }
         return Flux.from(mongo.collection(collection).find(filter).sort(Sorts.ascending("_id")).limit(limit + 1))
-                .map(d -> mongo.read(d, type))
+                .map(this::read)
                 .collectList()
                 .map(fetched -> Page.from(fetched, limit, r -> new Cursor(keys.id(r), keys.id(r))));
     }
 
     public Flux<T> findAll(AccountScope scope) {
         return Flux.from(mongo.collection(collection).find(Filters.eq("accountId", scope.accountId())).sort(Sorts.ascending("_id")))
-                .map(d -> mongo.read(d, type));
+                .map(this::read);
     }
 
     public Flux<T> findWhere(Bson filter) {
-        return Flux.from(mongo.collection(collection).find(filter).sort(Sorts.ascending("accountId", "_id"))).map(d -> mongo.read(d, type));
+        return Flux.from(mongo.collection(collection).find(filter).sort(Sorts.ascending("accountId", "_id"))).map(this::read);
     }
 
     public Flux<T> findEverything() {
-        return Flux.from(mongo.collection(collection).find().sort(Sorts.ascending("accountId", "_id"))).map(d -> mongo.read(d, type));
+        return Flux.from(mongo.collection(collection).find().sort(Sorts.ascending("accountId", "_id"))).map(this::read);
     }
 
     public Mongo mongo() {
@@ -116,6 +116,13 @@ public final class MongoNamedStore<T> {
 
     public String collection() {
         return collection;
+    }
+
+    /** The record: {@code accountId} is write-only on the records (the API never shows it), so it comes from the field beside {@code doc}. */
+    private T read(Document d) {
+        Document doc = d.get(Mongo.DOC, Document.class);
+        doc.put("accountId", d.getString("accountId"));
+        return mongo.as(doc, type);
     }
 
     private Document document(T record, Document extraFields) {

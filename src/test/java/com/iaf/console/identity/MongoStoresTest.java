@@ -180,7 +180,8 @@ class MongoStoresTest {
 
         Policy p = Policy.create("pol_1", ACCOUNT, "no-deletes", "No deletes", List.of(Statement.deny("s0", List.of("*:delete"), List.of("wfrn:wf:*"))), false, NOW);
         policies.insert(p).block();
-        assertThatThrownBy(() -> policies.insert(Policy.create("pol_2", ACCOUNT, "no-deletes", null, List.of(), false, NOW))).isInstanceOf(ConflictException.class);
+        assertThatThrownBy(() -> policies.insert(Policy.create("pol_2", ACCOUNT, "no-deletes", null, List.of(), false, NOW)).block())
+                .isInstanceOf(ConflictException.class);
         assertThat(policies.insert(Policy.create("pol_3", OTHER, "no-deletes", null, List.of(), false, NOW)).block()).as("names are unique per account").isNotNull();
         assertThat(policies.find(SCOPE, "pol_1").block()).isEqualTo(p);
         assertThat(policies.find(OTHER_SCOPE, "pol_1").block()).isNull();
@@ -279,12 +280,18 @@ class MongoStoresTest {
         assertThat(store.findOpenRequest(SCOPE, "resources.vm").block()).isEqualTo(r);
         assertThat(store.findOpenRequest(SCOPE, "resources.db").block()).isNull();
         assertThat(store.listRequests(SCOPE, QuotaRequest.Status.open, 10, null).block().items()).containsExactly(r);
-        QuotaRequest approved = r.decided(QuotaRequest.Status.approved, "svc:console-bff", null, NOW.plusSeconds(1));
+        QuotaRequest approved = r.approved("svc:console-bff", 150, "150 for now", NOW.plusSeconds(1));
         assertThat(store.updateRequest(approved, 1).block()).isEqualTo(approved);
         assertThat(store.updateRequest(approved, 1).block()).isNull();
         assertThat(store.findOpenRequest(SCOPE, "resources.vm").block()).isNull();
         assertThat(store.listRequests(SCOPE, QuotaRequest.Status.approved, 10, null).block().items()).containsExactly(approved);
         assertThat(store.listRequests(SCOPE, null, 10, null).block().items()).containsExactly(approved);
+        assertThat(store.findRequest(SCOPE, "qreq_1").block().grantedLimit()).isEqualTo(150);
+        assertThat(store.findRequest(SCOPE, "qreq_1").block().version()).isEqualTo(2);
+        assertThat(store.nextChangeVersion(SCOPE, "resources.vm").block()).isEqualTo(1);
+        assertThat(store.nextChangeVersion(SCOPE, "resources.vm").block()).isEqualTo(2);
+        assertThat(store.nextChangeVersion(SCOPE, "resources.db").block()).as("one counter per key").isEqualTo(1);
+        assertThat(store.nextChangeVersion(OTHER_SCOPE, "resources.vm").block()).as("and per account").isEqualTo(1);
     }
 
     @Test

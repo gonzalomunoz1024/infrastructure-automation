@@ -3,7 +3,7 @@ package com.iaf.console.identity.authz.domain;
 /**
  * The one wildcard rule the Java evaluator and the Rego policy share: OPA's {@code glob.match}
  * with no delimiters, where {@code *} matches any run of characters ({@code :} and {@code /}
- * included) and {@code ?} one character. Policies never contain {@code [} or {@code {}, so the
+ * included) and {@code ?} one character. Policies never contain <code>[</code> or <code>&#123;</code>, so the
  * two agree on every pattern a policy can hold.
  */
 public final class Globs {

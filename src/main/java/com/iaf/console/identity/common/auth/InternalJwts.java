@@ -23,11 +23,13 @@ import com.nimbusds.jwt.SignedJWT;
 import reactor.core.publisher.Mono;
 
 /**
- * The console's internal JWT, as the BFF signs it (ES256, {@code kid} in the header): {@code iss},
- * {@code aud}, {@code sub} (the console user id, or the service id on a service token), {@code acct}
- * (the account a user acts in; absent on a service token), {@code region}, {@code groups}, {@code svc}
- * (the calling service), {@code iat} and {@code exp}. {@link Verifier} checks one against the JWKS,
- * {@link Signer} makes one for tests and the demo.
+ * The console's internal JWT, as the BFF signs it (ES256, {@code kid} in the header, verified against
+ * its JWKS): {@code iss}, {@code aud}, {@code sub} (the console user id, or the service id on a
+ * service token), {@code acct} (the account a user acts in; absent on a service token),
+ * {@code region}, {@code groups} (the person's group names there), {@code roles} (the managed role
+ * names they hold there, from the membership this service serves), {@code svc} (the calling
+ * service), {@code iat}, {@code exp} and optionally {@code name} and {@code email}. {@link Verifier}
+ * checks one against the JWKS, {@link Signer} makes one for tests and the demo.
  */
 public final class InternalJwts {
 
@@ -118,13 +120,17 @@ public final class InternalJwts {
             if (!AccountScope.isAccountId(account)) {
                 throw new UnauthenticatedException("the token's acct is not an account id");
             }
-            List<String> groups;
+            return Caller.user(subject, account, region, strings(set, "groups"), strings(set, "roles"), service, text(set, "name"), text(set, "email"));
+        }
+
+        /** A string-list claim; empty when absent or not a list of strings. */
+        private static List<String> strings(JWTClaimsSet set, String claim) {
             try {
-                groups = set.getStringListClaim("groups");
+                List<String> values = set.getStringListClaim(claim);
+                return values == null ? List.of() : values;
             } catch (ParseException e) {
-                groups = List.of();
+                return List.of();
             }
-            return Caller.user(subject, account, region, groups, service, text(set, "name"), text(set, "email"));
         }
 
         private static String text(JWTClaimsSet set, String claim) {
@@ -158,10 +164,10 @@ public final class InternalJwts {
             return key.toPublicJWK();
         }
 
-        /** A user's token for one account. */
-        public String user(String userId, String accountId, String region, List<String> groups, Duration lifetime) {
+        /** A user's token for one account: their group names and managed role names there. */
+        public String user(String userId, String accountId, String region, List<String> groups, List<String> roles, Duration lifetime) {
             return sign(new JWTClaimsSet.Builder().subject(userId).claim("acct", accountId).claim("region", region).claim("groups", groups)
-                    .claim("svc", "console-bff"), lifetime);
+                    .claim("roles", roles).claim("svc", "console-bff"), lifetime);
         }
 
         /** A service's token: the internal principal. */

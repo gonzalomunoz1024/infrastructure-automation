@@ -92,11 +92,12 @@ public final class MongoAccessKeyStore implements AccessKeyStore, MongoIndexed {
     }
 
     private AccessKey read(Document d) {
+        // the account and the hashes are write-only on the record (never served), so they travel in their own fields
         Document doc = d.get(Mongo.DOC, Document.class);
-        AccessKey key = mongo.as(doc, AccessKey.class);
-        // the hashes are @JsonIgnore on the record, so they travel in their own fields
-        return new AccessKey(key.keyId(), d.getString("accountId"), key.userId(), key.description(), d.getString("secretHash"), d.getString("previousSecretHash"),
-                key.graceUntil(), key.revokedAt(), key.createdAt(), key.expiresAt(), key.lastUsedAt(), key.version());
+        doc.put("accountId", d.getString("accountId"));
+        doc.put("secretHash", d.getString("secretHash"));
+        doc.put("previousSecretHash", d.getString("previousSecretHash"));
+        return mongo.as(doc, AccessKey.class);
     }
 
     private Document document(AccessKey k) {

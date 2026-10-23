@@ -379,7 +379,10 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(raised.get("limit").asInt()).isEqualTo(200);
         assertThat(raised.get("source").asText()).isEqualTo("override");
         assertThat(raised.has("pendingRequestId")).isFalse();
-        assertThat(call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK).get("status").asText()).isEqualTo("approved");
+        JsonNode moot = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
+        assertThat(moot.get("status").asText()).as("a limit at or above the ask approves the request").isEqualTo("approved");
+        assertThat(moot.get("grantedLimit").asInt()).isEqualTo(200);
+        assertThat(moot.has("version")).as("the version is never served").isFalse();
 
         JsonNode approvedView = call(GET, s.base() + "/quota-requests/" + requestId, viewer, null, OK);
         assertThat(approvedView.get("decidedBy").asText()).isEqualTo("svc:console-bff");
@@ -401,12 +404,74 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(refused.get("denied").get("action").asText()).isEqualTo("quota:set");
         send(DELETE, s.base() + "/quota-requests/" + thirdId, viewer, null, Map.of()).expectStatus().isNoContent();
         assertThat(call(GET, s.base() + "/quota-requests/" + thirdId, s.owner(), null, OK).get("status").asText()).isEqualTo("withdrawn");
-        // a limit set below the ask rejects the request
+        // a limit set below the ask leaves the request open; the platform team rejects it with a comment
         JsonNode fourth = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 500, "reason", "need many more databases"), ACCEPTED);
+        String fourthId = fourth.get("requestId").asText();
         call(PUT, quotas + "/resources.db", internal(), Map.of("limit", 50), OK);
-        JsonNode rejected = call(GET, s.base() + "/quota-requests/" + fourth.get("requestId").asText(), viewer, null, OK);
+        assertThat(call(GET, s.base() + "/quota-requests/" + fourthId, viewer, null, OK).get("status").asText()).isEqualTo("open");
+        String decideFourth = s.base() + "/quota-requests/" + fourthId + ":decide";
+        call(POST, decideFourth, s.owner(), Map.of("decision", "reject"), NOT_FOUND);
+        call(POST, decideFourth, internal(), Map.of("decision", "maybe"), BAD_REQUEST);
+        call(POST, decideFourth, internal(), Map.of("decision", "approve", "limit", 0), BAD_REQUEST);
+        call(POST, decideFourth, internal(), Map.of("decision", "reject", "comment", "x".repeat(2001)), BAD_REQUEST);
+        JsonNode rejected = call(POST, decideFourth, internal(), Map.of("decision", "reject", "comment", "500 databases is more than the region holds"),
+                ACCEPTED);
         assertThat(rejected.get("status").asText()).isEqualTo("rejected");
+        assertThat(rejected.get("comment").asText()).contains("region");
         assertThat(rejected.get("decidedBy").asText()).isEqualTo("svc:console-bff");
+        assertThat(rejected.get("decidedAt").asText()).isNotBlank();
+        assertThat(rejected.has("grantedLimit")).isFalse();
+        assertThat(call(GET, quotas + "/resources.db", viewer, null, OK).get("limit").asInt()).as("a rejection leaves the limit").isEqualTo(50);
+        call(POST, decideFourth, internal(), Map.of("decision", "approve"), CONFLICT);
+        // approving grants a limit that may differ from the ask, set as PUT sets it
+        JsonNode fifth = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 400, "reason", "need many more databases"), ACCEPTED);
+        String decideFifth = s.base() + "/quota-requests/" + fifth.get("requestId").asText() + ":decide";
+        JsonNode granted = call(POST, decideFifth, internal(), Map.of("decision", "approve", "limit", 300, "comment", "300 for now"), ACCEPTED);
+        assertThat(granted.get("status").asText()).isEqualTo("approved");
+        assertThat(granted.get("grantedLimit").asInt()).isEqualTo(300);
+        assertThat(granted.get("requestedLimit").asInt()).isEqualTo(400);
+        assertThat(granted.get("comment").asText()).isEqualTo("300 for now");
+        JsonNode db = call(GET, quotas + "/resources.db", viewer, null, OK);
+        assertThat(db.get("limit").asInt()).isEqualTo(300);
+        assertThat(db.has("pendingRequestId")).isFalse();
+        call(POST, decideFifth, internal(), Map.of("decision", "reject"), CONFLICT);
+        call(DELETE, s.base() + "/quota-requests/" + fifth.get("requestId").asText(), viewer, null, CONFLICT);
+        call(POST, s.base() + "/quota-requests/qreq_nope:decide", internal(), Map.of("decision", "reject"), NOT_FOUND);
+        // jobs-per-minute: an approval writes the platform's bucket too, and keeps a burst that still covers the limit
+        JsonNode jobsAsk = call(POST, quotas + "/jobs-per-minute:request-increase", viewer, Map.of("limit", 200, "reason", "the nightly batch needs more"),
+                ACCEPTED);
+        assertThat(jobsAsk.get("currentLimit").asInt()).isEqualTo(120);
+        call(POST, s.base() + "/quota-requests/" + jobsAsk.get("requestId").asText() + ":decide", internal(), Map.of("decision", "approve"), ACCEPTED);
+        JsonNode jobsNow = call(GET, quotas + "/jobs-per-minute", s.owner(), null, OK);
+        assertThat(jobsNow.get("limit").asInt()).as("the platform's bucket moved").isEqualTo(200);
+        assertThat(jobsNow.get("burst").asInt()).isEqualTo(240);
+
+        // every change is its own QuotaChanged: the quota as served, the request it was about, one version per change
+        List<EventEnvelope> quotaEvents = outbox.after(0, 100_000).filter(e -> s.accountId().equals(e.partitionKey())).map(OutboxEntry::event)
+                .filter(e -> "QuotaChanged".equals(e.type())).collectList().block();
+        assertThat(quotaEvents).isNotNull();
+        assertThat(quotaEvents).extracting(EventEnvelope::key).doesNotHaveDuplicates();
+        List<EventEnvelope> dbEvents = quotaEvents.stream().filter(e -> "resources.db".equals(e.aggregateId())).toList();
+        assertThat(dbEvents).extracting(e -> e.data().get("action").asText())
+                .containsExactly("updated", "updated", "updated", "updated", "rejected", "updated", "approved");
+        assertThat(dbEvents).extracting(e -> e.data().get("version").asLong()).containsExactly(1L, 2L, 3L, 4L, 5L, 6L, 7L);
+        assertThat(dbEvents.get(0).aggregate()).isEqualTo("quota");
+        assertThat(dbEvents.get(2).data().get("snapshot").get("pendingRequestId").asText()).isEqualTo(fourthId);
+        assertThat(dbEvents.get(3).data().get("snapshot").has("request")).as("a limit set with no decision carries no request").isFalse();
+        JsonNode rejectedSnapshot = dbEvents.get(4).data().get("snapshot");
+        assertThat(rejectedSnapshot.get("key").asText()).isEqualTo("resources.db");
+        assertThat(rejectedSnapshot.get("limit").asInt()).isEqualTo(50);
+        assertThat(rejectedSnapshot.has("pendingRequestId")).isFalse();
+        assertThat(rejectedSnapshot.get("request").get("status").asText()).isEqualTo("rejected");
+        assertThat(rejectedSnapshot.get("request").get("requestedBy").asText()).isEqualTo(mia);
+        assertThat(rejectedSnapshot.get("request").has("version")).isFalse();
+        JsonNode approvedSnapshot = dbEvents.get(6).data().get("snapshot");
+        assertThat(approvedSnapshot.get("limit").asInt()).isEqualTo(300);
+        assertThat(approvedSnapshot.get("request").get("grantedLimit").asInt()).isEqualTo(300);
+        assertThat(quotaEvents.stream().filter(e -> "resources.vm".equals(e.aggregateId())).map(e -> e.data().get("action").asText()).toList())
+                .containsExactly("updated", "approved");
+        assertThat(quotaEvents.stream().filter(e -> "jobs-per-minute".equals(e.aggregateId())).map(e -> e.data().get("action").asText()).toList())
+                .containsExactly("updated", "updated", "approved");
         call(GET, quotas + "/nonsense", s.owner(), null, NOT_FOUND);
         call(GET, s.base() + "/quota-requests/qreq_nope", s.owner(), null, NOT_FOUND);
         assertThat(texts(call(GET, quotas, s.owner(), null, OK).get("items"), "key")).contains("resources.vm");
@@ -786,7 +851,7 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode mia = call(POST, "/v1/principals:resolve", internal(), Map.of("issuer", DemoSeed.ISSUER, "subject", "mia"), OK);
         assertThat(mia.get("user").get("userId").asText()).isEqualTo("user_mia");
         assertThat(strings(mia.get("accounts").get(0).get("groups"))).containsExactlyInAnyOrder("viewers", "compute-approvers");
-        assertThat(strings(mia.get("accounts").get(0).get("roles"))).containsExactlyInAnyOrder("viewer", "approver");
+        assertThat(strings(mia.get("accounts").get(0).get("roles"))).as("roles are the managed role names only").containsExactly("viewer");
         JsonNode ana = call(POST, "/v1/principals:resolve", internal(), Map.of("issuer", DemoSeed.ISSUER, "subject", "ana"), OK);
         assertThat(strings(ana.get("accounts").get(0).get("groups"))).containsExactlyInAnyOrder("members", "viewers");
         assertThat(strings(ana.get("accounts").get(0).get("roles"))).containsExactlyInAnyOrder("operator", "viewer");

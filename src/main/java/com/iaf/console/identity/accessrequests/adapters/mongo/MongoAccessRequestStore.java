@@ -8,12 +8,14 @@ import org.bson.conversions.Bson;
 
 import com.iaf.console.identity.accessrequests.domain.AccessRequest;
 import com.iaf.console.identity.accessrequests.ports.outbound.AccessRequestStore;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.mongo.Mongo;
 import com.iaf.console.kit.mongo.MongoIndexed;
 import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
+import com.mongodb.MongoException;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.FindOneAndReplaceOptions;
 import com.mongodb.client.model.IndexModel;
@@ -45,7 +47,8 @@ public final class MongoAccessRequestStore implements AccessRequestStore, MongoI
 
     @Override
     public Mono<AccessRequest> insert(AccessRequest r) {
-        return Mono.from(mongo.collection(COLLECTION).insertOne(document(r))).thenReturn(r);
+        return Mono.from(mongo.collection(COLLECTION).insertOne(document(r))).thenReturn(r)
+                .onErrorMap(MongoException.class, e -> Mongo.duplicateKey(e) ? new ConflictException("the request id exists") : e);
     }
 
     @Override

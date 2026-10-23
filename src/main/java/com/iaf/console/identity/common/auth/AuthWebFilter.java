@@ -102,10 +102,13 @@ public final class AuthWebFilter implements WebFilter, Ordered {
         if (account == null || !AccountScope.isAccountId(account.trim())) {
             return Mono.error(new UnauthenticatedException("the dev header X-Account must name a twelve-digit account"));
         }
-        String groupsHeader = headers.getFirst("X-Groups");
-        List<String> groups = groupsHeader == null || groupsHeader.isBlank() ? List.of()
-                : Arrays.stream(groupsHeader.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
-        return Mono.just(Caller.user(user.trim(), account.trim(), callRegion, groups, service == null ? "dev" : service.trim(), null, null));
+        return Mono.just(Caller.user(user.trim(), account.trim(), callRegion, names(headers.getFirst("X-Groups")), names(headers.getFirst("X-Roles")),
+                service == null ? "dev" : service.trim(), null, null));
+    }
+
+    /** A comma-separated dev header as names. */
+    private static List<String> names(String header) {
+        return header == null || header.isBlank() ? List.of() : Arrays.stream(header.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
     }
 
     private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {

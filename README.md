@@ -23,19 +23,26 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Principals | `POST /v1/principals:resolve` (internal: the BFF at sign-in) |
 | Users, groups, roles, policies | `GET/POST .../users`, `GET/PATCH/DELETE .../users/{userId}`; the same for `groups`, `roles` and `policies` (`PUT` replaces a policy) |
 | Access keys | `GET/POST .../access-keys`, `GET/DELETE .../access-keys/{keyId}`, `POST .../access-keys/{keyId}:rotate` |
-| Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase` |
+| Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal) |
 | Authorization | `POST /v1/authorize`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
-`POST .../access-requests/{requestId}:decide`) and quota requests (`GET/DELETE .../quota-requests/{requestId}`)
-are part of the contract since hub `e8992fb`; nothing is served beyond it (`ContractCoverageTest`
-fails on an operation the contract lacks, so a new one goes to the hub first).
+`POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
+pin is hub `9edd017`; nothing is served beyond it (`ContractCoverageTest` fails on an operation the
+contract lacks, so a new one goes to the hub first).
 
 ## How it decides
 
-- **Principals.** The BFF calls with an internal JWT (`iss console-bff`, `aud console-identity-service`,
-  ES256 against the configured JWKS, at most `max-lifetime` long). A user token carries `acct`,
-  `sub` (the console user id), `groups` and `region`; a service token carries `svc` and no account.
+- **Principals.** The BFF signs the internal JWT (`iss console-bff`, `aud console-identity-service`,
+  ES256 with a `kid`, verified against its JWKS, at most `max-lifetime` long). A user token carries
+  `acct`, `sub` (the console user id), `region`, `groups` (group names) and `roles` (the managed
+  role names, from the membership `principals:resolve` serves); a service token carries `svc` and
+  no account. The caller keeps both lists, but this service decides from the live membership and
+  policies, not from the token: the managed `account-admin` policy allows everything, so whoever
+  holds `account-admin` passes every admin check here, leaving `owners` counts at once even while
+  an older token still lists the role, and no check tests a group name. `AccountMembership.roles` lists managed role names
+  only (a custom role shows through its group). The demo's dev headers are `X-User`, `X-Account`,
+  `X-Groups` and `X-Roles`.
   A user never sees another account: anything outside their accounts is a 404, never a 403.
   Service principals (the BFF, the state service) are allowed everything in their own calls.
 - **Managed IAM.** Every account gets four built-in roles, `viewer`, `operator`, `account-admin`
@@ -80,14 +87,23 @@ fails on an operation the contract lacks, so a new one goes to the hub first).
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the
   bucket too), `access-keys` counts usable keys (default 50), `resources.<type>` defaults to 100
   (used counts arrive from the state service later). Users request increases (one open request
-  per key, answered as a `QuotaRequest` with `currentLimit` and `requestedLimit`); the requester
-  or an account admin withdraws one (`DELETE`, 204); the platform team decides by setting the
-  limit (internal `PUT`): at or above the ask approves the request, below rejects it.
+  per key, answered as a `QuotaRequest` with `currentLimit` and `requestedLimit`); the requester,
+  an account admin (`quota:set`) or the internal principal withdraws one (`DELETE`, 204). The
+  platform team decides with the internal `:decide` (`{decision, limit?, comment?}`): approving
+  sets the limit granted (the ask by default, possibly less or more) exactly as `PUT` does,
+  keeping an override's burst while it still covers the limit, and records `grantedLimit`;
+  rejecting leaves the limit and records the comment. An internal `PUT` at or above an open ask
+  approves it (it is moot); a lower limit leaves it open.
 - Every change appends an `identity.changes` event (`AccountChanged`, `UserChanged`,
   `GroupChanged`, `RoleChanged`, `PolicyChanged`, `AccessKeyChanged`, `QuotaChanged`,
   `AccessRequestChanged`) in the
   platform envelope: key `<type>:<accountId>:<subjectId>:<version>`, partition key the account id,
   `data: {version, action, snapshot}`. The outbox relay publishes to Kafka with the `kafka` profile.
+  The outbox takes an event whose key it has seen for a replay, so every change moves its
+  subject's version. A `QuotaChanged` has its own counter per account and key (a limit set and a
+  request opened, decided or withdrawn each move it); its snapshot is the quota as served plus,
+  when the change is about one, the `request`, and its action is `approved` or `rejected` when a
+  request was decided (by `:decide`, or a moot `PUT`) and `updated` otherwise.
 - Writes take `If-Match` (a version, bare or quoted; 409 when stale) and `Idempotency-Key` (a replay
   answers the first response with `Idempotent-Replay: true`; another body under the same key is 409).
 - Pages are `{items, next}`, `limit` 1 to 200, 50 by default.
