@@ -1,0 +1,16 @@
+# build output
+build/
+.gradle/
+out/
+*.log
+
+# local state
+.idea/
+.vscode/
+*.iml
+.env
+.env.local
+.kotlin/
+
+# agent worktrees
+.claude/
