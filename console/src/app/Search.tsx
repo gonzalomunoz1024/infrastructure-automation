@@ -8,6 +8,7 @@ import { hrefOfVisit } from '../lib/personal'
 import { useRecentVisits } from '../pages/personal/usePersonal'
 import { pathOfWfrn, useConsole } from './console'
 import { useRefusal } from './Refusal'
+import { useCopilot } from './copilot/context'
 import { createPath, navigate, pathFor, resourcePath, type Route } from './router'
 import { TOOLS, toolPath } from './tools'
 
@@ -17,7 +18,7 @@ import { TOOLS, toolPath } from './tools'
  * on a resource's page, the type's actions on it), the pages and the settings (appearance,
  * account, region, sign out), plus resources from the BFF's search index as you type and any
  * wfrn pasted whole. An action runs the same decision as its button: a refused one opens the
- * refusal instead.
+ * refusal instead. A question of two words or more can go to the copilot as it was typed.
  */
 
 const GROUPS = ['Recent', 'Resources', 'Services', 'Resource types', 'Actions', 'Pages', 'Settings']
@@ -37,6 +38,7 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
   const toast = useToast()
   const { mode, setMode } = useTheme()
   const accounts = useQuery(['accounts', session.user.userId], () => bff.accounts())
+  const askCopilot = useCopilot().open
 
   const items = useMemo<PaletteItem[]>(() => {
     const out: PaletteItem[] = []
@@ -141,6 +143,8 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
         if (to) out.push({ id: `wfrn-${needle}`, group: 'Resources', label: needle, hint: 'open by wfrn', icon: 'link', run: () => navigate(to) })
       }
       if (needle.length < 2) return out
+      // two words or more may be a question: the copilot takes it as typed
+      if (/\S\s+\S/.test(needle)) out.push({ id: 'copilot-ask', group: 'Copilot', label: `Ask the copilot: ${needle}`, icon: 'sparkles', run: () => askCopilot({ intent: 'ask', message: needle }) })
       const page = await bff.search({ q: needle, limit: 8 }).catch(() => null)
       for (const hit of page?.items ?? []) {
         const parts = partsOfWfrn(hit.wfrn)
@@ -150,7 +154,7 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       }
       return out
     },
-    [types],
+    [types, askCopilot],
   )
 
   return <CommandPalette onClose={onClose} items={items} groups={GROUPS} search={search} placeholder="Search resources, services, actions and settings…" emptyMessage="Nothing matches. Try a name, a wfrn, a type or an action." />
