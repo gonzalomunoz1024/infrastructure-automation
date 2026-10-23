@@ -93,7 +93,10 @@ public class DriftConfiguration {
     @Bean
     public ObserveBudget observeBudget(DriftProperties properties) {
         DriftProperties.BudgetSettings b = properties.drift().budget();
-        return new ObserveBudget(b.observePerMinute(), b.burst(), b.accountShare());
+        Map<String, ObserveBudget.Limit> providers = new LinkedHashMap<>();
+        b.providers().forEach((provider, p) -> providers.put(provider, new ObserveBudget.Limit(
+                p.observePerMinute() == null ? b.observePerMinute() : p.observePerMinute(), p.burst() == null ? b.burst() : p.burst())));
+        return new ObserveBudget(b.observePerMinute(), b.burst(), b.accountShare(), providers);
     }
 
     @Bean

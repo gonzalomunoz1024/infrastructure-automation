@@ -53,8 +53,9 @@ import reactor.core.scheduler.Schedulers;
  * due or not, so one walk serves the due resources of all 64 shards and three tiers; it is kept in
  * the walk store, held by one turn at a time (the other shards leave the list's due resources to
  * it) and goes on from its cursor when a turn lets it go (the budget, a 429, the turn's slice of
- * walking). Batches of 100 through {@code resources:observe} are filled across the shard's groups,
- * per provider and region. The budget paces the reads: a short wait is sat out, a longer one leaves
+ * walking). Batches through {@code resources:observe} (100, or the provider's burst when smaller,
+ * since the platform counts a read per resource) are filled across the shard's groups, per provider
+ * and region. The budget paces the reads: a short wait is sat out, a longer one leaves
  * the rest for a later turn, and a 429 empties the bucket for the platform's Retry-After. A due
  * resource a complete walk did not return, and that the walk did not read earlier, is not found.
  * Resources imported from discovery are unknown to the platform's registry: one walk of the type's
@@ -236,7 +237,7 @@ public final class ShardScanner {
                     return Plan.done(ScanReport.empty());
                 }
                 long estimatedDue = (long) due.size() * settings.shards();
-                if (w.underway() || w.worthWalking(estimatedDue, now, tiers, t.interval(), settings.pageSize(), settings.batchSize(), settings.listThreshold())) {
+                if (w.underway() || w.worthWalking(estimatedDue, now, tiers, t.interval(), settings.pageSize(), settings.listThreshold())) {
                     return Plan.walk(group, due, sliceEnd -> listWalk(group, t, due, w, holder, sliceEnd));
                 }
                 return Plan.batch(due, t);
@@ -509,7 +510,10 @@ public final class ShardScanner {
 
     // the batch read
 
-    /** Batches of the turn's resources to batch, filled across their groups per provider and region: an observe batch may name any wfrns. */
+    /**
+     * The turn's resources to batch, in batches filled across their groups per provider and region
+     * (an observe batch may name any wfrns), each at most the provider's burst.
+     */
     private Mono<ScanReport> batchAll(List<Pending> pool) {
         if (pool.isEmpty()) {
             return Mono.just(ScanReport.empty());
@@ -520,8 +524,10 @@ public final class ShardScanner {
         }
         List<List<Pending>> chunks = new ArrayList<>();
         for (List<Pending> bucket : byBucket.values()) {
-            for (int i = 0; i < bucket.size(); i += settings.batchSize()) {
-                chunks.add(bucket.subList(i, Math.min(bucket.size(), i + settings.batchSize())));
+            // the platform takes a read per resource of a batch from the provider's bucket: a batch larger than its burst would be refused part way
+            int size = Math.min(settings.batchSize(), budget.limitOf(bucket.get(0).type().provider()).burst());
+            for (int i = 0; i < bucket.size(); i += size) {
+                chunks.add(bucket.subList(i, Math.min(bucket.size(), i + size)));
             }
         }
         return Flux.fromIterable(chunks).concatMap(this::batch).reduce(ScanReport.empty(), ScanReport::plus);
@@ -532,7 +538,7 @@ public final class ShardScanner {
         String region = chunk.get(0).watch().region();
         List<Watch> watched = chunk.stream().map(Pending::watch).toList();
         Instant now = clock.instant();
-        Optional<Duration> wait = budget.acquire(provider, region, null, now);
+        Optional<Duration> wait = budget.acquire(provider, region, null, now, chunk.size());
         if (wait.isPresent()) {
             if (wait.get().compareTo(MAX_PAUSE) <= 0) {
                 return Mono.delay(wait.get(), time).then(Mono.defer(() -> batch(chunk)));

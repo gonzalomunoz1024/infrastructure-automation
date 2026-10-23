@@ -115,16 +115,16 @@ public record Walk(
 
     /**
      * Whether to walk the list now rather than read its due resources in batches, by what each costs
-     * the observe budget: a walk is a page per {@code pageSize} resources of the list, a batch a call
-     * per {@code batchSize} resources due (batches are filled across lists). {@code estimatedDue} is
-     * the list's resources due now across the shards (a shard holds an even share of them, so its own
-     * count times the shard count). A list never walked to the end is walked once at least
+     * the observe budget, which counts provider reads: a walk is a read per page of {@code pageSize}
+     * resources of the list, a batch a read per resource in it. {@code estimatedDue} is the list's
+     * resources due now across the shards (a shard holds an even share of them, so its own count
+     * times the shard count). A list never walked to the end is walked once at least
      * {@code listThreshold} are due; after that, its last walk's count gives its size and, by tier,
-     * how many come due together, so a list with a few hot resources in many warm ones has the hot
-     * ones read in batches between hourly walks, and a list that is all hot (production) is walked on
-     * the hot tier's interval.
+     * how many come due together, so a list with only a handful due (a few hot resources among many
+     * warm ones) has them read in batches, and the list is walked when its pages cost no more than
+     * its due resources would.
      */
-    public boolean worthWalking(long estimatedDue, Instant now, TierRules tiers, Duration typeInterval, int pageSize, int batchSize, int listThreshold) {
+    public boolean worthWalking(long estimatedDue, Instant now, TierRules tiers, Duration typeInterval, int pageSize, int listThreshold) {
         if (estimatedDue <= 0) {
             return false;
         }
@@ -134,7 +134,6 @@ public record Walk(
         long size = Math.max(1, size());
         long due = Math.min(size, Math.max(estimatedDue, dueBy(now, tiers, typeInterval)));
         long pages = (size + pageSize - 1) / pageSize;
-        // batches are filled across lists, so the due resources cost a fraction of a call each
-        return pages * batchSize <= due;
+        return pages <= due;
     }
 }

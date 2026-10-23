@@ -52,7 +52,7 @@ public record DriftProperties(
             shards = shards == null || shards < 1 ? 64 : shards;
             tiers = tiers == null ? new TierSettings(null, null, null, null, null, null) : tiers;
             scan = scan == null ? new ScanSettings(null, null, null, null, null, null, null) : scan;
-            budget = budget == null ? new BudgetSettings(null, null, null) : budget;
+            budget = budget == null ? new BudgetSettings(null, null, null, null) : budget;
             loop = loop == null ? new LoopSettings(null, null) : loop;
             sync = sync == null ? new SyncSettings(null, null, null) : sync;
             follower = follower == null ? new FollowerSettings(null) : follower;
@@ -92,13 +92,21 @@ public record DriftProperties(
         }
     }
 
-    /** The local pacing of provider reads, the platform's own bucket mirrored (P-09). */
-    public record BudgetSettings(Integer observePerMinute, Integer burst, Double accountShare) {
+    /**
+     * The local pacing of provider reads, the platform's own bucket mirrored (P-09); a provider whose
+     * {@code spec.limits} raise its rate on the platform gets the same rate under {@code providers}.
+     */
+    public record BudgetSettings(Integer observePerMinute, Integer burst, Double accountShare, Map<String, ProviderBudget> providers) {
         public BudgetSettings {
             observePerMinute = observePerMinute == null ? 300 : Math.max(1, observePerMinute);
             burst = burst == null ? 50 : Math.max(1, burst);
             accountShare = accountShare == null ? 0.25 : Math.max(0.01, Math.min(1.0, accountShare));
+            providers = providers == null ? Map.of() : Map.copyOf(providers);
         }
+    }
+
+    /** One provider's observe rate and burst; a missing one is the default's. */
+    public record ProviderBudget(Integer observePerMinute, Integer burst) {
     }
 
     /** The in-process scan loop (off under the temporal profile). */

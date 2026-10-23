@@ -98,7 +98,7 @@ public final class ScanLoad {
                 pageLatency, batchLatency);
 
         PlatformCalls calls = new PlatformCalls(START, hours, estate.groups().size());
-        EstatePlatform platform = new EstatePlatform(estate, time, clock, pageLatency, batchLatency, new ObserveBudget(platformPerMinute, burst, 1.0), calls);
+        EstatePlatform platform = new EstatePlatform(estate, time, clock, pageLatency, batchLatency, new ObserveBudget(platformPerMinute, burst, accountShare), calls);
         AtomicLong stateCalls = new AtomicLong();
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         DriftMetrics metrics = new DriftMetrics(registry);

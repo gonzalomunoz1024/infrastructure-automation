@@ -30,7 +30,8 @@ import reactor.core.scheduler.Scheduler;
  * same over every account's group of the type and environment, a batch one result per wfrn. Every
  * provider answers what the watch list wants (no drift), after a latency on the virtual clock. The
  * platform's own bucket per provider and region (P-09: 5 reads a second unless the provider sets
- * more) answers 429 with Retry-After when it is empty, so a scan that outruns it is seen.
+ * more) and its account share for a list that names the account, counting a read per page and per
+ * resource of a batch as the platform's fake does, answers 429 with Retry-After when it is empty.
  */
 final class EstatePlatform {
 
@@ -71,7 +72,7 @@ final class EstatePlatform {
     }
 
     private Mono<ObserveListPage> observeList(String type, ObserveListRequest request) {
-        Optional<Mono<ObserveListPage>> refused = refuse();
+        Optional<Mono<ObserveListPage>> refused = refuse(request.account(), 1);
         if (refused.isPresent()) {
             return refused.get();
         }
@@ -96,7 +97,7 @@ final class EstatePlatform {
     }
 
     private Mono<ObserveListPage> discover(String type, DiscoverRequest request) {
-        Optional<Mono<ObserveListPage>> refused = refuse();
+        Optional<Mono<ObserveListPage>> refused = refuse(null, 1);
         if (refused.isPresent()) {
             return refused.get();
         }
@@ -142,7 +143,8 @@ final class EstatePlatform {
     }
 
     private Mono<ObserveBatchResult> observeResources(ObserveBatchRequest request) {
-        Optional<Mono<ObserveBatchResult>> refused = refuse();
+        // as the platform does, a read per resource of the batch
+        Optional<Mono<ObserveBatchResult>> refused = refuse(null, request.wfrns().size());
         if (refused.isPresent()) {
             return refused.get();
         }
@@ -155,7 +157,7 @@ final class EstatePlatform {
     }
 
     private Mono<ObserveResult> observeOne(String wfrn) {
-        Optional<Mono<ObserveResult>> refused = refuse();
+        Optional<Mono<ObserveResult>> refused = refuse(null, 1);
         if (refused.isPresent()) {
             return refused.get();
         }
@@ -174,8 +176,8 @@ final class EstatePlatform {
                 null, wfrn);
     }
 
-    private <T> Optional<Mono<T>> refuse() {
-        Optional<Duration> wait = limit.acquire(Estate.PROVIDER, Estate.REGION, null, clock.instant());
+    private <T> Optional<Mono<T>> refuse(String account, int reads) {
+        Optional<Duration> wait = limit.acquire(Estate.PROVIDER, Estate.REGION, account, clock.instant(), reads);
         if (wait.isEmpty()) {
             return Optional.empty();
         }

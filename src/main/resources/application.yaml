@@ -45,6 +45,7 @@ console:
       observe-per-minute: 300   # the platform's observe bucket per provider and region (P-09)
       burst: 50
       account-share: 0.25
+      providers: {}             # <provider>: { observe-per-minute, burst }, as its spec.limits raise them
     loop:
       enabled: true
       interval: 30s
