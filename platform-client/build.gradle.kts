@@ -14,7 +14,7 @@ dependencies {
     api(libs.spring.webflux)
     implementation(libs.jackson.datatype.jsr310)
     implementation(libs.reactor.netty.http)
-    implementation(libs.nimbus.jose.jwt)
+    api(libs.nimbus.jose.jwt)
     implementation("org.slf4j:slf4j-api")
 
     // the contract test every platform (the fake and the real one) is run through
@@ -25,5 +25,5 @@ dependencies {
     testFixturesImplementation(libs.nimbus.jose.jwt)
 
     testImplementation(libs.jackson.dataformat.yaml)
-    testImplementation(libs.reactor.test)
+    testImplementation(libs.bundles.spring.test)
 }
