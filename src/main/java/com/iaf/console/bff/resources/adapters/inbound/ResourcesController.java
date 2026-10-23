@@ -23,6 +23,8 @@ import com.iaf.console.bff.resources.application.Resources;
 import com.iaf.console.bff.resources.domain.ActivityEntry;
 import com.iaf.console.bff.resources.domain.BatchAccepted;
 import com.iaf.console.bff.resources.domain.BatchInput;
+import com.iaf.console.bff.resources.domain.BatchPreview;
+import com.iaf.console.bff.resources.domain.BlastRadius;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
@@ -94,6 +96,11 @@ public class ResourcesController {
                 .map(accepted -> ResponseEntity.status(HttpStatus.ACCEPTED).body(accepted));
     }
 
+    @PostMapping(path = "/console/v1/r/" + TYPE + ":batch:preview", consumes = "application/json", produces = "application/json")
+    public Mono<BatchPreview> previewBatch(@PathVariable("type") String type, @RequestBody BatchInput body, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> resources.previewBatch(session, type, body));
+    }
+
     @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}", produces = "application/json")
     public Mono<ResponseEntity<ResourceView>> get(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn,
             @RequestHeader(name = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch, ServerWebExchange exchange) {
@@ -148,6 +155,12 @@ public class ResourcesController {
     @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/lineage", produces = "application/json")
     public Mono<LineageView> lineage(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn, ServerWebExchange exchange) {
         return CurrentSession.required(exchange).flatMap(session -> resources.lineage(session, type, wfrn));
+    }
+
+    @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/blast-radius", produces = "application/json")
+    public Mono<BlastRadius> blastRadius(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn,
+            @RequestParam(name = "depth", required = false) Integer depth, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> resources.blastRadius(session, type, wfrn, depth));
     }
 
     @PutMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/tags", consumes = "application/json", produces = "application/json")

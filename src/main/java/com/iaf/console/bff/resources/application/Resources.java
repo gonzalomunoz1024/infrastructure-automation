@@ -4,8 +4,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -26,12 +26,16 @@ import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.ActivityEntry;
 import com.iaf.console.bff.resources.domain.BatchAccepted;
 import com.iaf.console.bff.resources.domain.BatchInput;
+import com.iaf.console.bff.resources.domain.BatchPreview;
+import com.iaf.console.bff.resources.domain.BlastRadius;
+import com.iaf.console.bff.resources.domain.DependentsExistException;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
 import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.resources.domain.LineageView;
 import com.iaf.console.bff.resources.domain.ListSorts;
+import com.iaf.console.bff.resources.domain.PlatformStates;
 import com.iaf.console.bff.resources.domain.PreviewView;
 import com.iaf.console.bff.resources.domain.ResourceRef;
 import com.iaf.console.bff.resources.domain.ResourceView;
@@ -66,6 +70,8 @@ import com.iaf.console.platform.model.BatchContext;
 import com.iaf.console.platform.model.CatalogEntry;
 import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.platform.model.Lineage;
+import com.iaf.console.platform.model.PolicyDecision;
+import com.iaf.console.platform.model.PolicyRule;
 import com.iaf.console.platform.model.Resource;
 import com.iaf.console.platform.model.RolloutPolicy;
 import com.iaf.console.wfrn.Wfrn;
@@ -93,12 +99,7 @@ public class Resources {
     private static final int RECENT_JOBS = 10;
     private static final int MAX_QUERY = 256;
     private static final int HYDRATE_CONCURRENCY = 16;
-    private static final Map<String, String> PLATFORM_STATES = Map.ofEntries(
-            Map.entry("building", StateResource.PENDING), Map.entry("pending", StateResource.PENDING), Map.entry("creating", StateResource.PENDING),
-            Map.entry("ready", StateResource.ACTIVE), Map.entry("active", StateResource.ACTIVE), Map.entry("running", StateResource.ACTIVE),
-            Map.entry("deprecated", StateResource.ACTIVE), Map.entry("updating", StateResource.UPDATING),
-            Map.entry("deleting", StateResource.DELETING), Map.entry("retired", StateResource.DELETED),
-            Map.entry("deleted", StateResource.DELETED), Map.entry("failed", StateResource.FAILED));
+    private static final int RADIUS_CONCURRENCY = 8;
 
     private final Types types;
     private final Access access;
@@ -108,10 +109,11 @@ public class Resources {
     private final PlatformProperties platform;
     private final StatePort state;
     private final SearchPort search;
+    private final BlastRadii radii;
     private final ObjectMapper json;
 
     public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, ObjectMapper json) {
+            StatePort state, SearchPort search, BlastRadii radii, ObjectMapper json) {
         this.types = types;
         this.access = access;
         this.sessions = sessions;
@@ -120,6 +122,7 @@ public class Resources {
         this.platform = platform;
         this.state = state;
         this.search = search;
+        this.radii = radii;
         this.json = json;
     }
 
@@ -312,6 +315,7 @@ public class Resources {
                             throw new ConflictException("the resource is " + s.resource().state());
                         }
                     }))
+                    .then(delete ? refuseDependents(session, s.resource()) : Mono.empty())
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
                         Map<String, Object> input = inputFor(action, entry, body, s.resource());
@@ -334,6 +338,12 @@ public class Resources {
         });
     }
 
+    /**
+     * The platform's preview of a verb on the resource. Before a delete or a destructive verb it
+     * carries the resource's blast radius; a delete of a resource that has live dependents also
+     * carries the {@code dependents.exist} deny. A delete whose workflow publishes no preview still
+     * answers, with the console's part alone.
+     */
     public Mono<PreviewView> previewVerb(Session session, String type, String wfrn, String verb, CommandInput body, String requestId) {
         return subject(session, type, wfrn).flatMap(s -> {
             if ("create".equals(verb)) {
@@ -341,14 +351,33 @@ public class Resources {
             }
             ConsoleAction action = actionOf(s.type(), verb);
             String actionName = AccessCheck.action(s.type().service(), action.verb());
+            boolean delete = "delete".equals(verb);
+            boolean radius = delete || action.destructive();
             return access.require(session, actionName, wfrn)
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
                         Map<String, String> known = s.resource().registryId() == null ? Map.of() : Map.of(s.resource().registryId(), wfrn);
-                        return preview(session, entry, pathParams(entry, s.resource()), inputFor(action, entry, body, s.resource()),
-                                options(session, requestId, null, wfrn, body), known);
+                        Mono<PreviewView> platformPreview = radius && !entry.hasPreview()
+                                ? Mono.just(PreviewView.unpublished(entry.workflow(), entry.version(), ResourceRef.of(s.resource())))
+                                : preview(session, entry, pathParams(entry, s.resource()), inputFor(action, entry, body, s.resource()),
+                                        options(session, requestId, null, wfrn, body), known);
+                        if (!radius) {
+                            return platformPreview;
+                        }
+                        return Mono.zip(platformPreview, radii.of(session, s.resource(), BlastRadii.DEFAULT_DEPTH))
+                                .map(both -> both.getT1().withBlastRadius(both.getT2(), delete));
                     });
         });
+    }
+
+    /** What depends on the resource, up to {@code depth} steps (1 to 5, 3 by default), as {@code <service>:get} on it allows. */
+    public Mono<BlastRadius> blastRadius(Session session, String type, String wfrn, Integer depth) {
+        int steps = depth == null ? BlastRadii.DEFAULT_DEPTH : depth;
+        if (steps < 1 || steps > BlastRadii.MAX_DEPTH) {
+            return Mono.error(new InvalidInputException("depth is 1 to " + BlastRadii.MAX_DEPTH,
+                    List.of(Problem.error("range", "/depth", "depth is 1 to " + BlastRadii.MAX_DEPTH))));
+        }
+        return readable(session, type, wfrn).flatMap(s -> radii.of(session, s.resource(), steps));
     }
 
     /** Replaces the resource's tags: what the body names is set, what it leaves out is removed. */
@@ -390,7 +419,8 @@ public class Resources {
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
                         Mono<List<Row>> rows = create ? mintRows(session, t, entry, action, body, requestId, idempotencyKey)
-                                : existingRows(session, t, entry, action, body);
+                                : existingRows(session, t, entry, action, body)
+                                        .flatMap(found -> "delete".equals(body.verb()) ? refuseDependents(session, found) : Mono.just(found));
                         return rows.flatMap(prepared -> {
                             List<Map<String, Object>> items = prepared.stream().map(Row::input).toList();
                             List<BatchContext> contexts = prepared.stream().map(r -> new BatchContext(r.wfrn(), null)).toList();
@@ -406,7 +436,112 @@ public class Resources {
         });
     }
 
-    private record Row(String wfrn, Map<String, Object> input) {
+    /**
+     * A batch's preview (WP 4.5), before anything runs: every row's resource with its own direct
+     * dependents, what the rows reach together, and the console's decision (a deny when a delete
+     * row has live dependents); as {@code <service>:<verb>} on the type's pattern allows. A row
+     * whose resource cannot be read or is in the wrong state carries a problem instead of failing
+     * the call.
+     */
+    public Mono<BatchPreview> previewBatch(Session session, String type, BatchInput body) {
+        return types.byType(session, type).flatMap(t -> {
+            if (body.verb() == null || body.items().isEmpty()) {
+                return Mono.error(new InvalidInputException("a batch names a verb and at least one row",
+                        List.of(Problem.error("required", "/items", "at least one row"))));
+            }
+            ConsoleAction action = actionOf(t, body.verb());
+            String actionName = AccessCheck.action(t.service(), action.verb());
+            boolean delete = "delete".equals(body.verb());
+            return access.require(session, actionName, typePattern(session, t)).then(Mono.defer(() -> {
+                if ("create".equals(body.verb())) {
+                    List<BatchPreview.Row> rows = new ArrayList<>();
+                    for (int i = 0; i < body.items().size(); i++) {
+                        Map<String, Object> input = new LinkedHashMap<>(body.defaults());
+                        input.putAll(body.items().get(i).input());
+                        rows.add(new BatchPreview.Row(i, null, nameOf(input), null, null, null, missingFields(action, input, "/items/" + i + "/input")));
+                    }
+                    return Mono.just(new BatchPreview(body.verb(), rows, null, decision(rows)));
+                }
+                return Flux.range(0, body.items().size()).flatMapSequential(i -> previewRow(session, t, body.items().get(i), i, delete), RADIUS_CONCURRENCY)
+                        .collectList()
+                        .flatMap(read -> {
+                            List<StateResource> found = read.stream().map(PreviewRow::resource).filter(Objects::nonNull).toList();
+                            return radii.ofAll(session, found, BlastRadii.DEFAULT_DEPTH).map(combined -> {
+                                List<BatchPreview.Row> rows = new ArrayList<>();
+                                int k = 0;
+                                for (PreviewRow row : read) {
+                                    if (row.resource() == null) {
+                                        rows.add(new BatchPreview.Row(row.index(), row.wfrn(), null, null, null, null, row.problems()));
+                                        continue;
+                                    }
+                                    BlastRadius own = combined.each().get(k++);
+                                    List<Problem> problems = new ArrayList<>(row.problems());
+                                    if (delete && own.hasDependents()) {
+                                        problems.add(Problem.error(DependentsExistException.CODE, "/items/" + row.index() + "/wfrn", DependentsExistException.sentence(own)));
+                                    }
+                                    StateResource r = row.resource();
+                                    rows.add(new BatchPreview.Row(row.index(), r.wfrn(), r.name(), r.state(), own.direct(), own.directDependents(), problems));
+                                }
+                                return new BatchPreview(body.verb(), rows, combined.together(), decision(rows));
+                            });
+                        });
+            }));
+        });
+    }
+
+    /** A batch preview's row as read: its resource, or why it cannot run. */
+    private record PreviewRow(int index, String wfrn, StateResource resource, List<Problem> problems) {
+    }
+
+    private Mono<PreviewRow> previewRow(Session session, ConsoleType t, BatchInput.Row row, int index, boolean delete) {
+        String field = "/items/" + index + "/wfrn";
+        if (row.wfrn() == null || row.wfrn().isBlank()) {
+            return Mono.just(new PreviewRow(index, null, null, List.of(Problem.error("required", field, "the resource's wfrn"))));
+        }
+        try {
+            checkName(session, t, row.wfrn());
+        } catch (NotFoundException e) {
+            return Mono.just(new PreviewRow(index, row.wfrn(), null, List.of(Problem.error("not-found", field, "no " + t.type() + " " + row.wfrn() + " here"))));
+        }
+        return state.get(scope(session), caller(session), row.wfrn(), null).map(answer -> {
+            StateResource r = answer.resource();
+            boolean runnable = delete ? r.is(StateResource.ACTIVE) || r.is(StateResource.FAILED) : r.live();
+            List<Problem> problems = runnable ? List.of() : List.of(Problem.error("state", field, "the resource is " + r.state()));
+            return new PreviewRow(index, row.wfrn(), r, problems);
+        }).onErrorResume(e -> e instanceof NotFoundException || e instanceof GoneException,
+                e -> Mono.just(new PreviewRow(index, row.wfrn(), null, List.of(Problem.error("not-found", field, "no " + t.type() + " " + row.wfrn() + " here")))));
+    }
+
+    /** The console's decision on a batch: a deny for each kind of blocking problem its rows carry. */
+    private static PolicyDecision decision(List<BatchPreview.Row> rows) {
+        Map<String, Long> blocking = new LinkedHashMap<>();
+        for (BatchPreview.Row row : rows) {
+            if (row.problems() != null) {
+                for (Problem p : row.problems()) {
+                    blocking.merge(p.code(), 1L, Long::sum);
+                }
+            }
+        }
+        List<PolicyRule> rules = new ArrayList<>();
+        blocking.forEach((code, count) -> rules.add(new PolicyRule(code, PreviewView.DENY,
+                (count == 1 ? "1 row" : count + " rows") + " cannot run: " + code)));
+        return new PolicyDecision(rules.isEmpty() ? "allow" : PreviewView.DENY, rules, "console");
+    }
+
+    /** The workflow's required fields a form leaves out, as problems on their fields. */
+    private static List<Problem> missingFields(ConsoleAction action, Map<String, Object> input, String prefix) {
+        List<Problem> problems = new ArrayList<>();
+        try {
+            requireFields(action, input);
+        } catch (InvalidInputException e) {
+            for (Problem p : e.problems()) {
+                problems.add(Problem.error(p.code(), prefix + (p.field() == null ? "" : p.field()), p.message()));
+            }
+        }
+        return problems;
+    }
+
+    private record Row(String wfrn, Map<String, Object> input, StateResource resource) {
     }
 
     private Mono<List<Row>> mintRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body, String requestId,
@@ -421,7 +556,7 @@ public class Resources {
             StateCommands.Mint mint = new StateCommands.Mint(t.type(), session.region(), nameOf(input), entry.workflow(), json.valueToTree(input),
                     session.user().userId());
             mints.add(state.mint(scope(session), caller(session), mint, new StateCommands.Meta(key, requestId))
-                    .map(minted -> new Row(minted.wfrn(), row.input())));
+                    .map(minted -> new Row(minted.wfrn(), row.input(), minted)));
         }
         return Flux.concat(mints).collectList();
     }
@@ -441,10 +576,22 @@ public class Resources {
                 if (entry.subjectInput() != null && r.registryId() != null) {
                     input.putIfAbsent(entry.subjectInput(), r.registryId());
                 }
-                return new Row(r.wfrn(), input);
+                return new Row(r.wfrn(), input, r);
             }));
         }
         return Flux.concat(rows).collectList();
+    }
+
+    /** A delete is refused while anything live depends on the resource (409 {@code dependents.exist}). */
+    private Mono<Void> refuseDependents(Session session, StateResource subject) {
+        return radii.direct(session, subject).flatMap(r -> r.hasDependents() ? Mono.<Void>error(DependentsExistException.of(r)) : Mono.<Void>empty());
+    }
+
+    /** A batch delete is refused, naming the rows, while anything live depends on one of them. */
+    private Mono<List<Row>> refuseDependents(Session session, List<Row> rows) {
+        return Flux.fromIterable(rows).flatMapSequential(row -> radii.direct(session, row.resource()), RADIUS_CONCURRENCY).collectList()
+                .flatMap(found -> found.stream().anyMatch(BlastRadius::hasDependents) ? Mono.<List<Row>>error(DependentsExistException.ofRows(found))
+                        : Mono.just(rows));
     }
 
     // ---- the pieces
@@ -719,8 +866,7 @@ public class Resources {
     }
 
     private static ResourceRef ref(Resource resource) {
-        String status = resource.status() == null ? null : resource.status().toLowerCase(Locale.ROOT);
-        return new ResourceRef(resource.wfrn(), resource.type(), resource.name(), status == null ? null : PLATFORM_STATES.get(status), resource.id());
+        return PlatformStates.ref(resource);
     }
 
     private static AccountScope scope(Session session) {

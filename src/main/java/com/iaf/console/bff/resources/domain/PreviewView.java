@@ -3,19 +3,33 @@ package com.iaf.console.bff.resources.domain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import com.iaf.console.platform.model.AffectedResource;
 import com.iaf.console.platform.model.Cost;
 import com.iaf.console.platform.model.PolicyDecision;
+import com.iaf.console.platform.model.PolicyRule;
 import com.iaf.console.platform.model.Preview;
 import com.iaf.console.platform.model.PreviewStep;
 
-/** The platform's preview of a run, with wfrns on the affected resources where the platform or the subject names them. */
+/**
+ * The platform's preview of a run, with wfrns on the affected resources where the platform or the
+ * subject names them; before a delete or a destructive verb, also the resource's blast radius,
+ * whose named dependents join the affected resources.
+ */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PreviewView(String workflow, String version, List<PreviewStep> steps, List<ResourceRef> affectedResources, Cost cost,
-        PolicyDecision policy) {
+        PolicyDecision policy, BlastRadius blastRadius) {
+
+    public static final String DENY = "deny";
+
+    public PreviewView {
+        steps = steps == null ? List.of() : List.copyOf(steps);
+        affectedResources = affectedResources == null ? List.of() : List.copyOf(affectedResources);
+        policy = policy == null ? new PolicyDecision("allow", List.of(), null) : policy;
+    }
 
     public static PreviewView of(Preview preview, Map<String, String> wfrnsByRegistryId) {
         List<ResourceRef> affected = new ArrayList<>();
@@ -25,8 +39,33 @@ public record PreviewView(String workflow, String version, List<PreviewStep> ste
                 affected.add(new ResourceRef(wfrn, a.type(), a.name(), null, a.id()));
             }
         }
-        PolicyDecision policy = preview.policy() == null ? new PolicyDecision("allow", List.of(), null) : preview.policy();
-        return new PreviewView(preview.workflow(), preview.version(), preview.steps() == null ? List.of() : preview.steps(), affected,
-                preview.cost(), policy);
+        return new PreviewView(preview.workflow(), preview.version(), preview.steps(), affected, preview.cost(), preview.policy(), null);
+    }
+
+    /** The preview of a workflow that publishes none: no steps, nothing decided yet but what the console adds. */
+    public static PreviewView unpublished(String workflow, String version, ResourceRef subject) {
+        return new PreviewView(workflow, version, List.of(), subject == null ? List.of() : List.of(subject), null, null, null);
+    }
+
+    /** The same preview with a rule of the console's: a deny makes the decision a deny. */
+    public PreviewView withRule(String id, String result, String message) {
+        List<PolicyRule> rules = new ArrayList<>(policy.rules() == null ? List.of() : policy.rules());
+        rules.add(new PolicyRule(id, result, message));
+        String decision = DENY.equals(result) ? DENY : policy.decision();
+        return new PreviewView(workflow, version, steps, affectedResources, cost, new PolicyDecision(decision, rules, policy.engine()), blastRadius);
+    }
+
+    /** With the blast radius; {@code refuseDependents} (a delete) adds the {@code dependents.exist} deny when anything depends on the resource. */
+    public PreviewView withBlastRadius(BlastRadius radius, boolean refuseDependents) {
+        List<ResourceRef> affected = new ArrayList<>(affectedResources);
+        for (BlastRadius.Dependent d : radius.dependents()) {
+            if (affected.stream().noneMatch(a -> (a.wfrn() != null && a.wfrn().equals(d.wfrn())) || (a.id() != null && Objects.equals(a.id(), d.id())))) {
+                affected.add(d.ref());
+            }
+        }
+        PreviewView view = new PreviewView(workflow, version, steps, affected, cost, policy, radius);
+        return refuseDependents && radius.hasDependents()
+                ? view.withRule(DependentsExistException.CODE, DENY, DependentsExistException.sentence(radius))
+                : view;
     }
 }

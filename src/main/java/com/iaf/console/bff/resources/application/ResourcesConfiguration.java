@@ -23,7 +23,12 @@ public class ResourcesConfiguration {
 
     @Bean
     public Resources resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, ObjectMapper json) {
-        return new Resources(types, access, sessions, trust, clients, platform, state, search, json);
+            StatePort state, SearchPort search, BlastRadii radii, ObjectMapper json) {
+        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, json);
+    }
+
+    @Bean
+    public BlastRadii blastRadii(PlatformClients clients) {
+        return new BlastRadii(clients);
     }
 }
