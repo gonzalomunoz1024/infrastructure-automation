@@ -1320,16 +1320,20 @@ old wfrn to the new one, so the console stays right, but the platform does not.
 **What changes.**
 
 1. `POST /api/v1/resources/{id}:rehome`, scope `resources:rehome` (the `console` preset of P-03
-   and admins), body `{ wfrn, accountId }`. The record takes the new wfrn and account; its region
-   stays (a move between regions is a new resource, not a move). The wfrn's account segment must
-   be `accountId` and its type the record's type, else 400.
+   and admins), body `{ from, wfrn, accountId }`: `from` is the wfrn the caller moves the record
+   from (the state service's `transferredFrom`), `wfrn` and `accountId` where it goes. The record
+   takes the new wfrn and account; its region stays (a move between regions is a new resource, not
+   a move). The wfrn's account segment must be `accountId` and its type the record's type, else 400.
+   A record moves as often as the console moves it (A to B, then B to C): each move names the wfrn
+   it starts from.
 2. The old wfrn joins a new `previousWfrns` list on the record, and `GET /resources/by-wfrn`
    (P-05) answers the record for an old wfrn too, with `Content-Location` naming the current one,
    so a job or a caller holding the old name still finds it.
-3. It is idempotent: the same body again answers 200 and changes nothing (it also honours
-   `Idempotency-Key`, P-21). A record already moved to another wfrn answers 409
-   `resource.rehomed` with the current wfrn; a record a running job holds answers 409
-   `resource.busy`, because that job's context names the old account.
+3. It is idempotent: a record whose wfrn is already `wfrn` answers 200 and changes nothing (it
+   also honours `Idempotency-Key`, P-21). A record whose wfrn is neither `from` nor `wfrn` answers
+   409 `resource.rehomed` with the current wfrn: the request is stale, or another move went first.
+   A record a running job holds answers 409 `resource.busy`, because that job's context names the
+   old account; a `wfrn` another record holds answers 409 `wfrn.taken`.
 4. The move emits `resource.registered` again, in the P-01 envelope, with the new `wfrn` and
    `accountId` in `data` and the old wfrn in `data.previousWfrn`, so feed consumers read it as a
    registration: no new event type. The state service finds the new wfrn already open and records
@@ -1345,9 +1349,9 @@ lists each move with its registry id).
 resources built from a moved one keep their links.
 
 **Tests.** A rehome changes the wfrn and account and keeps the id and lineage; the old wfrn still
-reads the record with `Content-Location`; the same body twice is one change; another wfrn is 409;
-a record under a running job is 409; the event carries both wfrns; quotas count it in the new
-account.
+reads the record with `Content-Location`; the same body twice is one change; a second move from the
+new wfrn works and keeps both old wfrns; a `from` that is not the current wfrn is 409; a record
+under a running job is 409; the event carries both wfrns; quotas count it in the new account.
 
 **Done when** a resource the console moved shows under its new account everywhere on the platform,
 and its old name still finds it.
