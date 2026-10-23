@@ -10,6 +10,31 @@ platform changes the console needs.
   design: personas, wfrn, the dynamic console, services, scale, security, roadmap, risks).
 - Platform changes: [platform-changes/README.md](platform-changes/README.md), a plan only.
 - Status: planning, 2026-10-23. All ten decisions are answered. No service branch has code yet.
+  Revised the same day after an independent review against the platform at `c9529d5`: pilot cap,
+  go/no-go gate, isolation rules, P-18 to P-21, and a phase 9 of features beyond the AWS console.
+
+## The pilot cap and the go/no-go gate
+
+Until the platform team ships three of the planned changes, the console runs on interim adapters
+to today's platform API, and those carry a pilot only:
+
+- **Pilot cap: at most 50,000 resources and 5 accounts in total.** The identity service refuses a
+  sixth account and the state service refuses imports past the cap, with a message naming the
+  changes that lift it. The reasons are in `platform-changes/README.md`, section 11.
+- **Go/no-go.** The console's scale gate (plan, gate 6) cannot pass until P-01 (event feed), P-05
+  (registry wfrns, collision-safe keys, paging) and P-09 (observe and list reads) are live on the
+  platform. Gate 2 needs each of them to have an owner on the platform team and a target date:
+
+  | Change | Owner (platform team) | Target date | Status |
+  | --- | --- | --- | --- |
+  | P-01 Event feed | to be named | to be set | planned |
+  | P-05 Registry wfrns and paging | to be named | to be set | planned |
+  | P-09 Observe and list reads | to be named | to be set | planned |
+
+- **Isolation, whatever the adapter.** Platform reads are not isolated by tenant today (P-18). No
+  service passes a platform read through to the browser: every platform response is filtered by
+  the account's owner team and every record's account is re-checked before it leaves the service.
+  A cross-account read test runs against a real platform in CI.
 
 ## The rules of this repository layout
 
@@ -62,6 +87,13 @@ its own MongoDB database, its own Helm chart under `deploy/`, and its own
   published version, never on a branch.
 - A breaking change to a contract is a new version of that API (`/v2`) or a new event type, and
   both versions are served for one release.
+- **Nightly platform contract check.** The platform keeps changing while the console pins
+  `c9529d5`. A nightly CI job on this branch fetches `/openapi.json` from the platform's `main`,
+  compares it with `contracts/platform/openapi-c9529d5.json` for every operation the console uses
+  (listed in `contracts/platform/used-operations.txt`), and fails on a breaking change, so the
+  console team hears about it before an adapter breaks.
+- Consumers de-duplicate platform events on the event's `key`, never its `id`, and console topics
+  are partitioned by wfrn.
 
 ## Type overlays (until the platform's P-06 lands)
 
@@ -94,12 +126,13 @@ lands on.
 
 | Phase | Work | Branches |
 | --- | --- | --- |
-| 0 Foundations | Contracts and wfrn fixtures; convention plugins, wfrn, service-kit; the console shell in Atlas | `console-root`, `console-libs`, `console-web` |
-| 1 Sign in and IAM | Accounts, policies, OPA bundles, platform service accounts per account; OIDC sign-in, sessions | `console-identity-service`, `console-bff`, `console-web` |
-| 2 Inventory | The state service, fed by today's platform job stream and registry reads (interim adapters) | `console-state-service` |
-| 3 Dynamic console | Type descriptors from today's resource types, catalog and overlays; list, detail, create, actions | `console-bff`, `console-web`, `console-root` (overlays) |
-| 4 Edit and delete | Update convention, bulk actions, tags | `console-bff`, `console-web`, `console-state-service` |
-| 5 Drift | Interim: read-only `observe-<type>` workflows run as jobs at a long interval; full speed once P-09 lands | `console-drift-service` |
-| 6 Search and scale | Indexer and search; load tests at the initial targets once P-01, P-05 and P-09 exist | `console-search-indexer` |
-| 7 Parity extras | Activity trail, quotas, cost, CLI | `console-bff`, `console-identity-service`, `console-web` |
-| 8 Production | Threat model, pen test, SLO alerts, runbooks | every branch |
+| 0 Foundations | Contracts and wfrn fixtures; convention plugins, wfrn, service-kit; the console shell in Atlas; interim adapters with isolation filters; the nightly platform contract check | `console-root`, `console-libs`, `console-web` |
+| 1 Sign in and IAM | Accounts, four managed roles per account, OPA bundles, platform service accounts per account; OIDC sign-in, sessions; Request access | `console-identity-service`, `console-bff`, `console-web` |
+| 2 Inventory | The state service, fed by today's platform job stream and registry reads (interim adapters), under the pilot cap; pending reaper and collision guard; per-account keys for sensitive fields | `console-state-service` |
+| 3 Dynamic console | Type descriptors from today's resource types, catalog and overlays; list, detail, create, actions; view as code, command palette, plain-language errors, accessibility checks | `console-bff`, `console-web`, `console-root` (overlays) |
+| 4 Edit and delete | Update convention, bulk actions, tags, required tags, blast radius, clone | `console-bff`, `console-web`, `console-state-service` |
+| 5 Drift | Pilot only until P-09: read-only `observe-<type>` workflows run as jobs, daily, under half the team's job quota. Then list reads and hot, warm and cold tiers | `console-drift-service` |
+| 6 Search and scale | Indexer and search; load tests at the initial targets, which cannot start until P-01, P-05 and P-09 are live | `console-search-indexer` |
+| 7 Parity extras | Activity trail and evidence pack, quotas and quota requests, cost, CLI, notifications, account lifecycle, custom policies | `console-bff`, `console-identity-service`, `console-web` |
+| 8 Production | Threat model, pen test, SLO alerts, runbooks, backups and restore drill, cost estimate | every branch |
+| 9 Beyond AWS | Copilot, failure explainer, budgets, resource map, executive home, scorecards, blueprints, time travel and the other features in the plan's "Beyond the AWS console" section; off the critical path | mostly `console-bff`, `console-web`; blueprints on `console-state-service` and `console-root` (`kind: Blueprint`) |

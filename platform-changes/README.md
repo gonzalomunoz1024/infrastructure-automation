@@ -22,6 +22,12 @@ covers what changes on the platform side so that plan can work, and why.
 - Decided so far (2026-10-23): full AWS console framework parity for every type, internal
   teams as customers, the state service owns the console view, and one `global` region built for
   many, Kafka with OpenSearch, the platform left untouched, and one branch per service. Open decisions are taken here at the plan's recommended option and called out in section 9.
+- Revised 2026-10-23 after an independent review that checked this plan against the platform
+  code at `c9529d5`. It added P-18 to P-21 (caller-scoped reads, publishing resource types, job
+  retention and a global job stream, idempotency for every verb) and corrected P-01, P-04, P-05,
+  P-06, P-09, P-10, P-12 and sections 2, 5, 6, 8 and 11. The review found two things that matter
+  even for a pilot: platform reads are not isolated by tenant (P-18), and registry ids can collide
+  and silently merge (P-05).
 
 Contents
 
@@ -46,6 +52,10 @@ Contents
    - [P-15 Sample content](#p-15-sample-content)
    - [P-16 Deployment](#p-16-deployment)
    - [P-17 Documentation](#p-17-documentation)
+   - [P-18 Caller-scoped reads](#p-18-caller-scoped-reads)
+   - [P-19 Publishing resource types](#p-19-publishing-resource-types)
+   - [P-20 Job retention and a global job stream](#p-20-job-retention-and-a-global-job-stream)
+   - [P-21 Idempotency for every verb](#p-21-idempotency-for-every-verb)
 5. [Order of work and pull requests](#5-order-of-work-and-pull-requests)
 6. [Compatibility: what existing callers see](#6-compatibility-what-existing-callers-see)
 7. [Testing](#7-testing)
@@ -83,31 +93,37 @@ The console is a new client of the platform, not a rewrite of it. These stay exa
 
 ## 2. The changes at a glance
 
-Seventeen changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
-tests and doc updates but not review time. "Needed by" is the console roadmap phase that cannot
-start without the change.
+Twenty-one changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
+tests and doc updates but not review time. "Needed for full scale" is the console roadmap phase
+that cannot reach the accepted scale targets without the change. Every phase can start earlier on
+the interim adapters of section 11, which hold for a pilot only (at most 50,000 resources and 5
+accounts).
 
-| ID | Change | Platform slices and folders touched | Needed by | Size (min) |
+| ID | Change | Platform slices and folders touched | Needed for full scale | Size (min) |
 | --- | --- | --- | --- | --- |
-| P-01 | Durable event feed: `platform_events` outbox, relay to Kafka, HTTP feed for demo | `common/events`, new `events` slice, `config`, Helm | Phase 0 | 150 |
+| P-01 | Durable event feed: `platform_events` outbox, relay to Kafka, HTTP feed, snapshot endpoint | `common/events`, new `events` slice, `runs`, `resources`, `config`, Helm | Phase 2 | 195 |
 | P-02 | `X-On-Behalf-Of`: a signed assertion naming the console user | `identity`, `common/domain/Identity`, `runs`, `audit` | Phase 1 | 120 |
 | P-03 | Console service accounts: `console` preset, account binding, rotate, delete | `identity` | Phase 1 | 75 |
-| P-04 | Job context: `accountId`, `region`, `wfrn`, `consoleRequestId` on jobs and events | `runs`, `catalog`, `gateway` | Phase 2 | 120 |
-| P-05 | Registry: `wfrn`, `accountId`, `region`, `providerId` fields; paging; by-wfrn reads | `resources`, `runs` (register step) | Phase 2 | 105 |
+| P-04 | Job context: `accountId`, `region`, `wfrn`, `consoleRequestId` on jobs and events; cursors on `GET /jobs` | `runs`, `catalog`, `gateway` | Phase 2 | 135 |
+| P-05 | Registry: `wfrn`, `accountId`, `region`, `providerId` fields; collision-safe keys; paging and filters in MongoDB; by-wfrn reads | `resources`, `runs` (register step) | Phase 2 | 135 |
 | P-06 | ResourceType: `metadata.service`, `console`, `observe`, `x-console` | `resources`, `packages/workflow-checks`, `scripts/check-workflows.mjs` | Phase 0 | 120 |
 | P-07 | `kind: Region` and region-aware provider endpoints | `providers`, new content folder `regions/`, `observability` | Phase 0 | 105 |
 | P-08 | Verb conventions: subject input, `update` verb, catalog fields, checks | `catalog`, `workflows`, `packages/workflow-checks` | Phase 3 | 90 |
-| P-09 | Observe and discover endpoints for drift detection | `resources`, `providers` (call port), `observability` | Phase 5 | 135 |
+| P-09 | Observe, paged list observation and discover for drift detection; per-account rate shares | `resources`, `providers` (call port), `observability` | Phase 5 | 165 |
 | P-10 | Quotas per account, readable and settable over the API | `gateway` | Phase 7 | 45 |
 | P-11 | Policy input carries the console context | `common/ports/PolicyPort`, `runs`, `resources` | Phase 1 | 30 |
-| P-12 | Audit evidence carries the console context; filter by account | `audit` | Phase 7 | 60 |
+| P-12 | Audit evidence carries the console context; filter by account | `audit` | Phase 7 | 45 |
 | P-13 | Reserved nouns, OpenAPI and MCP updates | `catalog` | Phase 0 | 30 |
 | P-14 | Shared front-end packages: `packages/console-kit`, `packages/wfrn` | `frontend/`, `packages/` | Phase 0 | 120 |
 | P-15 | Sample content: regions, observe blocks, console hints, `update-vm` | `regions/`, `resource-types/`, `providers/`, `workflows/` | Phase 0 to 4 | 60 |
 | P-16 | Deployment: Helm values, Kafka, network policy, dashboards, alerts | `deploy/helm`, `deploy/grafana` | Phase 0 | 60 |
 | P-17 | Documentation updates | `docs/` | with each change | 45 |
+| P-18 | Caller-scoped reads: registry and job reads filtered by the caller's teams and visibility; job inputs masked for non-owners | `resources`, `runs`, `identity` | Phase 1 | 90 |
+| P-19 | Publishing resource types through change requests, stored in MongoDB, with a `content.published` event | `resources`, `workflows` (change requests), `common/content` | Phase 3 | 120 |
+| P-20 | Job retention (TTL and archive for `runs_jobs` and `runs_events`) and a cross-replica job event stream with cursor resume | `runs`, `common/events`, `config` | Phase 2 | 105 |
+| P-21 | Idempotency for every verb: `DELETE` and `PATCH`, capacity sized to peak, context headers in the fingerprint | `gateway` | Phase 2 | 60 |
 
-Total: about 1,570 agent minutes. Sections 5 and 6 cover how they split into pull requests and
+Total: about 2,065 agent minutes. Sections 5 and 6 cover how they split into pull requests and
 what each one risks for existing callers.
 
 ## 3. Rules every change follows
@@ -181,8 +197,11 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
    - resource events: `<type>:<resourceId>:<updatedAt epoch nanos>`;
    - content events: `<type>:<name>:<version>`.
 
-   The outbox has a unique index on `key`, so writing the same event twice is a no-op, and a
-   consumer de-duplicates on `key`.
+   The outbox has a unique index on `key`, so writing the same event twice is a no-op. **`key`, not
+   `id`, is the event's identity everywhere**: a re-emitted event (by the sweeper, below) gets a
+   new random `id` but the same `key`, so every consumer, the AsyncAPI catalog and the console's
+   own idempotent-consumer library de-duplicate on `key` only. `id` stays for in-process
+   compatibility and tracing.
 
 3. **Atomicity without transactions.** The platform does not use multi-document transactions
    (docs/architecture.md, Persistence). The outbox write happens in the synchronous listener,
@@ -190,9 +209,21 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
    the time between two writes. Two mechanisms close it:
    - **The sweeper.** `OutboxSweeper` (a scheduled task, every 30 seconds, one replica at a time
      through a lease document in `platform_events_state`) reads the jobs and resources changed in
-     the last 15 minutes (`runs_jobs.updatedNs`, `resources.updatedAt`) and re-emits any terminal
-     event the outbox does not hold by `key`. Because keys are deterministic, a re-emit of an event
-     that did land is refused by the unique index.
+     the last 15 minutes and re-emits any terminal event the outbox does not hold by `key`. Because
+     keys are deterministic, a re-emit of an event that did land is refused by the unique index.
+     Today neither "changed since" field can be queried: `runs_jobs` keeps its timestamps inside
+     the projected document and has indexes on `startedNs`, `workflow + startedNs` and
+     `parentId + startedNs` only, and `resources` has no top-level `updatedAt`. P-01 therefore adds
+     a top-level `updatedNs` to `runs_jobs` (written by `MongoProjectionStore` on every projection
+     update) and a top-level `updatedAt` to `resources` (written by `MongoResourceStore`), each with
+     an index (`{ updatedNs: 1, _id: 1 }`, `{ updatedAt: 1, _id: 1 }`). The same indexes serve
+     P-04's cursors and the snapshot endpoint (item 9).
+   - **No silent failure.** `EventBus.publish` today only logs a listener's exception, so a failed
+     outbox write would vanish. `EventOutboxListener` catches its own failures, retries three times
+     with a short backoff (10, 50, 250 ms) and then leaves the event to the sweeper. Every failure
+     increments `platform_events_write_failures_total`, and every give-up increments
+     `platform_events_write_abandoned_total`; an alert (P-16) fires on any non-zero give-up rate
+     over five minutes.
    - **Consumers reconcile.** The state service also runs a nightly comparison against
      `GET /api/v1/resources` and the job index (plan, Risks). The sweeper makes that a safety net,
      not the main path.
@@ -213,13 +244,16 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
 
    | Topic | Events | Partition key | Retention |
    | --- | --- | --- | --- |
-   | `platform.jobs` | `job.*`, `batch.wave` | `accountId` when the job has one (P-04), else `jobId` | 14 days |
-   | `platform.resources` | `resource.registered`, `resource.retired` | `accountId`, else `resourceId` | 14 days |
+   | `platform.jobs` | `job.*`, `batch.wave` | `jobId` | 14 days |
+   | `platform.resources` | `resource.registered`, `resource.retired` | `wfrn` when the resource has one (P-05), else `resourceId` | 14 days |
    | `platform.content` | `workflow.published`, `workflow.deleted`, `provider.published`, `provider.updated`, `resource-type.changed` (new), `region.changed` (new), `release.*` | content name | 30 days, compacted by name |
    | `platform.audit` | `audit.sealed`, `audit.shared` | record id | 30 days |
 
-   Ordering: per partition only, which is per account for jobs and resources. That is what the
-   state service needs (events of one account in order); cross-account order does not matter.
+   Ordering: per partition only, which is per job and per resource. That is all the state
+   service needs: it applies the events of one resource in order, and a resource's job events
+   carry its wfrn in `context`, so it never needs cross-resource order. Keying by account was
+   considered and dropped: a one-million-resource account would land on one partition and become
+   a hot spot.
 
 5. **An HTTP feed for everything without Kafka.** `GET /api/v1/events?after=<seq>&limit=<n>&types=<prefix,...>`
    answers events from the outbox in sequence order, `{ items: FeedEvent[], next: <seq> }`, and
@@ -233,6 +267,7 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
    ```json
    {
      "specVersion": "1.0",
+     "dataVersion": 1,
      "id": "evt_01JBX9...",
      "key": "job.finished:job_7Q2M...:42",
      "seq": 1882231,
@@ -252,6 +287,9 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
 
    `onBehalfOf` and `context` are present only when the job was started by the console (P-02,
    P-04). `data` is what the event carries in process today, run through the redaction.
+   `dataVersion` is the version of that event type's `data` schema in the catalog (item 7): a
+   compatible addition keeps it, so a consumer can tell which fields to expect without parsing the
+   type name.
 
 7. **The event catalog.** A new file, `docs/customer-console/events.asyncapi.yaml` (AsyncAPI 3),
    names every published event type and its `data` schema. It is the contract the Gradle services
@@ -272,10 +310,21 @@ consumer. The console cannot be built on that: a missed `job.finished` leaves a 
    content loader) publish `resource-type.changed` with the type's name and a hash of its file
    whenever a type's stored definition changes, and the regions loader (P-07) publishes
    `region.changed`. The BFF uses these to push new type descriptors to open consoles within
-   seconds.
+   seconds. Today a type changes only when the platform restarts (P-19 adds publishing at run
+   time), so until P-19 lands the event fires at start-up only.
+
+9. **A snapshot endpoint for rebuilds.** The outbox keeps 7 days and Kafka 14. A consumer that
+   falls further behind, or a new consumer, must be able to rebuild without reading the whole
+   collection in one array. `GET /api/v1/events/snapshot?kind=resources|jobs&updatedAfter=<ns>&cursor=<opaque>&limit=<n>`
+   (scope `events:read`, `limit` up to 1,000) answers the current state of resources or jobs in
+   `(updatedNs, _id)` order, `{ items, next, highWaterSeq }`, where `highWaterSeq` is the outbox
+   sequence at the start of the snapshot. A consumer pages to the end, then follows the feed from
+   `highWaterSeq`; any overlap is de-duplicated by `key` or by the resource's version. The
+   console's projection rebuild runbook uses exactly this path.
 
 **Data.** `platform_events`: `_id` = sequence (a long), `key` (unique), `type`, `at`, `atNs`,
-`accountId` (sparse index), `doc` (the envelope). TTL: 7 days by default
+`accountId` (sparse index), `wfrn` (sparse index), `doc` (the envelope). New fields and indexes
+elsewhere: `runs_jobs.updatedNs` and `resources.updatedAt` (item 3). TTL: 7 days by default
 (`platform.events.retention`); consumers that fall further behind rebuild from the APIs. Expected
 volume at the initial targets Gonzalo accepted (10,000 creations an hour at peak): about 40 events
 per job (steps dominate), so about 110 events a second at peak. Sustained for a week, that is at
@@ -293,7 +342,11 @@ delays a projection.
 
 **Tests.** `EventKeys` unit tests. `MongoEventOutbox` on a real MongoDB (with
 `PLATFORM_TEST_MONGO_URI`): duplicate keys refused, sequence strictly increasing across two
-writers. `OutboxSweeper`: a job whose `job.finished` write was skipped is re-emitted exactly once.
+writers. `OutboxSweeper`: a job whose `job.finished` write was skipped is re-emitted exactly once,
+with a new `id` and the same `key`. A forced outbox failure increments the failure metrics and
+the event still reaches the feed through the sweeper. The snapshot endpoint walks 1,250 resources
+in pages with no gaps, and a consumer that switches from snapshot to feed at `highWaterSeq` ends
+with the same state as one that read the feed from the start.
 `KafkaEventRelay` with Testcontainers Kafka: kill the relay mid-stream, restart, no gap and no
 duplicate after consumer de-duplication. Contract test: every event type in the catalog validates
 against its AsyncAPI schema, generated from a recorded demo run.
@@ -465,6 +518,12 @@ to change.
    - `GET /jobs` gains filters `account`, `region`, `wfrn`, `consoleRequestId`, `label.<name>`,
      backed by new indexes on `runs_jobs` (`accountId + startedNs`, `wfrn`, `consoleRequestId`).
      A console service account only ever sees its own account's jobs, whatever filter it sends.
+   - **Cursors on `GET /jobs`.** Today the list has no cursor and no "since". It gains
+     `updatedAfter=<epoch ns>` and `after=<opaque cursor>` with `limit` (1 to 500), ordered by
+     `(updatedNs, _id)` on P-01's index, with a `Link: rel="next"` header like P-05's paging.
+     Without these parameters the answer is exactly today's. This is how a consumer without
+     Kafka catches up on jobs, and how the interim state-service adapter stops polling job by
+     job.
    - Every `job.*` event's envelope carries `context` (P-01).
    - Expressions: `$job.accountId`, `$job.region`, `$job.wfrn`, `$job.labels.<name>`, null when
      absent, so a workflow author can, for example, tag a provider object with the wfrn.
@@ -484,7 +543,8 @@ region always come from the signed assertion, so a caller cannot file a job unde
 **Compatibility.** Existing callers send none of the headers and see no `context` field.
 
 **Tests.** `JobFactory` with and without context; batch `contexts` alignment; child inheritance
-without `wfrn`; filters on `GET /jobs`; a console account cannot list another account's jobs;
+without `wfrn`; filters on `GET /jobs`; `updatedAfter` and `after` cursors walk 1,250 jobs with no
+gaps while new jobs keep arriving; a console account cannot list another account's jobs;
 `$job.wfrn` in an expression; replay of a pre-change history.
 
 **Done when** a console-started job carries its account, region and wfrn on the job page, in
@@ -498,7 +558,15 @@ registry is where a running workflow's `register` step writes, where `use` steps
 Today `Resource.id` is either the id a `register` step gives (the provider's own id, such as
 `vm-1042` in `create-vm`) or one `ResourceIds.mint` makes (`<type>-<6 chars>`). Neither is unique
 across providers, regions or accounts, and `GET /resources` returns the whole collection as one
-array.
+array: `ResourceQueryHandler.list` loads every document and filters and sorts in memory.
+
+Worse, ids collide silently. `_id` is the provider's id, global across providers and types, and
+`MongoResourceStore` writes with an upsert and no existence check. `ResourceIds.mint` draws 6
+characters from a 31-letter alphabet, about 887 million ids per type, also with no existence
+check: at 10 million resources of one type, about 1.1% of new minted ids hit an existing record.
+In both cases the new registration overwrites the old one. A provider id that the same team
+reuses (a VM deleted and recreated with the same name) merges into the old record and its
+lineage.
 
 **What changes.**
 
@@ -511,8 +579,25 @@ array.
    | `region` | the region, copied from the job context |
    | `providerId` | the id the `register` step gave, kept separately once `wfrn` exists |
 
-   `id` stays what it is today for every resource, so `use` steps, `x-resource` inputs, lineage
-   and every existing workflow keep working with no change.
+   `id` stays what it is today for every existing resource, so `use` steps, `x-resource` inputs,
+   lineage and every existing workflow keep working with no change.
+
+1a. **Collision-safe keys.** New registrations are keyed so they cannot overwrite each other:
+   - a registration with a wfrn is stored under the wfrn's resource id (the ULID part), and its
+     provider id is kept in `providerId`;
+   - a registration without one is checked by `(provider, region, providerId)` before the write;
+   - when an incoming `id` already belongs to a record of another provider, type, region or owner,
+     the register step fails with `resource.idCollision` (the job attends, as for any step error)
+     instead of merging; a same-owner re-registration of a retired id gets a fresh record and a
+     `supersedes` link to the old one;
+   - `ResourceIds.mint` checks existence and retries (at most 5 times), and minted ids grow to 10
+     characters for types over one million records.
+
+   `id` stays the alias every existing caller uses: a lookup by `id` answers the live record that
+   holds it. A one-off check, `POST /resources:find-collisions` (admin), lists today's records
+   whose history shows an overwrite (two `resource.registered` events with different
+   `createdBy.jobId` and different providers for one id), so the platform team can see whether any
+   happened before the fix.
 
 2. **How a registration gets its wfrn.** In `ResourceCommandHandler.register`, when the job has an
    account context:
@@ -525,29 +610,40 @@ array.
    - re-registering an existing resource (the `building` then `ready` pattern) keeps its wfrn.
 
    The `resource.registered` event carries the wfrn, so the state service learns about inline
-   resources too.
+   resources too. `resource.retired` gains `wfrn`, `accountId`, `region` and the retiring
+   `jobId`, so the state service can match a retirement to its resource and its delete request
+   without a second read.
 
 3. **The wfrn library.** The platform needs the same parser and formatter as the console
-   services. The Gradle build publishes `services/libs/wfrn` as `com.iaf:wfrn` to the firm's Maven
-   repository (GitHub Packages until a firm repository is chosen), and `backend/pom.xml` depends
-   on it. Until publishing is set up, the backend keeps a vendored copy in `common/domain/Wfrn.java`
-   that runs the same shared fixture file (`packages/wfrn/fixtures/wfrn.json`) in its tests, so the
-   three implementations cannot drift apart. The library is the one Java artifact the two builds
-   share; it has no dependencies.
+   services. The `console-libs` branch publishes it as `com.iaf.console:wfrn` to GitHub Packages
+   (the firm's Maven repository once one is chosen), and `backend/pom.xml` would depend on it.
+   If the platform team prefers no dependency on the console, the backend keeps a vendored copy in
+   `common/domain/Wfrn.java` instead. Either way its tests run the shared fixture file from the
+   hub, `contracts/wfrn/fixtures.json` on `console-root`, copied into
+   `backend/src/test/resources/wfrn/fixtures.json` at a pinned hub commit, so the Java library,
+   the TypeScript package and the platform cannot drift apart. The library has no dependencies.
 
 4. **Reads.**
-   - `GET /resources/by-wfrn/{wfrn}` → `Resource`, or 404. (A deleted resource is `retired` and
-     still answers; tombstones are the state service's job.)
+   - `GET /resources/by-wfrn?wfrn=<wfrn>` → `Resource`, or 404. (A deleted resource is `retired`
+     and still answers; tombstones are the state service's job.) The wfrn travels as a query
+     parameter because it contains `:` and `/`, which the path rules in `Scopes` refuse (an id
+     segment is `[^/:]+`). The new rules: `GET /resources/by-wfrn` needs `registry:read`, like
+     `GET /resources`.
    - `GET /resources?wfrn=` (exact) and `GET /resources?account=` filters.
    - **Paging, opt in.** `GET /resources` and the generated `GET /{plural}` accept `limit`
      (1 to 500) and `after` (an opaque cursor). With `limit`, the body is still an array, ordered
      by `_id`, and the response carries `Link: <...&after=...>; rel="next"` when there is more.
      Without `limit` the answer is exactly today's, so nothing breaks. The MCP `list_<plural>` tools
      gain optional `limit` and `after` the same way.
+   - **Filters and paging run in MongoDB.** `ResourceQueryHandler.list` stops loading the whole
+     collection: type, owner, account, wfrn, status and visibility become query predicates on the
+     indexes below, and paging is a range query on `_id`. Without `limit`, the handler still
+     answers the whole filtered array, now built from a query instead of a scan.
    - A console service account only sees resources of its own account (and `public` ones, under
      the existing visibility rule).
 
 5. **Indexes** on `resources`: `{ wfrn: 1 }` unique sparse, `{ accountId: 1, type: 1, _id: 1 }`,
+   `{ provider: 1, region: 1, providerId: 1 }` unique sparse, `{ owner: 1, type: 1, _id: 1 }`,
    plus the existing `type` and `builtFrom`.
 
 6. **Backfill.** Resources registered before the change have no wfrn. A one-off admin command,
@@ -560,7 +656,10 @@ array.
 backfilled.
 
 **Tests.** Registration binds the job's wfrn once; inline registrations get minted wfrns;
-re-registration keeps the wfrn; unique index refuses a duplicate wfrn; paging walks 1,250
+re-registration keeps the wfrn; unique index refuses a duplicate wfrn; a second provider
+registering an existing id fails with `resource.idCollision` and the first record is unchanged;
+`ResourceIds.mint` retries on a seeded collision; `resource.retired` carries the wfrn and job;
+list filters are served by an index (asserted with `explain`); paging walks 1,250
 resources in pages of 500 with no duplicates or gaps; the shared wfrn fixtures pass in the Java
 copy.
 
@@ -651,20 +750,21 @@ the provider for drift detection. None of that exists on `kind: ResourceType` to
    | `xConsole.format.unknown` | error | an unknown `format` |
    | `xConsole.mutable.noUpdateWorkflow` | warning | a field is `mutable` but no published workflow has `noun` = type and `verb: update` |
    | `xConsole.sensitive.searchable` | error | a field is both `sensitive` and `searchable` |
-   | `observe.missing` | warning | a type with a `producedBy` workflow has no `observe` block (drift cannot work for it) |
+   | `observe.missing` | info | a type with a `producedBy` workflow has no `observe` block (drift cannot work for it). Info findings show in the editor and never fail CI, so a type its provider team has not mapped yet is not flagged as broken |
 
    `scripts/check-workflows.mjs` runs them over `resource-types/` in CI, like the workflow checks.
 8. **Change event.** `resource-type.changed` (P-01) when a stored type changes.
 
 **Compatibility.** Every block is optional. Existing type files keep validating; the only new
-finding on today's samples is the `observe.missing` warning, fixed by P-15.
+finding on today's samples is the `observe.missing` info note on the types P-15 leaves without an
+`observe` block, which never fails CI.
 
 **Tests.** Shared fixtures for each check code, in both twins, plus `expected.json` entries;
 `ResourceTypeDefinition` round trip with and without the new blocks; defaults for `service` and
 `lifecycle`.
 
 **Done when** both twins judge a type file with the new blocks identically, and the five sample
-types pass with no warnings.
+types pass with no errors or warnings.
 
 ### P-07 Regions
 
@@ -830,16 +930,19 @@ drift service must not re-implement any of that or hold provider credentials. Th
 call outside a job today is `POST /providers:try`, which is for the wizard (it takes a draft
 `yaml` and records review evidence), so a new, narrow, read-only path is needed.
 
-**Why not a job per read.** A read has no side effect, and at the initial targets (10 million
-resources, every one checked at least hourly) there would be about 2,800 reads a second on average.
-As
-jobs, that would flood `runs_jobs`, Temporal and the evidence store with runs nobody needs to see.
-The drift service's own Temporal loop already gives scheduling, retries and backoff; the
-platform only needs to make the call.
+**Why not a job per read, and why not one read per resource.** A read has no side effect, and at
+the initial targets (10 million resources, every one checked at least hourly) one read per
+resource would be about 2,800 provider calls a second on average. As jobs, that would flood
+`runs_jobs`, Temporal and the evidence store with runs nobody needs to see; as single reads, it is
+more than any provider's API will take. So the main drift path reads **pages**: one provider list
+call returns up to 500 objects, which brings hourly drift of 10 million resources down to about 6
+calls a second. Single reads stay for verifying a revert and for checks triggered by a provider's
+change event. The drift service's own Temporal loop gives scheduling, retries and backoff; the
+platform only needs to make the calls.
 
 **What changes.**
 
-1. **`POST /api/v1/resources/{id}:observe`** (also `POST /api/v1/resources/by-wfrn/{wfrn}:observe`):
+1. **`POST /api/v1/resources/{id}:observe`** (also `POST /api/v1/resources/by-wfrn:observe?wfrn=<wfrn>`, for the reason given in P-05):
    - looks up the resource and its type's `observe` block (404 when the type has none:
      `observe.notSupported`);
    - resolves `observe.input` with `$resource` and `$region`;
@@ -855,23 +958,42 @@ platform only needs to make the call.
 2. **`POST /api/v1/resources:observe`**, a batch of up to 100 ids or wfrns, answering one result
    per id in order. Calls run with bounded concurrency (`platform.observe.concurrency`, default 8
    per provider) so one batch cannot starve a provider.
-3. **`POST /api/v1/resource-types/{name}:discover`** with `{ region, environment, cursor? }`:
-   runs `observe.discover`, maps every item, and answers
-   `{ items: { providerId, observed, managed: boolean, resource? }[], next? }`, where `managed`
-   says the registry already has a resource with that `providerId` in that region. It never
-   registers anything; importing is the state service's command, which then calls the backfill
-   path of P-05.
-4. **Rate limits.** `kind: Provider` gains optional `spec.limits: { readsPerSecond, burst }`. Observe
-   and discover calls draw from a per-provider, per-region token bucket (`MongoQuotaStore`'s
-   bucket logic reused, keyed `observe:<provider>:<region>`); an empty bucket is 429 with
-   `Retry-After`, which the drift service honours. Job calls never draw from it: a busy drift loop
-   cannot slow a workflow. Default when a provider sets nothing: 5 reads a second.
-5. **Telemetry.** Observe calls record `CallSample`s with `channel: observe`. The provider admin
+3. **`POST /api/v1/resource-types/{name}:observe-list`** with `{ region, environment, account?, cursor?, pageSize? }`:
+   the paged list read drift runs on. The type's `observe` block gains an optional `list`:
+   `{ action, input, items, cursor: { request, response }, pageSize }`, where `action` is a read
+   action that pages (`items` is the expression for the array, `cursor.response` where the next
+   cursor is, `cursor.request` the input field it goes back in). The endpoint calls one page
+   (`pageSize` up to 500), maps every item through `observe.map`, and answers
+   `{ items: { providerId, wfrn?, observed, managed: boolean }[], next? }`, where `managed` and
+   `wfrn` come from the registry's `(provider, region, providerId)` index (P-05). With `account`,
+   it answers only items registered to that account. Several provider actions in today's samples
+   (for example vSphere's `vm.list`) take no paging input; the provider team adds one, and until
+   then a type without `observe.list` is observed one resource at a time on the slowest tier.
+4. **`POST /api/v1/resource-types/{name}:discover`** with `{ region, environment, cursor? }`:
+   the same paged call through `observe.discover` (or `observe.list` when no discover action is
+   set), answering every item, managed or not. It never registers anything; importing is the
+   state service's command, which then calls the backfill path of P-05.
+4a. **Metrics (optional).** The `observe` block may also name a `metrics` read action
+   (`{ action, input, map }`, mapping CPU, memory, disk and similar series). `POST /api/v1/resources/{id}:metrics`
+   with `{ from, to, step }` calls it under the same rules (read only, inputs from the type file,
+   rate limits, account isolation) and answers mapped series. The console's monitoring tab and
+   rightsizing finder use it; a type without it simply has no monitoring tab.
+5. **Rate limits.** `kind: Provider` gains optional `spec.limits: { readsPerSecond, burst, accountShare }`.
+   Observe, list and discover calls draw from a per-provider, per-region token bucket
+   (`MongoQuotaStore`'s bucket logic reused, keyed `observe:<provider>:<region>`); an empty bucket
+   is 429 with `Retry-After`, which the drift service honours. Job calls never draw from it: a busy
+   drift loop cannot slow a workflow. Default when a provider sets nothing: 5 reads a second.
+   So that one large account cannot starve every other account's drift, a call that names an
+   account also draws from a sub-bucket keyed `observe:<provider>:<region>:<accountId>`, sized at
+   `accountShare` of the provider's rate (default 25%). An account may use idle capacity beyond
+   its share only while no other account is waiting (tracked as a short-lived "waiting" marker per
+   account in the bucket document).
+6. **Telemetry.** Observe calls record `CallSample`s with `channel: observe`. The provider admin
    view shows them as their own series, and they count towards provider health (they are real
    calls that can fail), but they never trigger the job-failure alerts.
-6. **Scope and access.** `resources:observe` (P-03). A console service account can observe only its
+7. **Scope and access.** `resources:observe` (P-03). A console service account can observe only its
    own account's resources; the console-internal account can observe all.
-7. **Demo.** `RecordedProviderCall` answers observe calls from the recorded samples, through the
+8. **Demo.** `RecordedProviderCall` answers observe calls from the recorded samples, through the
    same `RecordedWorld` the demo uses for runs. To make drift visible in the demo, a demo-only
    endpoint `POST /api/v1/demo/world:mutate` with `{ provider, action, match, set }` changes what
    the recorded world answers for one object (for example a VM's `memoryGb`). It exists only
@@ -884,11 +1006,13 @@ from the type file, so the endpoint cannot be used as a general proxy.
 **Compatibility.** New endpoints only.
 
 **Tests.** Observe found, not found, error; mapping and redaction; sensitive masking; batch order
-and concurrency; the token bucket; discover with `managed` flags; a non-read action refused at
+and concurrency; `observe-list` walks a recorded 1,250-item list in pages with `managed` and
+`wfrn` filled; the token bucket and its per-account share (a busy account is held to its share
+while another waits, and uses idle capacity when none does); discover with `managed` flags; a non-read action refused at
 call time; the demo mutate path makes the next observe answer differ.
 
-**Done when** the drift service can observe 100 VMs in one call in the demo, and a
-`world:mutate` of one VM's memory shows up in the next observe.
+**Done when** the drift service can observe 500 VMs in one list call in the demo, and a
+`world:mutate` of one VM's memory shows up in the next page and in a single observe.
 
 ### P-10 Quotas per account
 
@@ -908,6 +1032,10 @@ and a per-account bucket when one team owns several accounts.
 3. **`PUT /api/v1/quotas/{key}`** with `{ limitPerMinute, burst }`, admin only, stored in a new
    `quota_overrides` collection that takes precedence over the configuration. The identity
    service calls it when a quota increase request is approved.
+
+**Order.** The account bucket depends on the delegation, so P-10 has no value before P-02:
+it ships in the same pull request as P-02 or after it (section 5), never alone. The read and
+write endpoints alone would only show the team bucket the console already knows.
 
 **Compatibility.** Existing callers keep their team buckets.
 
@@ -943,10 +1071,12 @@ evidence of everything done in their account.
 2. `GET /audit` gains filters `account`, `wfrn`; the export pack takes `account`. A console
    account sees only its own account's records; the existing admin-only rules for sealing and
    sharing stay.
-3. The BFF's own audit records (every console call, including reads and denials) can be appended
-   to the platform's hash chain through a new `POST /api/v1/audit/external` (scope `admin`, used
-   by the BFF's internal account), so the firm has one chain to verify. This is optional: decision
-   for phase 7.
+3. Decided 2026-10-23: the BFF's own audit records (every console call, including reads and
+   denials) are **not** appended to the platform's hash chain. An external-append endpoint was
+   considered and dropped: it would tie the platform's chain to console read volume, which is
+   orders of magnitude above job volume, for little gain. The console seals its own trail with the
+   same hash-chain scheme, and each console record that started a job names the job and its
+   evidence record, so an auditor can follow the link either way.
 
 **Tests.** New fields in the hash; old records still verify; filters; account isolation.
 
@@ -1034,27 +1164,177 @@ change).
 
 ---
 
+### P-18 Caller-scoped reads
+
+**Why.** The platform's reads are not isolated by tenant. `ResourceQueryHandler.list` and `get`
+ignore the caller's teams and the resource's visibility, and `RunsQueryHandler` answers
+`GET /jobs` and `GET /jobs/{id}` for every team, job inputs included, to any caller with
+`registry:read` or `jobs:read`. A per-account console service account (P-03) therefore isolates
+nothing on reads: account A's service account can read account B's resources and job inputs.
+The console works around it (section 11), but a platform that is about to have many internal
+teams on it should not rely on every client filtering correctly.
+
+**What changes.**
+
+1. **A read scope on every query.** The query handlers take the caller's `Identity` and build a
+   `ReadScope`: the caller's teams, its account (with a delegation), and whether it holds `admin`.
+   A pure rule class, `ReadScopes`, decides visibility:
+   - resources: the caller sees a resource when it is `public`, or its `owner` is one of the
+     caller's teams, or (with a delegation) its `accountId` is the caller's account; `admin` sees
+     everything;
+   - jobs: the caller sees a job its team requested, or (with a delegation) one of its account;
+     approvers also see jobs waiting on their approval.
+   The rules become MongoDB predicates (P-05's filters run in the database), so isolation costs an
+   index lookup, not a scan.
+2. **Masked inputs.** A caller that can see a job but does not own it (an approver, a reader of a
+   `public` resource's lineage) gets the job with `input` replaced by the redacted view: field
+   names kept, values `"***"` except fields the workflow's `api.input` marks `x-public: true`.
+   Outputs follow the same rule.
+3. **Rollout.** For console service accounts (P-03) the scope is enforced from the first release.
+   For every other caller it sits behind `platform.reads.caller-scoped` (default `false` for one
+   release, logging every read that the scope would have refused, then `true`), because existing
+   teams may rely on seeing each other's resources.
+
+**Security.** This closes the cross-account read path. A 404, never a 403, answers a resource or
+job outside the caller's scope, so ids cannot be probed.
+
+**Compatibility.** Console accounts: isolated from day one. Everyone else: unchanged until the
+flag flips, with the log showing exactly which callers would notice.
+
+**Tests.** `ReadScopes` as a table (visibility, owner, account, admin, approver); a console account
+reading another account's resource, job, job input and lineage gets 404 or an empty list against a
+real MongoDB; masked input on an approver's view; the flag's log-only mode refuses nothing.
+
+**Done when** the cross-account read test of the console (plan, gate 2) passes against the real
+platform.
+
+### P-19 Publishing resource types
+
+**Why.** Resource types load from the content folder only when the platform starts
+(`InMemoryResourceStore` and `MongoResourceStore` read `resource-types/` at start-up). There is no
+write endpoint and no event, and the stores' caches can be 30 seconds stale. Workflows and providers
+already go through change requests; types do not. So a provider team cannot add a new resource type
+without a platform deploy, and the console's headline promise, a new service appearing in seconds,
+is not possible today.
+
+**What changes.**
+
+1. **Types are content like workflows.** `kind: ResourceType` files go through the same change
+   requests as workflows (designer and Git), with the P-06 checks as the review gate, and are
+   stored in MongoDB (`resource_types`, versioned, the content folder still loaded at start-up as
+   the seed). A provider created in the designer can carry its types in the same change request.
+2. **Publish and change events.** Merging a change request that adds or changes a type publishes
+   `content.published` with `{ kind: "ResourceType", name, version, hash }` (and the existing
+   `resource-type.changed` of P-01), and evicts the caches at once on every replica (through the
+   P-20 cross-replica stream).
+3. **Reads.** `GET /resource-types` and `GET /resource-types/{name}` answer the latest published
+   version with an `ETag` (the hash) and honour `If-None-Match`, so pollers pay nothing when
+   nothing changed. (Today the platform sends no `ETag` on these reads.)
+4. **Retiring a type** is a change request too: a type with live resources can be hidden from
+   create (`visibility: hidden`) but not deleted.
+
+**Compatibility.** Content in the folder keeps working. Types published at run time win over the
+folder's copy only when their version is higher.
+
+**Tests.** A type published by change request appears in `GET /resource-types` within one second
+on every replica; `content.published` fires once; `If-None-Match` answers 304; the checks refuse an
+invalid type.
+
+**Done when** a provider engineer publishes a new type in the designer and an open console shows
+the new service without any deploy (plan, gate 3).
+
+### P-20 Job retention and a global job stream
+
+**Why.** Two platform facts limit the console at scale. First, `runs_jobs` and `runs_events` have
+no TTL or archive: at 10,000 creations an hour and about 40 events a job, `runs_events` grows by
+about 9.6 million documents a day for ever. Second, the live job stream (`/ws` and SSE) is per job
+and per JVM: an event emitted on one replica reaches only clients connected to that replica, so
+the interim state-service adapter and any second backend replica miss events.
+
+**What changes.**
+
+1. **Retention.** `runs_events` documents get an `expiresAt` 30 days after their job ends
+   (`platform.runs.events-retention`), with a TTL index; job summaries in `runs_jobs` keep 400 days
+   (`platform.runs.jobs-retention`). Before expiry, a nightly archiver writes each finished job's
+   events to the artifact store (S3, object lock on, as audit evidence already does), so a replay
+   or audit can fetch them. Evidence records are not affected.
+2. **A global job stream.** `GET /api/v1/jobs/events/stream?after=<seq>` (scope `jobs:read`,
+   caller-scoped by P-18) streams `job.*` events from every replica, read from P-01's outbox, with
+   SSE `id:` set to the outbox sequence so a client resumes with `Last-Event-ID`. The per-job
+   stream keeps working as today, now fed from the same source so it is consistent across
+   replicas.
+3. **Recorded facts.** The other scale facts the review found (section 8) are recorded as risks,
+   not changed here: blocking MongoDB driver calls (`BlockingStoresWebFilter`), one Temporal
+   namespace and task queue, and `waitUntil` steps waiting in memory per instance.
+
+**Compatibility.** Jobs older than 30 days lose their step-by-step event list in the UI unless
+fetched from the archive (the job page shows "archived, load"). Everything else is unchanged.
+
+**Tests.** TTL index created; the archiver writes and the job page loads an archived job; a client
+on replica A sees events from a job running on replica B; resume with `Last-Event-ID` has no gap.
+
+**Done when** two backend replicas behind one load balancer stream the same job events to a
+client on either, and a 31-day-old job's events load from the archive.
+
+### P-21 Idempotency for every verb
+
+**Why.** The console retries commands (network blips, user double clicks), so every command must
+be idempotent. Today `IdempotencyWebFilter` covers `POST` only, while `delete-vm` runs as a
+`DELETE` and updates may be `PATCH`. Keys are capped at 100,000 with a 24-hour TTL, so at 10,000
+creations an hour the oldest keys are evicted after about 10 hours, not 24. And the fingerprint
+covers the method, path and body but not headers, so the same key sent again with a different
+`X-Resource-Wfrn` answers the first request's result.
+
+**What changes.**
+
+1. `Idempotency-Key` is honoured on `POST`, `PUT`, `PATCH` and `DELETE`.
+2. Capacity: `platform.gateway.idempotency.max-keys` defaults to 1,000,000 under the `mongo`
+   profile (the store is a MongoDB collection with a TTL index, so the cap is a safety net, not
+   the eviction rule), and a metric `platform_idempotency_evictions_total` alerts when keys are
+   evicted before their TTL.
+3. The fingerprint includes the context headers that change a request's meaning: `X-On-Behalf-Of`
+   (its subject and account, not its signature), `X-Resource-Wfrn`, `X-Console-Request-Id` and the
+   `X-Job-Label-*` headers. A replay with a different fingerprint answers 422
+   `idempotency.mismatch`, as a different body does today.
+
+**Compatibility.** Existing `POST` callers see no change. `DELETE` and `PATCH` callers that send no
+key see no change.
+
+**Tests.** Replayed `DELETE` returns the first answer and starts one job; a different wfrn header
+with the same key answers 422; eviction metric under a forced small cap.
+
+**Done when** a double-clicked console delete starts exactly one job.
+
 ## 5. Order of work and pull requests
 
-A suggested split for the platform team, when they take the changes on: nine pull requests against
+A suggested split for the platform team, when they take the changes on: twelve pull requests against
 the platform's `main`. Each is reviewable alone, keeps CI green and changes nothing for existing
 callers. The lanes show what can run in parallel. The console team opens none of them.
 
 | PR | Contains | Depends on | Lane | Size (min) | Unblocks console phase |
 | --- | --- | --- | --- | --- | --- |
 | 1 | P-06, P-07, P-13, P-15 (content model, checks in both twins, regions, reserved nouns) | none | A | 285 | 0 |
-| 2 | P-01 (event feed, outbox, sweeper, relay, HTTP feed, AsyncAPI) | none | B | 150 | 0 |
+| 2 | P-01 (event feed, outbox, sweeper, relay, HTTP feed, snapshot, AsyncAPI) | none | B | 195 | 2 |
 | 3 | P-14 (console-kit and wfrn packages) | none | C | 120 | 0 |
 | 4 | P-03, P-02, P-11 (console service accounts, delegation, policy context) | none | D | 225 | 1 |
-| 5 | P-04, P-05 (job context, registry wfrns, paging, backfill) | 1, 2, 4 | B | 225 | 2 |
+| 5 | P-04, P-05 (job context, job cursors, registry wfrns, collision-safe keys, paging, backfill) | 1, 2, 4 | B | 270 | 2 |
 | 6 | P-08 (verbs, subject input, update convention, catalog fields) | 1 | A | 90 | 3 |
-| 7 | P-09 (observe, discover, limits, demo mutate) | 1, 5 | A | 135 | 5 |
-| 8 | P-10, P-12 (quotas per account, audit context) | 4, 5 | D | 105 | 7 |
+| 7 | P-09 (observe, list observation, discover, limits with account shares, demo mutate) | 1, 5 | A | 165 | 5 |
+| 8 | P-10, P-12 (quotas per account, audit context) | 4, 5 | D | 90 | 7 |
 | 9 | P-16 (Helm, Grafana, compose) | 2, 4, 7 | C | 60 | 8 |
+| 10 | P-18, P-21 (caller-scoped reads, idempotency for every verb) | 4 | D | 150 | 1 |
+| 11 | P-19 (publishing resource types) | 1 | A | 120 | 3 |
+| 12 | P-20 (job retention, global job stream) | 2 | C | 105 | 2 |
 
-P-17 rides with each PR. The critical path is PR 4, PR 5, PR 7, PR 9: about 645 minutes. With
-four lanes the whole set is about 1,570 minutes of work done in roughly 700 minutes of elapsed
+P-17 rides with each PR. PR 10 should go first in lane D after PR 4, because it closes a data
+exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 720 minutes. With
+four lanes the whole set is about 2,065 minutes of work done in roughly 900 minutes of elapsed
 working time.
+
+**The console's go/no-go.** The console's pilot runs on the interim adapters of section 11. It
+cannot pass its scale gate (plan, gate 6) until PR 2, PR 5 and PR 7 (P-01, P-05, P-09) are live.
+The hub README records, for each of those three, an owner on the platform team and a target date;
+until all three have both, the console's roadmap stops at the pilot cap.
 
 ## 6. Compatibility: what existing callers see
 
@@ -1062,10 +1342,13 @@ working time.
 | --- | --- |
 | Provider UI and designer | The same pages. New optional fields on jobs (`context`, `actor`, `onBehalfOf`) appear on console-started jobs only; the provider admin view gains a region filter and an "observe" series |
 | REST clients of generated routes | Nothing new unless they send the new headers, which they cannot without a console service account |
-| `GET /resources` and `/{plural}` | The same array without `limit`; with `limit`, the same array plus a `Link` header |
+| `GET /resources` and `/{plural}` | The same array without `limit`; with `limit`, the same array plus a `Link` header. Once `platform.reads.caller-scoped` is on (P-18), only resources the caller may see |
+| `GET /jobs` | The same list without the new parameters; job inputs of other teams' jobs masked once P-18's flag is on; events of jobs over 30 days old move to the archive (P-20) |
+| Register steps | A registration that would overwrite another provider's or owner's record fails with `resource.idCollision` instead of merging (P-05) |
+| Idempotent callers | `Idempotency-Key` now also honoured on `PUT`, `PATCH` and `DELETE` (P-21) |
 | MCP clients | Two optional arguments on `list_<plural>`; `get_<plural>` also takes a wfrn |
 | Service accounts | Unchanged; new presets and scopes exist beside the old ones |
-| Content authors | New optional YAML blocks; one new warning (`observe.missing`) on types without `observe`; new reserved path nouns (`events`, `regions`, `quotas`, `demo`) |
+| Content authors | New optional YAML blocks; one new info note (`observe.missing`) on types without `observe`; resource types publishable by change request (P-19); new reserved path nouns (`events`, `regions`, `quotas`, `demo`) |
 | Policy engine | One optional `console` object in the input of console-started runs |
 | Running Temporal executions | Replay unchanged: no command-sequence change (proved by replay tests) |
 | Operators | A new collection set (`platform_events`, `platform_events_state`, `assertion_jtis`, `regions`, `quota_overrides`), new indexes created at start, and, only if enabled, a Kafka connection |
@@ -1088,8 +1371,8 @@ working time.
 - **End to end:** a new Playwright journey in the provider UI that opens a console-started job and
   sees "via console"; the console's own journeys live with the console.
 - **Security:** tests for every 400 and 401 path of P-02, for account isolation in P-04, P-05,
-  P-09, P-10 and P-12 (a console account reading another account's job, resource, observe result,
-  quota and evidence must get 404 or an empty list).
+  P-09, P-10, P-12 and P-18 (a console account reading another account's job, job input, resource,
+  lineage, observe result, quota and evidence must get 404 or an empty list).
 
 ## 8. Risks on the platform side
 
@@ -1100,7 +1383,13 @@ working time.
 | Delegation becomes a way around RBAC | Effective permissions stay the service account's; the assertion only names the person; signed, short-lived, single-use |
 | Observe endpoints used as a provider proxy | Read actions only, inputs from the type file only, per-provider rate limits, account isolation |
 | Region support changes provider calls for existing jobs | Jobs without a region use exactly today's lookup; tested as a table |
-| Checks add findings to existing content | Only one warning on today's samples, fixed in the same PR |
+| Checks add findings to existing content | Only one info note on today's samples; info never fails CI |
+| Silent registry overwrites before P-05 | `POST /resources:find-collisions` shows whether any happened; the console's collision guard refuses to bind a provider id already bound to another live wfrn |
+| Blocking MongoDB driver in the stores (wrapped by `BlockingStoresWebFilter` on `boundedElastic`) | Recorded, not changed: the console's load tests (plan, WP 6.2) measure the platform's read latency under console traffic; a move to the reactive driver is the platform team's call |
+| One Temporal namespace and one task queue for every workflow | Recorded: console traffic and provider traffic share workers; the load test sizes workers, and a second task queue for console-started jobs is a later option |
+| No TTL on `runs_jobs` and `runs_events` | P-20 |
+| `waitUntil` steps wait in memory per instance | Recorded: a restart re-arms them from the Temporal timer, but long waits hold memory; not a console blocker |
+| Contract drift: the platform keeps changing while the console pins `c9529d5` | The console's nightly contract check (hub README) fetches the platform's `/openapi.json` from `main` and fails on a breaking change to anything the console uses |
 | Two builds drift apart | Contracts generated from code and compared in CI; the wfrn fixtures shared by three implementations |
 
 ## 9. Decisions this document depends on
@@ -1116,6 +1405,7 @@ Decisions from the plan that shape the platform changes:
 | 6 | Events and search infrastructure | Decided 2026-10-23: Kafka and OpenSearch, which the firm already runs | P-01 as written: the relay publishes to the firm's Kafka; the HTTP feed stays for the demo profile and local runs. OpenSearch is used by the console's indexer only, not by the platform |
 | 7 | The platform and its build | Decided 2026-10-23: the console does not touch the platform anywhere; the platform stays on Maven; platform changes are only described here | This document is plan-only; section 11 is how the console works until each change lands. The wfrn library in P-05 is published by the console and only consumed by the platform if the platform team adopts it |
 | 8 | Where the console lives | Decided 2026-10-23: each service is its own repository in concept; for now, one branch per service in this repository, with `console-root` as the hub | This document lives on `console-root`. Nothing merges into the platform's `main` |
+| 10 | Drift remediation | Decided 2026-10-23: show drift with a one-click revert, never revert automatically | P-09 has read paths only; a revert is an ordinary `update` job (P-08) started by a person |
 
 ## 10. Appendix: examples
 
@@ -1170,7 +1460,7 @@ And the registry entry its `register` step wrote:
 ### An observe call
 
 ```http
-POST /api/v1/resources/by-wfrn/wfrn:wf:compute:global:123456789012:vm%2Fvm-01jbx7q2m4k9d3c8f5r6t1w0ya:observe
+POST /api/v1/resources/by-wfrn:observe?wfrn=wfrn%3Awf%3Acompute%3Aglobal%3A123456789012%3Avm%2Fvm-01jbx7q2m4k9d3c8f5r6t1w0ya
 Authorization: Bearer iaf_<console-internal token>
 ```
 
@@ -1261,17 +1551,31 @@ platform after the change. Swapping an adapter is a configuration change in the 
 rewrite. The interim adapters work for a pilot; they do not meet the accepted scale targets
 (10 million resources, 1,000 concurrent users, hourly drift) until P-01, P-05 and P-09 land.
 
+**The pilot cap.** On the interim adapters the console admits at most **50,000 resources and 5
+accounts** in total. The identity service refuses a sixth account and the state service refuses
+imports past the cap, with a message that names the platform changes that lift it. The numbers
+come from the platform as it is: `GET /resources` loads the whole collection (fine at tens of
+thousands, not millions), `GET /jobs` has no cursor, the live job stream is per job and per JVM,
+and interim drift runs as jobs under the per-team quota of 60 starts a minute (below).
+
+**Isolation, whatever the adapter.** Platform reads are not isolated by tenant until P-18. So the
+BFF never passes a platform read through to the browser: every platform response is read by an
+adapter that filters by `owner = console-<accountId>` (the team of the account's service account)
+and re-checks the account of every record against the state service's binding before anything
+leaves the service. Job inputs are never shown from a platform read; the console shows its own
+copy of the request. A cross-account read test runs against a real platform in the console's CI.
+
 | Change | Until it lands, the console | Cost of the workaround |
 | --- | --- | --- |
-| P-01 Event feed | The state service follows jobs it started through the platform's existing job stream (`/ws` and SSE) and polls `GET /jobs/{id}` until each ends; it re-reads `GET /resources` on a schedule to catch everything else | Polling load on the platform; a missed stream message is caught only by the next poll; a full `GET /resources` read does not scale past tens of thousands of resources |
+| P-01 Event feed | The state service follows jobs it started through the platform's existing job stream (`/ws` and SSE) and polls `GET /jobs/{id}` until each ends; it re-reads `GET /resources` on a schedule to catch everything else. The stream is per job and per platform replica, so the poll is the guarantee and the stream only makes it faster | Polling load on the platform; a missed stream message is caught only by the next poll; a full `GET /resources` read does not scale past tens of thousands of resources, hence the pilot cap |
 | P-02 On behalf of | Jobs name the account's service account as requester; the console's own activity trail records the person and links the job id | The provider UI, approvals and evidence show the service account, not the person; an approver cannot see who asked without opening the console |
 | P-03 Console service accounts | The identity service creates accounts with today's `POST /service-accounts` (preset `invoker`, teams = the owning team); rotation creates a new account and stops using the old one | No delete or rotate API: old accounts pile up until a platform admin removes them by hand |
 | P-04 Job context | The state service keeps its own map of job id to wfrn, account and request, written when the platform answers 202 | Jobs cannot be filtered by account or wfrn on the platform side; child jobs (inline image builds) are matched by following the job's children |
-| P-05 Registry wfrns | The wfrn exists only in the console; the state service maps it to the registry id the job's `register` step returned | Two names for one resource; a resource registered outside the console needs an explicit import in the console |
+| P-05 Registry wfrns | The wfrn exists only in the console; the state service maps it to the registry id the job's `register` step returned (found through the registry record's `createdBy.jobId`). A collision guard refuses to bind a registry id that is already bound to another live wfrn and raises an alert, and a pending reaper settles any request whose job never started or never reported | Two names for one resource; a resource registered outside the console needs an explicit import; a platform-side overwrite is detected, not prevented |
 | P-06 ResourceType blocks | Console hints and `observe` mappings live in a `type-overlays/` folder on the console side, in exactly the YAML shape P-06 gives the ResourceType, so moving them later is a copy | Two places describe a type; provider teams cannot own their console hints yet; no checks in the platform's CI |
 | P-07 Regions | Nothing: with one region, `global`, today's provider endpoints are already the global region's | None today; a second region needs P-07 |
 | P-08 Verbs and subject input | The BFF derives the subject input itself from `GET /catalog` (the one input whose `x-resource.type` is the noun) and treats `verb: update` as edit | No checks catch an ambiguous subject input; a workflow with two inputs of its noun's type is left out of the Actions menu |
-| P-09 Observe | Drift checks run as ordinary jobs of a read-only `observe-<type>` workflow, which provider teams can publish through today's designer, at a long interval (default 24 hours) | Every check is a job in the platform's job list; hourly drift at 10 million resources is not possible this way |
+| P-09 Observe | Drift checks run as ordinary jobs of a read-only `observe-<type>` workflow, which provider teams can publish through today's designer, at a long interval (default 24 hours). Where the provider has a list action, one job observes a page of resources | Every check is a job in the platform's job list, and drift shares the 60-starts-a-minute team quota with real creates. The drift service keeps itself under half of it (30 a minute, about 43,000 jobs a team a day, so about 43,000 resources a day one at a time, more with list jobs), which is why drift stays daily until P-09 |
 | P-10 Quotas | The Service Quotas page shows the console's own limits; the platform's per-team job quota still applies underneath | One team's accounts share one platform bucket |
 | P-11 Policy context | IAM is enforced in the console only; the platform's policy sees the service account | Platform policies cannot tell console requests apart |
 | P-12 Audit context | The console keeps its own activity trail, linked to platform evidence by job id | Two trails to export for an audit |
@@ -1280,3 +1584,7 @@ rewrite. The interim adapters work for a pilot; they do not meet the accepted sc
 | P-15 Sample content | The console's demo uses its own fixtures and overlays | The platform's demo and the console's demo can disagree |
 | P-16 Deployment | The console deploys beside the platform with its own charts; nothing in the platform's chart changes | None |
 | P-17 Documentation | This README is the documentation | None |
+| P-18 Caller-scoped reads | The isolation rules above: no pass-through, filter by owner, re-check every record's account | Every console adapter carries the isolation burden; a bug in one is a cross-account leak, which is why the cross-account test runs in CI |
+| P-19 Publishing resource types | A new type appears in the console after the platform's next deploy. The BFF compares a hash of `GET /resource-types` every 30 seconds (the platform sends no `ETag` today) and pushes changed descriptors to open consoles | "A new service in seconds" becomes "a new service after a platform deploy" |
+| P-20 Job retention and global stream | The poll in the P-01 row; the state service keeps its own copy of each job's outcome, so platform retention does not matter to it | None for the console beyond P-01's |
+| P-21 Idempotency for every verb | The BFF keeps its own idempotency record per command and wfrn (a MongoDB collection, 7 days) and never sends the platform a second `DELETE` or `PATCH` for one command; it checks the job list by `consoleRequestId` label before retrying | A retry after a lost answer needs a platform read first |
