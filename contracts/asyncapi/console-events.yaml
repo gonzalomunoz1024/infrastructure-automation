@@ -1,0 +1,598 @@
+asyncapi: 3.0.0
+id: urn:iaf:console:events
+info:
+  title: Customer console events
+  version: 1.0.0
+  description: |
+    The events the console's own services exchange: the state service's resource stream
+    (`state.resources`), the drift service's findings (`drift.findings`) and the identity service's
+    changes (`identity.changes`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    are agreed, the field lists will grow.
+
+    **Envelope.** Every message is a `ConsoleEvent`: `type`, `wfrn` (or `accountId` on
+    `identity.changes`), `accountId`, `region`, `version`, `key`, `at` and `data`, plus `actor`,
+    `jobId`, `requestId` and `traceparent` when known. `version` is the subject's version after the
+    event (a resource's state version, a finding's version, an account's, policy's or role's
+    version): consumers apply an event only when its `version` is the one they hold plus one, and
+    ask the owning service for the current state otherwise.
+
+    **Keys are deterministic** and consumers de-duplicate on them: `<type>:<wfrn>:<version>` on
+    `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on `drift.findings` and
+    `<type>:<accountId>:<subject>:<version>` on `identity.changes` (the subject is the account,
+    policy, role, group, user, key or quota id). A producer that retries publishes the same key.
+
+    **Partitions.** `state.resources` and `drift.findings` are partitioned by `wfrn`, so one
+    resource's events are in order; `identity.changes` by `accountId`, so one account's changes
+    are in order. Nothing is ordered across resources or accounts.
+
+    **The resource state machine** (`ResourceState`, the lifecycle classes of P-06): `ResourceRequested`
+    opens a resource in `pending`; `ProvisioningStarted` keeps it `pending`; `ProvisioningSucceeded`
+    makes it `active`; `ProvisioningFailed` makes it `failed`; `UpdateRequested` makes it `updating`
+    and the job's `ProvisioningSucceeded` or `ProvisioningFailed` ends the update; `DeleteRequested`
+    makes it `deleting`; `Deleted` makes it `deleted` (a tombstone, `GET /v1/wfrn/{wfrn}` answers 410
+    for 30 days); `Imported` opens a resource straight in `active`; `Observed`, `DriftDetected`,
+    `DriftResolved` and `Tagged` change the resource's observed truth, drift flag and tags without
+    changing its state.
+
+    **wfrns** travel in the message body, never in the key alone, and are the partition key verbatim.
+  contact:
+    name: Customer console hub (console-root)
+  x-status: draft
+defaultContentType: application/json
+servers:
+  kafka:
+    host: kafka.console.internal:9092
+    protocol: kafka
+    description: The console's Kafka; locally the same topics run in-process in platform-fake-app's embedded broker
+channels:
+  stateResources:
+    address: state.resources
+    title: Resource state
+    description: Every change of a console resource, from the first request to the tombstone, published by the state service. Partitioned by wfrn, kept 30 days.
+    messages:
+      resourceRequested: { $ref: '#/components/messages/resourceRequested' }
+      provisioningStarted: { $ref: '#/components/messages/provisioningStarted' }
+      provisioningSucceeded: { $ref: '#/components/messages/provisioningSucceeded' }
+      provisioningFailed: { $ref: '#/components/messages/provisioningFailed' }
+      updateRequested: { $ref: '#/components/messages/updateRequested' }
+      observed: { $ref: '#/components/messages/observed' }
+      driftDetected: { $ref: '#/components/messages/driftDetected' }
+      driftResolved: { $ref: '#/components/messages/driftResolved' }
+      tagged: { $ref: '#/components/messages/tagged' }
+      deleteRequested: { $ref: '#/components/messages/deleteRequested' }
+      deleted: { $ref: '#/components/messages/deleted' }
+      imported: { $ref: '#/components/messages/imported' }
+    bindings:
+      kafka:
+        topic: state.resources
+        partitions: 24
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: wfrn
+    x-retention: 30d
+  driftFindings:
+    address: drift.findings
+    title: Drift findings
+    description: A finding opened, changed or closed by the drift service. Partitioned by wfrn, kept 30 days.
+    messages:
+      findingOpened: { $ref: '#/components/messages/findingOpened' }
+      findingUpdated: { $ref: '#/components/messages/findingUpdated' }
+      findingClosed: { $ref: '#/components/messages/findingClosed' }
+    bindings:
+      kafka:
+        topic: drift.findings
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: wfrn
+    x-retention: 30d
+  identityChanges:
+    address: identity.changes
+    title: Identity changes
+    description: Accounts, users, groups, roles, policies, access keys and quotas as they change, published by the identity service so the BFF and the other services refresh their authorization caches. Partitioned by accountId, compacted by key.
+    messages:
+      accountChanged: { $ref: '#/components/messages/accountChanged' }
+      userChanged: { $ref: '#/components/messages/userChanged' }
+      groupChanged: { $ref: '#/components/messages/groupChanged' }
+      roleChanged: { $ref: '#/components/messages/roleChanged' }
+      policyChanged: { $ref: '#/components/messages/policyChanged' }
+      accessKeyChanged: { $ref: '#/components/messages/accessKeyChanged' }
+      quotaChanged: { $ref: '#/components/messages/quotaChanged' }
+    bindings:
+      kafka:
+        topic: identity.changes
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [compact, delete]
+          retention.ms: 7776000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 90d, compacted by key
+operations:
+  publishResourceState:
+    action: send
+    channel: { $ref: '#/channels/stateResources' }
+    summary: The state service publishes every resource change
+  followResourceState:
+    action: receive
+    channel: { $ref: '#/channels/stateResources' }
+    summary: The BFF (live updates), the indexer and the drift service follow resources
+  publishFindings:
+    action: send
+    channel: { $ref: '#/channels/driftFindings' }
+    summary: The drift service publishes findings
+  followFindings:
+    action: receive
+    channel: { $ref: '#/channels/driftFindings' }
+    summary: The state service (drift flag), the BFF and the indexer follow findings
+  publishIdentityChanges:
+    action: send
+    channel: { $ref: '#/channels/identityChanges' }
+    summary: The identity service publishes changes
+  followIdentityChanges:
+    action: receive
+    channel: { $ref: '#/channels/identityChanges' }
+    summary: Every service refreshes its authorization cache from here
+components:
+  messageTraits:
+    consoleEvent:
+      contentType: application/json
+      correlationId:
+        description: The deterministic key, which consumers de-duplicate on
+        location: $message.payload#/key
+      bindings:
+        kafka:
+          key:
+            type: string
+            description: The wfrn, or the accountId on identity.changes
+          bindingVersion: 0.5.0
+  messages:
+    resourceRequested:
+      name: ResourceRequested
+      title: A resource was requested
+      summary: The state service minted a wfrn for a create request before the platform job starts
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: ResourceRequested }
+              data: { $ref: '#/components/schemas/ResourceRequestedData' }
+      examples:
+        - name: A VM is requested
+          payload:
+            type: ResourceRequested
+            wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
+            accountId: '123456789012'
+            region: global
+            version: 1
+            key: 'ResourceRequested:wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya:1'
+            at: '2026-10-23T02:10:40.871Z'
+            actor: dana
+            requestId: req_01jbx9example
+            data:
+              resourceType: vm
+              name: web-03
+              workflow: create-vm
+              input: { name: web-03, image: img-base-ubuntu, size: small, environment: dev }
+    provisioningStarted:
+      name: ProvisioningStarted
+      title: The platform job started
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: ProvisioningStarted }
+              data: { $ref: '#/components/schemas/JobData' }
+    provisioningSucceeded:
+      name: ProvisioningSucceeded
+      title: The platform job succeeded
+      summary: The resource is active, with the attributes the platform registered
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: ProvisioningSucceeded }
+              data: { $ref: '#/components/schemas/ProvisioningSucceededData' }
+    provisioningFailed:
+      name: ProvisioningFailed
+      title: The platform job failed, was cancelled or rolled back
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: ProvisioningFailed }
+              data: { $ref: '#/components/schemas/ProvisioningFailedData' }
+    updateRequested:
+      name: UpdateRequested
+      title: An update was requested
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: UpdateRequested }
+              data: { $ref: '#/components/schemas/UpdateRequestedData' }
+    observed:
+      name: Observed
+      title: The provider's truth was read
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Observed }
+              data: { $ref: '#/components/schemas/ObservedData' }
+    driftDetected:
+      name: DriftDetected
+      title: The observed truth differs from the desired state
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: DriftDetected }
+              data: { $ref: '#/components/schemas/DriftDetectedData' }
+    driftResolved:
+      name: DriftResolved
+      title: The drift was reverted, accepted or ignored, or went away
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: DriftResolved }
+              data: { $ref: '#/components/schemas/DriftResolvedData' }
+    tagged:
+      name: Tagged
+      title: Tags were set or removed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Tagged }
+              data: { $ref: '#/components/schemas/TaggedData' }
+    deleteRequested:
+      name: DeleteRequested
+      title: A delete was requested
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: DeleteRequested }
+              data: { $ref: '#/components/schemas/DeleteRequestedData' }
+    deleted:
+      name: Deleted
+      title: The resource is gone
+      summary: The platform retired it or the delete job succeeded; the wfrn becomes a tombstone
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Deleted }
+              data: { $ref: '#/components/schemas/DeletedData' }
+    imported:
+      name: Imported
+      title: An existing resource was taken under management
+      summary: From the platform's backfill (P-05) or a discovered unmanaged object the account claimed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Imported }
+              data: { $ref: '#/components/schemas/ImportedData' }
+    findingOpened:
+      name: FindingOpened
+      title: A drift finding was opened
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/FindingEvent'
+          - type: object
+            properties:
+              type: { const: FindingOpened }
+    findingUpdated:
+      name: FindingUpdated
+      title: A finding's fields changed on a later observation
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/FindingEvent'
+          - type: object
+            properties:
+              type: { const: FindingUpdated }
+    findingClosed:
+      name: FindingClosed
+      title: A finding was closed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/FindingEvent'
+          - type: object
+            required: [data]
+            properties:
+              type: { const: FindingClosed }
+              data:
+                type: object
+                required: [findingId, resolution]
+                properties:
+                  findingId: { type: string }
+                  resolution: { $ref: '#/components/schemas/Resolution' }
+                  by: { type: string }
+                  jobId: { type: string, description: The revert job, for a reverted finding }
+    accountChanged:
+      name: AccountChanged
+      title: An account was created, changed or suspended
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: AccountChanged }
+              subject: { const: account }
+    userChanged:
+      name: UserChanged
+      title: A user was added, changed or removed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: UserChanged }
+              subject: { const: user }
+    groupChanged:
+      name: GroupChanged
+      title: A group or its membership changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: GroupChanged }
+              subject: { const: group }
+    roleChanged:
+      name: RoleChanged
+      title: A role or its policies changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: RoleChanged }
+              subject: { const: role }
+    policyChanged:
+      name: PolicyChanged
+      title: A policy document changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: PolicyChanged }
+              subject: { const: policy }
+    accessKeyChanged:
+      name: AccessKeyChanged
+      title: An access key was created, rotated or revoked
+      summary: Carries the key id and its state only, never the secret
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: AccessKeyChanged }
+              subject: { const: accessKey }
+    quotaChanged:
+      name: QuotaChanged
+      title: A quota was set or an increase was decided
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: QuotaChanged }
+              subject: { const: quota }
+  schemas:
+    Wfrn:
+      type: string
+      description: 'A resource name: wfrn:<partition>:<service>:<region>:<account>:<type>/<id> (contracts/wfrn/SPEC.md)'
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    ResourceState:
+      type: string
+      description: The lifecycle classes of P-06
+      enum: [pending, active, updating, deleting, deleted, failed]
+    Resolution:
+      type: string
+      enum: [reverted, accepted, ignored, vanished]
+    ConsoleEvent:
+      type: object
+      description: What every message carries
+      required: [type, accountId, region, version, key, at, data]
+      properties:
+        type: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        version: { type: integer, minimum: 1, description: The subject's version after this event }
+        key: { type: string, description: 'Deterministic; consumers de-duplicate on it' }
+        at: { type: string, format: date-time }
+        actor: { type: string, description: The console user or service that caused it }
+        jobId: { type: string, description: The platform job, when one is involved }
+        requestId: { type: string, description: The console request id (X-Console-Request-Id) }
+        traceparent: { type: string }
+        data: { type: object, additionalProperties: true }
+    ResourceEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [wfrn, state]
+          properties:
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            state: { $ref: '#/components/schemas/ResourceState', description: The resource's state after this event }
+            resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
+    FindingEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [wfrn, data]
+          properties:
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            data:
+              type: object
+              required: [findingId]
+              properties:
+                findingId: { type: string }
+                severity: { type: string, enum: [info, warning, critical] }
+                fields:
+                  type: array
+                  items: { $ref: '#/components/schemas/DriftField' }
+                observedAt: { type: string, format: date-time }
+    IdentityEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [subject, subjectId]
+          properties:
+            subject: { type: string, enum: [account, user, group, role, policy, accessKey, quota] }
+            subjectId: { type: string }
+            action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked] }
+            data: { type: object, description: The subject as the identity service serves it after the change, without secrets, additionalProperties: true }
+    DriftField:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string, description: A JSON pointer into the resource's attributes }
+        expected: { description: The desired value }
+        observed: { description: What the provider reports }
+    JobData:
+      type: object
+      required: [jobId, workflow]
+      properties:
+        jobId: { type: string }
+        workflow: { type: string }
+        workflowVersion: { type: string }
+    ResourceRequestedData:
+      type: object
+      required: [resourceType, workflow]
+      properties:
+        resourceType: { type: string }
+        name: { type: string }
+        workflow: { type: string }
+        input: { type: object, description: The create input after redaction, additionalProperties: true }
+    ProvisioningSucceededData:
+      allOf:
+        - $ref: '#/components/schemas/JobData'
+        - type: object
+          required: [registryId, attributes]
+          properties:
+            registryId: { type: string, description: The platform's registry id }
+            providerId: { type: string }
+            attributes: { type: object, additionalProperties: true }
+    ProvisioningFailedData:
+      allOf:
+        - $ref: '#/components/schemas/JobData'
+        - type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [failed, cancelled, rolled-back] }
+            errorClass: { type: string }
+            failedStep: { type: string }
+            message: { type: string }
+    UpdateRequestedData:
+      allOf:
+        - $ref: '#/components/schemas/JobData'
+        - type: object
+          required: [changes]
+          properties:
+            changes: { type: object, description: The mutable fields and their requested values, additionalProperties: true }
+    ObservedData:
+      type: object
+      required: [status, observedAt]
+      properties:
+        status: { type: string, enum: [found, not_found, error] }
+        observed: { type: object, additionalProperties: true }
+        observedAt: { type: string, format: date-time }
+        provider: { type: string }
+        action: { type: string }
+    DriftDetectedData:
+      type: object
+      required: [findingId, fields]
+      properties:
+        findingId: { type: string }
+        fields:
+          type: array
+          items: { $ref: '#/components/schemas/DriftField' }
+    DriftResolvedData:
+      type: object
+      required: [findingId, resolution]
+      properties:
+        findingId: { type: string }
+        resolution: { $ref: '#/components/schemas/Resolution' }
+    TaggedData:
+      type: object
+      properties:
+        set:
+          type: object
+          additionalProperties: { type: string }
+        removed:
+          type: array
+          items: { type: string }
+    DeleteRequestedData:
+      allOf:
+        - $ref: '#/components/schemas/JobData'
+        - type: object
+          properties:
+            reason: { type: string }
+    DeletedData:
+      type: object
+      required: [tombstoneUntil]
+      properties:
+        jobId: { type: string }
+        registryId: { type: string }
+        tombstoneUntil: { type: string, format: date-time, description: 'Until when GET /v1/wfrn/{wfrn} answers 410' }
+    ImportedData:
+      type: object
+      required: [source, registryId, attributes]
+      properties:
+        source: { type: string, enum: [backfill, discover] }
+        registryId: { type: string }
+        providerId: { type: string }
+        attributes: { type: object, additionalProperties: true }
