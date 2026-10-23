@@ -1,5 +1,6 @@
 package com.iaf.console.bff.live.domain;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -14,9 +15,10 @@ import reactor.core.publisher.Sinks;
 
 /**
  * Where live events meet open pages: one order of events across accounts, a ring per account
- * (and one for events every account gets) so a browser that reconnects with {@code Last-Event-ID}
- * replays what it missed, and a multicast sink for what happens next. A cursor older than the
- * ring answers a {@code resync} event first, which tells the page to reload what it shows.
+ * (and one for events every account gets, and one per person for their notifications) so a
+ * browser that reconnects with {@code Last-Event-ID} replays what it missed, and a multicast sink
+ * for what happens next. A cursor older than the ring answers a {@code resync} event first, which
+ * tells the page to reload what it shows.
  */
 public final class LiveHub {
 
@@ -50,13 +52,23 @@ public final class LiveHub {
             }
             ring.addLast(sequenced);
         }
-        sink.tryEmitNext(sequenced);
+        // publishers run on many threads (the feed relay, Kafka, requests): a concurrent emit is retried rather than dropped
+        try {
+            sink.emitNext(sequenced, Sinks.EmitFailureHandler.busyLooping(Duration.ofSeconds(1)));
+        } catch (Sinks.EmissionException e) {
+            // the ring still holds it, so a stream that reconnects with its cursor replays it
+        }
         return sequenced.seq();
     }
 
     /** Publishes to every account (content and region changes). */
     public long broadcast(LiveEvent event) {
         return publish(Sequenced.EVERY_ACCOUNT, event);
+    }
+
+    /** Publishes to one person's streams, whatever account each is in (their notifications). */
+    public long publishToPerson(String userId, LiveEvent event) {
+        return publish(Sequenced.personKey(userId), event);
     }
 
     /** The current sequence, which a fresh subscriber may send back later as its cursor. */
@@ -69,21 +81,30 @@ public final class LiveHub {
      * When the cursor is older than what the rings keep, a {@code resync} event comes first.
      */
     public Flux<Sequenced> subscribe(String accountId, Long afterSeq) {
+        return subscribe(accountId, null, afterSeq);
+    }
+
+    /** The same, with the events published to one person ({@link #publishToPerson}) as well; a null user adds none. */
+    public Flux<Sequenced> subscribe(String accountId, String userId, Long afterSeq) {
+        String person = userId == null ? null : Sequenced.personKey(userId);
         List<Sequenced> replay = new ArrayList<>();
         boolean resync = false;
         long from;
         synchronized (this) {
             from = afterSeq == null ? next - 1 : afterSeq;
             if (afterSeq != null) {
-                resync = isTooOld(accountId, afterSeq) || isTooOld(Sequenced.EVERY_ACCOUNT, afterSeq);
+                resync = isTooOld(accountId, afterSeq) || isTooOld(Sequenced.EVERY_ACCOUNT, afterSeq) || person != null && isTooOld(person, afterSeq);
                 collect(rings.get(accountId), afterSeq, replay);
                 collect(rings.get(Sequenced.EVERY_ACCOUNT), afterSeq, replay);
+                if (person != null) {
+                    collect(rings.get(person), afterSeq, replay);
+                }
                 replay.sort((a, b) -> Long.compare(a.seq(), b.seq()));
             }
         }
         final long lastReplayed = replay.isEmpty() ? from : replay.get(replay.size() - 1).seq();
         Flux<Sequenced> live = sink.asFlux()
-                .filter(s -> s.accountId().equals(accountId) || s.global())
+                .filter(s -> s.accountId().equals(accountId) || s.global() || s.accountId().equals(person))
                 .filter(s -> s.seq() > lastReplayed);
         Flux<Sequenced> head = Flux.fromIterable(replay);
         if (resync) {

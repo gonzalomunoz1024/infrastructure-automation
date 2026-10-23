@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -30,6 +31,7 @@ import com.iaf.console.bff.demo.cost.domain.DemoPrices;
 import com.iaf.console.bff.demo.directory.application.DemoDirectory;
 import com.iaf.console.bff.demo.directory.domain.DemoAccount;
 import com.iaf.console.bff.demo.state.application.DemoStateStore;
+import com.iaf.console.bff.live.application.ConsoleEventListener;
 import com.iaf.console.bff.live.domain.ConsoleEvents;
 import com.iaf.console.bff.live.domain.LiveHub;
 import com.iaf.console.bff.resources.domain.StateResource;
@@ -46,7 +48,8 @@ import com.iaf.console.wfrn.Ulid;
  * spend counted day by day. A budget's spend is the monthly run rate of the resources in its scope
  * (deterministic, so a demo budget is over as soon as its amount is below what its scope runs at),
  * and a threshold crossed is published to the live hub as the cost service's
- * {@code BudgetThresholdCrossed} would be, through the same mapping Kafka's events take.
+ * {@code BudgetThresholdCrossed} would be, through the same mapping Kafka's events take, and to the
+ * console event listeners (the notifications) as Kafka's consumer hands it on.
  */
 public class DemoCostLedger {
 
@@ -63,13 +66,20 @@ public class DemoCostLedger {
     private final Clock clock;
     private final Map<String, Budget> budgets = new ConcurrentHashMap<>();
     private final Map<String, String> idempotency = new ConcurrentHashMap<>();
+    private final Supplier<List<ConsoleEventListener>> listeners;
 
     public DemoCostLedger(DemoStateStore store, DemoDirectory directory, LiveHub hub, ObjectMapper json, Clock clock) {
+        this(store, directory, hub, json, clock, List::of);
+    }
+
+    public DemoCostLedger(DemoStateStore store, DemoDirectory directory, LiveHub hub, ObjectMapper json, Clock clock,
+            Supplier<List<ConsoleEventListener>> listeners) {
         this.store = store;
         this.directory = directory;
         this.hub = hub;
         this.json = json;
         this.clock = clock;
+        this.listeners = listeners;
     }
 
     /** One budget as the demo keeps it. */
@@ -604,6 +614,13 @@ public class DemoCostLedger {
                 ConsoleEvents.BUDGET_THRESHOLD_CROSSED, clock.instant(), "budget", b.budgetId, "console-cost-service", null,
                 new EventEnvelope.Context(b.accountId, null, null, null), null, data);
         ConsoleEvents.toLive(envelope).ifPresent(mapped -> hub.publish(mapped.accountId(), mapped.event()));
+        for (ConsoleEventListener listener : listeners.get()) {
+            try {
+                listener.onConsoleEvent(envelope);
+            } catch (RuntimeException e) {
+                // a listener's failure is its own; the ledger carries on as the cost service would
+            }
+        }
     }
 
     /** The run rate of the live resources in a budget's scope: the demo's spend. */

@@ -21,7 +21,9 @@ import reactor.core.publisher.Mono;
 /**
  * The live stream of a session's account as server-sent events, narrowed to a resource or to event
  * types, with heartbeats. A {@code budget.alert} reaches only the sessions whose person may read
- * the budget ({@code budgets:get} on it).
+ * the budget ({@code budgets:get} on it). The person's own {@code notification} events reach every
+ * stream they have open, whatever its account or resource; a stream narrowed to types gets them
+ * when {@code notification} is one of the types.
  */
 public class Live {
 
@@ -42,7 +44,7 @@ public class Live {
     }
 
     public Flux<ServerSentEvent<LiveEvent>> stream(Session session, Long lastEventId, String wfrn, Set<String> types) {
-        Flux<ServerSentEvent<LiveEvent>> events = hub.subscribe(session.accountId(), lastEventId)
+        Flux<ServerSentEvent<LiveEvent>> events = hub.subscribe(session.accountId(), session.user().userId(), lastEventId)
                 .filter(s -> matches(s, wfrn, types))
                 .concatMap(s -> mayRead(session, s.event()).filter(Boolean::booleanValue).map(ok -> s))
                 .map(s -> ServerSentEvent.<LiveEvent>builder().id(Long.toString(s.seq())).event(s.event().type()).data(s.event()).build());
@@ -71,7 +73,7 @@ public class Live {
         if (LiveEvent.RESYNC.equals(event.type())) {
             return true;
         }
-        if (wfrn != null && !wfrn.isBlank() && !s.global() && !wfrn.equals(event.wfrn())) {
+        if (wfrn != null && !wfrn.isBlank() && !s.global() && !s.personal() && !wfrn.equals(event.wfrn())) {
             return false;
         }
         return types == null || types.isEmpty() || types.contains(event.type());
