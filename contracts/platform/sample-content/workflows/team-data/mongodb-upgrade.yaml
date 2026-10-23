@@ -1,0 +1,159 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: mongodb-upgrade
+  title: MongoDB upgrade
+  noun: mongodb-cluster
+  verb: upgrade
+  persona: dba
+  owner: team-data
+  folder: Data
+  tags: [mongodb, upgrade]
+  version: 3.1.0
+  description: Upgrade a MongoDB cluster one minor version at a time, with a snapshot and a rollback path.
+api:
+  method: POST
+  path: /api/v1/mongodb-clusters/{clusterId}:upgrade
+  input:
+    type: object
+    required: [clusterId, targetVersion]
+    properties:
+      clusterId:
+        type: string
+        title: Cluster id
+        x-resource: { type: database }
+      targetVersion:
+        type: string
+        title: Target version
+        enum: ["7.0", "8.0"]
+        default: "8.0"
+      maintenanceWindow:
+        type: string
+        title: Maintenance window
+        examples: ["Sat 02:00-04:00 UTC", "Sun 01:00-03:00 UTC", "tonight 23:00 UTC"]
+        description: Free text shown to the approver, for example "Sat 02:00-04:00 UTC"
+  response: { status: 202 }
+  preview: true
+  batch:
+    max: 50
+    rollout: { waves: [1, 5, 25], maxParallel: 2, stopIfFailedPercent: 1 }
+mcp:
+  expose: true
+  description: Upgrade a MongoDB cluster to a target major version. Long running; poll the job.
+policy:
+  approval: { required: true, group: data-approvers, timeout: 24h }
+  rbac: [dba, sre]
+  change: { required: true }
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - getCluster:
+        name: Get cluster
+        call: provider
+        with:
+          provider: mongodb
+          action: cluster.get
+          input: { id: "{{ $input.clusterId }}" }
+        output: { as: cluster }
+    - alreadyThere:
+        name: Already on target?
+        switch:
+          - case: { when: "{{ $cluster.version == $input.targetVersion }}", then: end }
+          - default: healthCheck
+    - healthCheck:
+        name: Health check
+        call: provider
+        with:
+          provider: mongodb
+          action: cluster.health
+          input: { id: "{{ $input.clusterId }}" }
+        assert: "{{ $json.state == 'healthy' && $json.replicationLagSeconds < 10 }}"
+    - approval:
+        name: Approve upgrade
+        approval:
+          group: data-approvers
+          message: "Upgrade {{ $cluster.name }} from {{ $cluster.version }} to {{ $input.targetVersion }} during {{ $input.maintenanceWindow ?? 'the next window' }}?"
+          timeout: 24h
+    - snapshot:
+        name: Snapshot
+        call: provider
+        with:
+          provider: mongodb
+          action: backup.snapshot
+          input: { clusterId: "{{ $input.clusterId }}", description: "pre-upgrade {{ $job.id }}" }
+        output: { as: snapshot }
+        timeout: 2h
+    - upgrade:
+        name: Upgrade with rollback
+        try:
+          do:
+            - setFcv:
+                name: Pin feature compatibility
+                call: ansible
+                with:
+                  playbook:
+                    git: { repo: github.com/acme/ops-playbooks, ref: v3.1.0, path: mongo/set-fcv.yml }
+                    commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d
+                  inventory: dynamic
+                  limit: "{{ $cluster.name }}"
+                  extraVars: { fcv: "{{ $cluster.version }}" }
+                  credential: vault:ssh/dba-automation
+                retry: { maxAttempts: 1 }
+            - rollingUpgrade:
+                name: Rolling upgrade
+                call: provider
+                with:
+                  provider: mongodb
+                  action: cluster.upgrade
+                  input: { id: "{{ $input.clusterId }}", version: "{{ $input.targetVersion }}" }
+                timeout: 3h
+            - waitHealthy:
+                name: Wait until healthy
+                call: provider
+                with:
+                  provider: mongodb
+                  action: cluster.waitForState
+                  input: { id: "{{ $input.clusterId }}", state: healthy, timeout: 1800 }
+                timeout: 40m
+          catch:
+            as: upgradeError
+            do:
+              - restore:
+                  name: Restore snapshot
+                  call: provider
+                  with:
+                    provider: mongodb
+                    action: backup.restore
+                    input: { clusterId: "{{ $input.clusterId }}", snapshotId: "{{ $snapshot.id }}" }
+                  timeout: 2h
+              - failLoudly:
+                  name: Fail the job
+                  raise:
+                    error: UpgradeFailed
+                    message: "Upgrade failed and the snapshot was restored: {{ $upgradeError.message }}"
+    - verify:
+        name: Verify version
+        call: provider
+        with:
+          provider: mongodb
+          action: cluster.get
+          input: { id: "{{ $input.clusterId }}" }
+        assert: "{{ $json.version == $input.targetVersion }}"
+    - registerVersion:
+        name: Update registry
+        register:
+          type: database
+          id: "{{ $input.clusterId }}"
+          attributes: { engine: mongodb, version: "{{ $input.targetVersion }}", lastUpgradeJob: "{{ $job.id }}" }
+  catch:
+    do:
+      - pageDba:
+          name: Page the DBA on call
+          notify:
+            channel: "#data-alerts"
+            message: "MongoDB upgrade {{ $job.id }} on {{ $input.clusterId }} failed: {{ $error.message }}"
+  outputs:
+    version: "{{ $('verify').json.version }}"
+    snapshotId: "{{ $snapshot.id }}"

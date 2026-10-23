@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/region.schema.json",
+  "title": "Region",
+  "description": "A kind: Region file, the content the platform change P-07 adds under regions/. One region, global, ships now; it is an ordinary region, and nothing in code compares a region name to the string global. The hub keeps its copy in type-overlays/regions/ until the platform carries it.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "iaf.platform/v1" },
+    "kind": { "const": "Region" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The region id: the region segment of every wfrn in it, so it never changes (check region.name.invalid)",
+          "type": "string",
+          "pattern": "^[a-z0-9-]{2,32}$"
+        },
+        "title": { "description": "What the region switcher shows", "type": "string", "minLength": 1 },
+        "description": { "type": "string" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["partition", "status", "environments"],
+      "additionalProperties": false,
+      "properties": {
+        "partition": {
+          "description": "The wfrn partition the region belongs to; fixed per installation",
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}$"
+        },
+        "status": {
+          "description": "available: open to every account; opt-in: accounts enable it; retired: no new resources, existing names stay valid",
+          "type": "string",
+          "enum": ["available", "opt-in", "retired"]
+        },
+        "environments": {
+          "description": "The environments a provider may serve in this region (check provider.region.environment.unknown); the first one is the default an observe call uses when the type has no environment field",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" }
+        }
+      }
+    }
+  }
+}

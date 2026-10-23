@@ -1,0 +1,86 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: reserve-ip-address
+  title: Reserve IP address
+  noun: address
+  verb: create
+  persona: developer
+  owner: team-platform
+  folder: Platform
+  tags: [network, dns]
+  version: 1.0.0
+  description: Reserve an address from a pool and publish its DNS record. Both providers are custom code on their own workers, the examples of the Go and Python SDKs.
+api:
+  method: POST
+  path: /api/v1/addresses
+  input:
+    type: object
+    required: [pool, hostname]
+    properties:
+      pool:
+        type: string
+        title: Pool
+        enum: [office, lab, dmz]
+        default: lab
+      hostname:
+        type: string
+        title: Host name
+        pattern: "^[a-z][a-z0-9-]{1,30}$"
+      ttl:
+        type: integer
+        title: DNS TTL (seconds)
+        default: 300
+        minimum: 30
+        maximum: 86400
+  response: { status: 202 }
+mcp:
+  expose: true
+  description: Reserve an IP address from a pool and publish its A record. Returns a job id; the job output has the address and the record name.
+policy:
+  rbac: [developer, ops, sre]
+rollout:
+  strategy: all
+workflow:
+  do:
+    - reserve:
+        name: Reserve address
+        call: provider
+        with:
+          provider: ip-pool
+          action: address.reserve
+          input: { pool: "{{ $input.pool }}", hostname: "{{ $input.hostname }}" }
+        output: { as: address }
+        retry: { maxAttempts: 3, backoff: exponential }
+        timeout: 2m
+        compensate:
+          - release:
+              name: Release the address
+              call: provider
+              with:
+                provider: ip-pool
+                action: address.release
+                input: { address: "{{ $address.address }}" }
+    - publishRecord:
+        name: Publish DNS record
+        call: provider
+        with:
+          provider: dns-records
+          action: record.create
+          input:
+            zone: "{{ $input.pool }}.example.internal"
+            name: "{{ $input.hostname }}"
+            type: A
+            value: "{{ $address.address }}"
+            ttl: "{{ $input.ttl ?? 300 }}"
+        output: { as: record }
+        retry: { maxAttempts: 5, backoff: exponential }
+        timeout: 5m
+    - notifyDone:
+        name: Tell the channel
+        notify:
+          channel: "#platform-alerts"
+          message: "{{ $record.fqdn }} now points to {{ $address.address }} for {{ $job.requester }}"
+  outputs:
+    address: "{{ $address.address }}"
+    fqdn: "{{ $record.fqdn }}"

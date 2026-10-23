@@ -1,0 +1,32 @@
+# Drift observation through the MongoDB provider's read action and a few hints (P-15). Merged over
+# the platform's resource-types/database.yaml.
+apiVersion: iaf.console/v1
+kind: TypeOverlay
+metadata:
+  name: database
+  service: data
+observe:
+  provider: mongodb
+  action: cluster.get               # effect: read
+  input: { id: "{{ $resource.providerId ?? $resource.id }}" }
+  map:
+    version: "{{ $json.version }}"
+    tier: "{{ $json.tier }}"
+  ignore: [owner, secret]           # the owner comes from the requester; the secret is a vault reference, never compared
+  interval: 1h
+  notFound: missing
+  # No `discover`: the MongoDB provider has no list action at c9529d5.
+schema:
+  properties:
+    name:
+      x-console: { column: true, searchable: true }
+    engine:
+      x-console: { column: true }
+    version:
+      x-console: { column: true }
+    tier:
+      x-console: { column: true, group: Size }
+    environment:
+      x-console: { column: true, searchable: true }
+    secret:
+      x-console: { sensitive: true, format: code }
