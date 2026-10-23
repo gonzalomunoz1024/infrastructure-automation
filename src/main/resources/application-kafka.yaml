@@ -1,0 +1,6 @@
+# The outbox relay publishes identity.changes to Kafka.
+console:
+  outbox:
+    kafka:
+      bootstrap-servers: ${CONSOLE_KAFKA_BOOTSTRAP:localhost:9092}
+      client-id: console-identity-service

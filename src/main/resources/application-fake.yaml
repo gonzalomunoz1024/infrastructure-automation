@@ -1,0 +1,10 @@
+# platform-fake embedded in this process (with the demo profile: a one-JVM demo on 18083).
+console:
+  identity:
+    platform:
+      base-url: http://localhost:${server.port}
+  platform-fake:
+    enabled: true
+    default-user: gonzalo
+    step-delay: 250ms
+    demo: true

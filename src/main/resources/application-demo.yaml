@@ -1,0 +1,15 @@
+# The demo: dev headers accepted beside the BFF's JWTs, the BFF's JWKS trusted, platform-fake-app
+# on 18090 as the platform, and the demo accounts and people seeded at start.
+console:
+  identity:
+    auth:
+      dev-headers: true
+      jwks-uri: http://localhost:18081/.well-known/jwks.json
+      bundle-token: demo-bundle-token
+    platform:
+      base-url: http://localhost:18090
+      dev-user: gonzalo
+
+logging:
+  level:
+    com.iaf.console.identity: debug

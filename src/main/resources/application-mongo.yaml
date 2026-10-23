@@ -1,0 +1,8 @@
+# MongoDB instead of the in-memory stores.
+spring:
+  autoconfigure:
+    exclude: []
+  data:
+    mongodb:
+      uri: ${CONSOLE_MONGO_URI:mongodb://localhost:27017}
+      database: ${CONSOLE_MONGO_DATABASE:console_identity}
