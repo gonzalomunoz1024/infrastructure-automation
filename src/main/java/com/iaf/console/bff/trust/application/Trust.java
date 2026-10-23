@@ -88,10 +88,13 @@ public class Trust {
         return new IssuedServiceToken(sign(claims), lifetime.toSeconds(), audiences, serviceId);
     }
 
-    /** A compact JWS for one call to another console service. */
+    /** A compact JWS for one call to another console service; it ends with the token's lifetime or when its roles stop being current. */
     public String mint(InternalToken token) {
         Instant now = clock.instant();
-        Duration lifetime = properties.tokenLifetime();
+        Instant expires = now.plus(properties.tokenLifetime());
+        if (token.notAfter() != null && token.notAfter().isBefore(expires)) {
+            expires = token.notAfter();
+        }
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                 .issuer(properties.issuer())
                 .audience(List.of(token.audience(), CONSOLE_AUDIENCE))
@@ -101,7 +104,7 @@ public class Trust {
                 .claim("roles", token.roles())
                 .jwtID(UUID.randomUUID().toString())
                 .issueTime(Date.from(now))
-                .expirationTime(Date.from(now.plus(lifetime)));
+                .expirationTime(Date.from(expires));
         if (token.accountId() != null) {
             claims.claim("acct", token.accountId());
         }

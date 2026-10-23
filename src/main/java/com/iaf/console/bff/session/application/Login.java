@@ -109,7 +109,8 @@ public class Login {
         AccountMembership first = resolved.accounts().get(0);
         String region = first.defaultRegion() == null || first.defaultRegion().isBlank() ? "global" : first.defaultRegion();
         return new Session(Pkce.random(32), resolved.user(), List.copyOf(resolved.accounts()), first.accountId(), region, now,
-                user.authTime() == null ? now : user.authTime(), now, now.plus(properties.ttl()), user.issuer(), user.subject());
+                user.authTime() == null ? now : user.authTime(), now, now.plus(properties.ttl()), user.issuer(), user.subject(), user.groups(), now,
+                Sessions.rolesUntil(now, resolved.accounts(), properties.rolesRefreshInterval()));
     }
 
     private static String blankToNull(String s) {

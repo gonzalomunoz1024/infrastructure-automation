@@ -26,7 +26,7 @@ public final class ConsoleEvents {
         String type = envelope.type() == null ? "" : envelope.type();
         return type.endsWith("Changed") && envelope.aggregate() != null
                 && switch (envelope.aggregate()) {
-                    case "account", "user", "group", "role", "policy", "accessKey", "quota" -> true;
+                    case "account", "user", "group", "role", "policy", "accessKey", "quota", "elevation", "guardrail", "access-review" -> true;
                     default -> false;
                 };
     }

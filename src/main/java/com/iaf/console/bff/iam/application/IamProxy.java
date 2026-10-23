@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.identity.application.IdentityClient;
+import com.iaf.console.bff.session.application.MembershipChanges;
 import com.iaf.console.bff.session.domain.RoleConventions;
 import com.iaf.console.bff.session.domain.Session;
 
@@ -26,7 +27,8 @@ import reactor.core.publisher.Mono;
  * and {@code /console/v1/access-requests...} become {@code /v1/accounts/{account}/<rest>} at the
  * identity service, called with an internal token for the session's user, so the identity
  * service's own policies decide. The status, ETag and body come back as they were; a 403 without
- * a {@code denied} block gets one, and a successful write drops the account's cached decisions.
+ * a {@code denied} block gets one, and a successful write drops the account's cached decisions and
+ * makes the account's sessions read their memberships again.
  */
 public class IamProxy {
 
@@ -35,11 +37,13 @@ public class IamProxy {
 
     private final IdentityClient identity;
     private final Access access;
+    private final MembershipChanges changes;
     private final ObjectMapper json;
 
-    public IamProxy(IdentityClient identity, Access access, ObjectMapper json) {
+    public IamProxy(IdentityClient identity, Access access, MembershipChanges changes, ObjectMapper json) {
         this.identity = identity;
         this.access = access;
+        this.changes = changes;
         this.json = json;
     }
 
@@ -66,6 +70,8 @@ public class IamProxy {
             }
             if (response.statusCode().is2xxSuccessful() && WRITES.contains(method)) {
                 access.invalidate(session.accountId());
+                // whoever's memberships the write changed: every session of the account reads them again
+                changes.accountChanged(session.accountId());
             }
             return new ProxiedResponse(response.statusCode(), contentType, etag, answered);
         })).timeout(identity.timeout());

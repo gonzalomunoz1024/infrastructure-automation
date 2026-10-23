@@ -55,6 +55,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.oidc.issuer`, `client-id`, `client-secret`, `redirect-uri`, `scopes`, `groups-claim` | The enterprise identity provider; discovery is read from `<issuer>/.well-known/openid-configuration` |
 | `console.session.secret` | Base64, at least 32 bytes; seals the login ticket and signs CSRF tokens. Generated at boot when empty, which only suits one replica |
 | `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
+| `console.session.roles-refresh-interval` | How long a session uses the memberships `principals:resolve` answered before its next request reads them again (5 minutes); never past the earliest `accounts[].elevations[].until`, and sooner after an identity change |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
 | `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
@@ -67,6 +68,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.live.ring-capacity`, `heartbeat`, `relay.enabled` | The replay ring per account, the SSE heartbeat, and whether this instance follows the platform feed |
 | `console.platform.fake.*` | Demo only: the embedded platform's port, step delay and seed |
 | `console.kafka.*` | With the `kafka` profile: bootstrap servers, group id, topics |
+| `console.kafka.sessions.topic`, `group-prefix` | With the `kafka` profile: the identity changes the sessions follow (`identity.changes`), each instance in a consumer group of its own (`console-bff-sessions-<random>`) |
 
 ## Security model
 
@@ -76,7 +78,14 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
   replica. The ID token is verified against the provider's JWKS (issuer, audience, expiry, nonce).
 * **The principal** is resolved by the identity service (`POST /v1/principals:resolve`): who the
   person is in the console and which accounts they belong to, with their managed roles. No account
-  means 403 at sign-in.
+  means 403 at sign-in. A session reads them again on its first request after
+  `roles-refresh-interval`, after the earliest time-boxed role (elevation or break glass) ends,
+  after an IAM write made through this instance, and (with the `kafka` profile) after an
+  `identity.changes` event that concerns the person or the account (`ElevationChanged`,
+  `UserChanged` updated or deleted, `GroupChanged`, `RoleChanged`, `PolicyChanged`,
+  `AccountChanged` closed or suspended). A person no longer in the session's account, or in none,
+  loses the session (401); a re-read that fails answers 503. No internal token outlives the roles
+  it carries.
 * **The session** is an opaque random id in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie; the
   server keeps the memberships, the current account and region, and `authTime`. Switching account
   or region is `PUT /console/v1/session`.

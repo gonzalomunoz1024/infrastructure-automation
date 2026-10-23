@@ -6,11 +6,17 @@ import java.time.Instant;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.CsrfTokens;
+import com.iaf.console.bff.session.domain.IdpUser;
+import com.iaf.console.bff.session.domain.NoConsoleAccountException;
 import com.iaf.console.bff.session.domain.Session;
 import com.iaf.console.bff.session.domain.StepUpPolicy;
 import com.iaf.console.bff.session.domain.StepUpRequiredException;
+import com.iaf.console.bff.session.ports.outbound.PrincipalResolverPort;
 import com.iaf.console.bff.session.ports.outbound.RegionsPort;
 import com.iaf.console.bff.session.ports.outbound.SessionStore;
 import com.iaf.console.kit.errors.NotFoundException;
@@ -19,10 +25,14 @@ import reactor.core.publisher.Mono;
 
 /**
  * Sessions after sign-in: finding the one a cookie names (and ending it when expired or idle),
- * the view the web app reads, switching account or region, the CSRF token, the step-up check
- * and logout.
+ * reading its memberships again when they are due (the re-read interval, the end of a time-boxed
+ * role, or an identity change heard since), the view the web app reads, switching account or
+ * region, the CSRF token, the step-up check and logout. A re-read that finds the person no longer
+ * in the session's account, or in no account, ends the session.
  */
 public class Sessions {
+
+    private static final Logger log = LoggerFactory.getLogger(Sessions.class);
 
     private static final Pattern REGION = Pattern.compile("^[a-z0-9-]{2,32}$");
     private static final Duration TOUCH_INTERVAL = Duration.ofMinutes(1);
@@ -31,16 +41,28 @@ public class Sessions {
     private final CsrfTokens csrf;
     private final StepUpPolicy stepUp;
     private final RegionsPort regions;
+    private final PrincipalResolverPort resolver;
+    private final MembershipChanges changes;
     private final SessionProperties properties;
     private final Clock clock;
 
-    public Sessions(SessionStore store, CsrfTokens csrf, StepUpPolicy stepUp, RegionsPort regions, SessionProperties properties, Clock clock) {
+    public Sessions(SessionStore store, CsrfTokens csrf, StepUpPolicy stepUp, RegionsPort regions, PrincipalResolverPort resolver,
+            MembershipChanges changes, SessionProperties properties, Clock clock) {
         this.store = store;
         this.csrf = csrf;
         this.stepUp = stepUp;
         this.regions = regions;
+        this.resolver = resolver;
+        this.changes = changes;
         this.properties = properties;
         this.clock = clock;
+    }
+
+    /** Until when memberships read at {@code now} may be used: the re-read interval, and never past the earliest time-boxed role's end. */
+    public static Instant rolesUntil(Instant now, List<AccountMembership> accounts, Duration interval) {
+        Instant until = now.plus(interval);
+        Instant elevation = Session.earliestElevationEnd(accounts);
+        return elevation != null && elevation.isBefore(until) ? elevation : until;
     }
 
     /** The live session a cookie names; empty when there is none, it expired, or it went idle. */
@@ -52,6 +74,9 @@ public class Sessions {
         return store.find(cookieValue).flatMap(session -> {
             if (session.expired(now) || session.lastSeenAt().plus(properties.idleTimeout()).isBefore(now)) {
                 return store.delete(session.id()).then(Mono.empty());
+            }
+            if (session.rolesDue(now) || changes.changedSince(session)) {
+                return refreshAccounts(session.seenAt(now), now);
             }
             if (session.lastSeenAt().plus(TOUCH_INTERVAL).isBefore(now)) {
                 Session seen = session.seenAt(now);
@@ -102,12 +127,34 @@ public class Sessions {
         });
     }
 
-    public Mono<Session> refreshAccounts(Session session, List<AccountMembership> accounts) {
-        if (accounts.isEmpty() || session.membership(session.accountId()).isEmpty()) {
-            return Mono.just(session);
+    /**
+     * Reads the person's memberships again ({@code principals:resolve}, with the identity
+     * provider's groups of the sign-in) and stores them; empty, with the session ended, when the
+     * person is in no account any more or not in the session's account. Any other failure errors,
+     * so the request is refused rather than served with roles that may have ended.
+     */
+    Mono<Session> refreshAccounts(Session session, Instant now) {
+        if (session.idpGroups() == null || session.issuer() == null || session.subject() == null) {
+            log.info("session of user={} predates membership re-reads; ending it", session.user().userId());
+            return store.delete(session.id()).then(Mono.empty());
         }
-        Session refreshed = session.withAccounts(accounts);
-        return store.save(refreshed).thenReturn(refreshed);
+        IdpUser person = new IdpUser(session.issuer(), session.subject(), session.user().email(), session.user().name(), session.idpGroups(),
+                session.authTime());
+        return resolver.resolve(person)
+                .flatMap(resolved -> {
+                    if (!resolved.user().userId().equals(session.user().userId())
+                            || resolved.accounts().stream().noneMatch(a -> a.accountId().equals(session.accountId()))) {
+                        log.info("user={} is no longer in account={}; ending the session", session.user().userId(), session.accountId());
+                        return store.delete(session.id()).then(Mono.<Session>empty());
+                    }
+                    Session refreshed = session.withAccounts(resolved.user(), resolved.accounts(), now,
+                            rolesUntil(now, resolved.accounts(), properties.rolesRefreshInterval()));
+                    return store.save(refreshed).thenReturn(refreshed);
+                })
+                .onErrorResume(NoConsoleAccountException.class, e -> {
+                    log.info("user={} belongs to no account any more; ending the session", session.user().userId());
+                    return store.delete(session.id()).then(Mono.empty());
+                });
     }
 
     /** Errors with {@link StepUpRequiredException} when the action is guarded and the session's authentication is too old. */

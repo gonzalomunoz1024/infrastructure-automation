@@ -728,6 +728,6 @@ public class Resources {
     }
 
     private static StateCaller caller(Session session) {
-        return new StateCaller(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles());
+        return new StateCaller(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles(), session.rolesUntil());
     }
 }
