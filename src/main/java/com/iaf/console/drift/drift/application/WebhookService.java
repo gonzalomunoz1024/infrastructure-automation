@@ -3,10 +3,13 @@ package com.iaf.console.drift.drift.application;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -28,11 +31,16 @@ import reactor.core.scheduler.Schedulers;
  * A provider's change notification: verified with {@code X-Webhook-Signature}, an HMAC-SHA256 of
  * the raw body under the provider's secret ({@code sha256=<hex>}), it moves the resources it
  * names to the hot tier, due now, and reads them right away instead of waiting for the interval.
+ * A signature already received in the last {@link #REPLAY_WINDOW} schedules nothing, so a
+ * captured notification sent again cannot spend the observe budget.
  */
 public final class WebhookService {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookService.class);
     private static final int MAX_OBJECTS = 1000;
+    static final Duration REPLAY_WINDOW = Duration.ofMinutes(10);
+    /** Signatures kept for the replay check: beyond this the oldest go first. */
+    private static final int MAX_REMEMBERED = 100_000;
 
     /** A signature that does not verify: the contract's 401. */
     public static final class BadSignature extends RuntimeException {
@@ -51,6 +59,7 @@ public final class WebhookService {
     private final WatchStorePort watches;
     private final ShardScanner scanner;
     private final Clock clock;
+    private final Map<String, Instant> received = new ConcurrentHashMap<>();
 
     public WebhookService(Map<String, String> secrets, WatchStorePort watches, ShardScanner scanner, Clock clock) {
         this.secrets = Map.copyOf(secrets);
@@ -69,6 +78,10 @@ public final class WebhookService {
             verify(secret, signature, body);
         } catch (BadSignature e) {
             return Mono.error(e);
+        }
+        if (!firstTime(provider + ":" + signature.trim().toLowerCase(Locale.ROOT))) {
+            log.info("webhook from {}: a signature already received, nothing scheduled", provider);
+            return Mono.just(new Scheduled(0));
         }
         JsonNode payload;
         try {
@@ -103,6 +116,19 @@ public final class WebhookService {
                     }
                 })
                 .map(wfrns -> new Scheduled(wfrns.size()));
+    }
+
+    /** Whether a signature is new in the replay window; remembers it. */
+    private boolean firstTime(String key) {
+        Instant now = clock.instant();
+        if (received.size() > MAX_REMEMBERED) {
+            received.values().removeIf(at -> at.plus(REPLAY_WINDOW).isBefore(now));
+            if (received.size() > MAX_REMEMBERED) {
+                received.clear();
+            }
+        }
+        Instant before = received.put(key, now);
+        return before == null || before.plus(REPLAY_WINDOW).isBefore(now);
     }
 
     /** {@code sha256=<hex>} over the raw body; compared in constant time. */

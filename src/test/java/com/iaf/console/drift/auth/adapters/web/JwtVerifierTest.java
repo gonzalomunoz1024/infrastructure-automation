@@ -64,7 +64,7 @@ class JwtVerifierTest {
         try {
             JwtVerifier verifier = new JwtVerifier(WebClient.builder().build(),
                     "http://127.0.0.1:" + bff.getAddress().getPort() + "/.well-known/jwks.json", Duration.ofMillis(300),
-                    "console-bff", List.of("console-drift-service"), Clock.systemUTC());
+                    "console-bff", List.of("console-drift-service"), List.of("console-bff", "console-search-indexer"), Clock.systemUTC());
             String token = serviceToken(key);
 
             long started = System.nanoTime();
@@ -82,6 +82,37 @@ class JwtVerifierTest {
             bff.stop(0);
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void onlyATokenForExactlyThisServiceAndForNoAccountOnlyFromAnAllowedServicePass() throws JOSEException {
+        ECKey key = new ECKeyGenerator(Curve.P_256).keyID("bff-1").generate();
+        JwtVerifier verifier = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-drift-service"), List.of("console-bff"),
+                Clock.systemUTC());
+
+        ConsolePrincipal person = verifier.verify(token(key, List.of("console-drift-service"), "user_dana", "console-bff", "123456789012")).block();
+        assertThat(person.accountId()).isEqualTo("123456789012");
+        assertThat(verifier.verify(token(key, List.of("console-drift-service"), "console-bff", "console-bff", null)).block().internal()).isTrue();
+
+        // the shared audience, or this one beside another, is a token minted for someone else too (hub decision 35)
+        assertThat(catchThrowable(() -> verifier.verify(token(key, List.of("console-drift-service", "console"), "user_dana", "console-bff",
+                "123456789012")).block())).isInstanceOf(JwtVerifier.InvalidToken.class);
+        assertThat(catchThrowable(() -> verifier.verify(token(key, List.of("console"), "user_dana", "console-bff", "123456789012")).block()))
+                .isInstanceOf(JwtVerifier.InvalidToken.class);
+        // a service the list does not name may not act for every account
+        assertThat(catchThrowable(() -> verifier.verify(serviceToken(key)).block())).isInstanceOf(JwtVerifier.InvalidToken.class);
+    }
+
+    private static String token(ECKey key, List<String> audience, String subject, String svc, String acct) throws JOSEException {
+        Instant now = Instant.now();
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder().issuer("console-bff").audience(audience).subject(subject).claim("svc", svc)
+                .issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(60)));
+        if (acct != null) {
+            claims.claim("acct", acct).claim("region", "global");
+        }
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID()).build(), claims.build());
+        jwt.sign(new ECDSASigner(key));
+        return jwt.serialize();
     }
 
     /** A service token as the BFF issues it (hub decision 23): no account. */

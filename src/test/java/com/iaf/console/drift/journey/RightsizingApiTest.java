@@ -160,8 +160,9 @@ class RightsizingApiTest extends MonitoringServiceTest {
         assertThat(job.input().path("memoryGb").asInt()).isEqualTo(8);
         assertThat(job.onBehalfOf().toString()).contains("dana");
 
-        // olga of ops deletes the idle batch-01 (deleting a VM is for ops)
-        JsonNode deleted = body(apply(as(ACCOUNT, "olga", "team-compute,ops"), deleteId, "{\"reason\":\"idle for two weeks\"}", null)
+        // olga of ops deletes the idle batch-01 (deleting a VM is for ops, an account admin here: an operator may not delete)
+        apply(dana(), deleteId, "{\"reason\":\"idle for two weeks\"}", null).expectStatus().isForbidden();
+        JsonNode deleted = body(apply(as(ACCOUNT, "olga", "team-compute,ops", "account-admin"), deleteId, "{\"reason\":\"idle for two weeks\"}", null)
                 .expectStatus().isAccepted());
         Job deleting = fakeJob(deleted.path("jobId").asText());
         assertThat(deleting.workflow()).isEqualTo("delete-vm");

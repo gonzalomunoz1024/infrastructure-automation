@@ -8,6 +8,7 @@ console:
     step-delay: 250ms
   auth:
     dev-headers: true
+    authorization: roles   # no identity service in the demo: the caller's managed roles decide its writes
   state:
     mode: embedded
   # the demos keep the dev headers (hub decision 23): X-Console-Service names this service

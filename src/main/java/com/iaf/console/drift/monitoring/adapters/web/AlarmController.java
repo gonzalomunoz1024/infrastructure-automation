@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
+import com.iaf.console.drift.auth.application.WriteGuard;
+import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.monitoring.application.AlarmEvaluator;
 import com.iaf.console.drift.monitoring.application.AlarmService;
 import com.iaf.console.drift.monitoring.application.AlarmsReport;
@@ -19,6 +21,7 @@ import com.iaf.console.drift.monitoring.domain.Alarm;
 import com.iaf.console.drift.monitoring.domain.AlarmInput;
 import com.iaf.console.drift.monitoring.domain.AlarmQuery;
 import com.iaf.console.drift.monitoring.domain.AlarmState;
+import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
@@ -35,10 +38,12 @@ public final class AlarmController {
 
     private final AlarmService alarms;
     private final AlarmEvaluator evaluator;
+    private final WriteGuard guard;
 
-    public AlarmController(AlarmService alarms, AlarmEvaluator evaluator) {
+    public AlarmController(AlarmService alarms, AlarmEvaluator evaluator, WriteGuard guard) {
         this.alarms = alarms;
         this.evaluator = evaluator;
+        this.guard = guard;
     }
 
     @GetMapping("/v1/alarms")
@@ -64,13 +69,26 @@ public final class AlarmController {
     public Mono<ResponseEntity<Alarm>> put(ServerWebExchange exchange, @PathVariable String alarmId, @RequestParam(required = false) String accountId,
             @RequestBody AlarmInput body) {
         AccountScope scope = Callers.scopeOf(exchange, accountId, body == null || body.wfrn() == null || body.wfrn().isBlank() ? null : body.wfrn());
-        return alarms.put(scope, alarmId, body)
+        ConsolePrincipal principal = Callers.principal(exchange);
+        AlarmInput input = body == null ? null : new AlarmInput(body.wfrn(), body.name(), body.metric(), body.comparison(), body.threshold(),
+                body.windowMinutes(), WriteGuard.actor(principal, body.actor()));
+        // an alarm is the resource's setting: <service>:update on the resource it watches, and on the one it watched when it moves
+        Mono<Void> onNew = input != null && input.wfrn() != null && Wfrn.isValid(input.wfrn()) ? guard.require(principal, "update", input.wfrn()) : Mono.empty();
+        Mono<Void> onOld = principal.internal() ? Mono.empty()
+                : alarms.get(scope, alarmId).onErrorResume(NotFoundException.class, e -> Mono.empty())
+                        .filter(old -> input == null || !old.wfrn().equals(input.wfrn()))
+                        .flatMap(old -> guard.require(principal, "update", old.wfrn()));
+        return onNew.then(onOld).then(Mono.defer(() -> alarms.put(scope, alarmId, input)))
                 .map(put -> ResponseEntity.status(put.created() ? HttpStatus.CREATED : HttpStatus.OK).body(put.alarm()));
     }
 
     @DeleteMapping("/v1/alarms/{alarmId}")
     public Mono<ResponseEntity<Void>> delete(ServerWebExchange exchange, @PathVariable String alarmId, @RequestParam(required = false) String accountId) {
-        return alarms.delete(Callers.scope(exchange, accountId), alarmId).thenReturn(ResponseEntity.noContent().build());
+        AccountScope scope = Callers.scope(exchange, accountId);
+        ConsolePrincipal principal = Callers.principal(exchange);
+        Mono<Void> allowed = principal.internal() ? Mono.empty()
+                : alarms.get(scope, alarmId).flatMap(alarm -> guard.require(principal, "update", alarm.wfrn()));
+        return allowed.then(Mono.defer(() -> alarms.delete(scope, alarmId))).thenReturn(ResponseEntity.noContent().build());
     }
 
     @PostMapping("/internal/alarms:evaluate")

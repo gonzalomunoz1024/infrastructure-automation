@@ -30,7 +30,7 @@ public record DriftProperties(
         state = state == null ? new StateSettings(null, null, null) : state;
         identity = identity == null ? new IdentitySettings(null, null) : identity;
         platform = platform == null ? new PlatformSettings(null, null, null, null, null) : platform;
-        auth = auth == null ? new AuthSettings(null, null, null, null, null) : auth;
+        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null) : auth;
         serviceTokens = serviceTokens == null ? new ServiceTokenSettings(null, null, null, null, null, null, null, null) : serviceTokens;
         temporal = temporal == null ? new TemporalSettings(null, null, null, null) : temporal;
         kafka = kafka == null ? new KafkaSettings(null, null, null, null) : kafka;
@@ -211,13 +211,29 @@ public record DriftProperties(
     }
 
     /** How callers are authenticated: the BFF's JWKS, its issuer, the audiences this service answers to, and the dev headers switch. */
-    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, Duration jwksTimeout) {
+    /**
+     * Who may call: tokens of {@code issuer} from the JWKS, for exactly one of {@code audiences}; a token
+     * for no account only from one of {@code serviceCallers} (hub decision 35); and how a person's
+     * writes are authorized here too, {@code identity} (the identity service decides) or {@code roles}
+     * (the token's managed roles, for the demos).
+     */
+    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, Duration jwksTimeout,
+            List<String> serviceCallers, String authorization) {
         public AuthSettings {
             jwksUri = jwksUri == null ? "http://localhost:18081/.well-known/jwks.json" : jwksUri;
             jwksTimeout = jwksTimeout == null ? Duration.ofSeconds(10) : jwksTimeout;
             issuer = issuer == null ? "console-bff" : issuer;
-            audiences = audiences == null || audiences.isEmpty() ? List.of("console-drift-service", "console") : List.copyOf(audiences);
+            audiences = audiences == null || audiences.isEmpty() ? List.of("console-drift-service") : List.copyOf(audiences);
             devHeaders = devHeaders != null && devHeaders;
+            serviceCallers = serviceCallers == null || serviceCallers.isEmpty() ? List.of("console-bff") : List.copyOf(serviceCallers);
+            authorization = authorization == null || authorization.isBlank() ? "identity" : authorization;
+            if (!authorization.equals("identity") && !authorization.equals("roles")) {
+                throw new IllegalArgumentException("console.auth.authorization is identity or roles, not " + authorization);
+            }
+        }
+
+        public boolean byRoles() {
+            return authorization.equals("roles");
         }
     }
 

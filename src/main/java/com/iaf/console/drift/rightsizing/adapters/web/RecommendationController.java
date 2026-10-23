@@ -14,6 +14,7 @@ import org.springframework.web.server.ServerWebExchange;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.drift.auth.application.WriteGuard;
 import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.application.IdempotentCommands;
 import com.iaf.console.drift.drift.domain.Decision;
@@ -59,11 +60,13 @@ public final class RecommendationController {
     private final RecommendationQueries queries;
     private final RecommendationService decisions;
     private final UtilisationPass pass;
+    private final WriteGuard guard;
 
-    public RecommendationController(RecommendationQueries queries, RecommendationService decisions, UtilisationPass pass) {
+    public RecommendationController(RecommendationQueries queries, RecommendationService decisions, UtilisationPass pass, WriteGuard guard) {
         this.queries = queries;
         this.decisions = decisions;
         this.pass = pass;
+        this.guard = guard;
     }
 
     @GetMapping("/v1/recommendations")
@@ -104,8 +107,8 @@ public final class RecommendationController {
             @RequestHeader(value = ON_BEHALF_OF, required = false) String onBehalfOf,
             @RequestBody(required = false) Decision body) {
         ConsolePrincipal principal = principal(exchange);
-        Decision decision = body == null ? Decision.NONE : body;
-        return recommendationScope(exchange, recommendationId, accountId)
+        Decision decision = new Decision(body == null ? null : body.reason(), WriteGuard.actor(principal, body == null ? null : body.actor()));
+        return decidable(exchange, principal, recommendationId, accountId, true)
                 .flatMap(scope -> decisions.apply(scope, recommendationId, decision, idempotencyKey, requestId, onBehalfOf, person(principal)))
                 .map(RecommendationController::respond);
     }
@@ -115,9 +118,10 @@ public final class RecommendationController {
             @RequestParam(required = false) String accountId,
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String idempotencyKey,
             @RequestBody(required = false) DismissRequest body) {
-        Decision decision = body == null ? Decision.NONE : new Decision(body.reason(), body.actor());
+        ConsolePrincipal principal = principal(exchange);
+        Decision decision = new Decision(body == null ? null : body.reason(), WriteGuard.actor(principal, body == null ? null : body.actor()));
         Instant until = body == null ? null : body.until();
-        return recommendationScope(exchange, recommendationId, accountId)
+        return decidable(exchange, principal, recommendationId, accountId, false)
                 .flatMap(scope -> decisions.dismiss(scope, recommendationId, decision, until, idempotencyKey))
                 .map(RecommendationController::respond);
     }
@@ -175,6 +179,18 @@ public final class RecommendationController {
     }
 
     /** The scope of a decision: the caller's account, or for the console's own services that name none, the recommendation's. */
+    /**
+     * The scope of a decision on a recommendation, once the caller may change its resource: applying
+     * an idle one deletes the resource ({@code <service>:delete}), anything else updates it.
+     */
+    private Mono<AccountScope> decidable(ServerWebExchange exchange, ConsolePrincipal principal, String recommendationId, String accountId,
+            boolean applying) {
+        return recommendationScope(exchange, recommendationId, accountId).flatMap(scope -> principal.internal() ? Mono.just(scope)
+                : queries.get(scope, recommendationId)
+                        .flatMap(r -> guard.require(principal, applying && r.kind() == RecommendationKind.IDLE ? "delete" : "update", r.wfrn()))
+                        .thenReturn(scope));
+    }
+
     private Mono<AccountScope> recommendationScope(ServerWebExchange exchange, String recommendationId, String accountId) {
         ConsolePrincipal principal = principal(exchange);
         if (principal.internal() && accountId == null) {

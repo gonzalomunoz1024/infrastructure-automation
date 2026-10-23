@@ -120,6 +120,14 @@ public final class DiscoveryService {
                 });
     }
 
+    /** The console service of a type, for the checks of a write on it: its {@code service}, else the type's name; 400 for a type the platform does not have. */
+    public Mono<String> serviceOf(String type) {
+        return types.find(type)
+                .switchIfEmpty(Mono.error(() -> new InvalidInputException("unknown resource type",
+                        List.of(Problem.error("type.unknown", "type", "the platform has no resource type " + type)))))
+                .map(t -> t.service() != null ? t.service() : type);
+    }
+
     /** The walk itself, after the 202. */
     Mono<DiscoveryRun> walk(AccountScope scope, TypeInfo type, DiscoveryRun run) {
         // an object a provider lists in more than one environment counts once
@@ -306,8 +314,14 @@ public final class DiscoveryService {
     public record Imported(String wfrn) {
     }
 
+    /**
+     * Takes an object under management. Only the account it was handed to may, else the account it
+     * most likely belongs to; an object nobody is guessed for, only an account admin
+     * ({@code mayClaimUnknown}). Anyone else is a 409 {@code unmanaged.notYours}: discovery sees the
+     * whole region, so finding an object is no claim on it, and Assign to team hands it on.
+     */
     public Mono<IdempotentCommands.Outcome> importUnmanaged(AccountScope scope, String type, String region, String providerId, String name, String actor,
-            String idempotencyKey, String requestId) {
+            boolean mayClaimUnknown, String idempotencyKey, String requestId) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("op", "import");
         body.put("type", type);
@@ -317,12 +331,31 @@ public final class DiscoveryService {
             body.put("name", name);
         }
         return idempotent.run(scope.accountId(), idempotencyKey, body, 201,
-                () -> doImport(scope, type, region, providerId, name, actor, requestId).map(Json::objectNode));
+                () -> doImport(scope, type, region, providerId, name, actor, mayClaimUnknown, requestId).map(Json::objectNode));
     }
 
-    private Mono<Imported> doImport(AccountScope scope, String type, String region, String providerId, String name, String actor, String requestId) {
+    /** Whose object it is to import: the account it was handed to, else the guessed owner, else nobody's yet (null). */
+    static String claimant(UnmanagedObject object) {
+        if (object.assignment() != null && object.assignment().accountId() != null) {
+            return object.assignment().accountId();
+        }
+        return object.ownerGuess() == null ? null : object.ownerGuess().accountId();
+    }
+
+    private Mono<Imported> doImport(AccountScope scope, String type, String region, String providerId, String name, String actor,
+            boolean mayClaimUnknown, String requestId) {
         return store.findUnmanaged(scope, type, region, providerId)
                 .switchIfEmpty(Mono.error(() -> NotFoundException.of("unmanaged object", providerId)))
+                .flatMap(object -> {
+                    String claimant = claimant(object);
+                    if (claimant == null ? !mayClaimUnknown : !claimant.equals(scope.accountId())) {
+                        return Mono.error(new ConflictException(claimant == null
+                                ? "unmanaged.notYours: nobody is guessed to own " + providerId + "; an account admin may import it, or hand it on with Assign to team"
+                                : "unmanaged.notYours: " + providerId + " is for account " + claimant + " to import; hand it on with Assign to team",
+                                claimant == null ? Map.of() : Map.of("accountId", claimant)));
+                    }
+                    return Mono.just(object);
+                })
                 .flatMap(object -> types.find(type).map(t -> t.service() != null ? t.service() : type).defaultIfEmpty(type).flatMap(service -> {
                     String id = MintedIds.mint(type, Ulid.next().toLowerCase(Locale.ROOT));
                     String wfrn = new Wfrn(partition, service, region, scope.accountId(), type, id).format();

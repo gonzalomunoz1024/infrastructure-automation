@@ -110,7 +110,9 @@ console:
     jwks-uri: http://localhost:18081/.well-known/jwks.json
     jwks-timeout: 10s     # a slower fetch of the BFF's keys fails; the next request fetches again
     issuer: console-bff
-    audiences: [console-drift-service, console]
+    audiences: [console-drift-service]   # a token's aud must be exactly one of these (hub decision 35)
+    service-callers: [console-bff]       # the services whose tokens may name no account
+    authorization: identity              # a person's writes are checked here too: identity (POST /v1/authorize) or roles (demos)
     dev-headers: false
   temporal:
     target: localhost:7233

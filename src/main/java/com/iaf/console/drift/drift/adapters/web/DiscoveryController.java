@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.drift.auth.application.WriteGuard;
+import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.application.DiscoveryService;
 import com.iaf.console.drift.drift.domain.DiscoveryRun;
 import com.iaf.console.drift.drift.domain.UnmanagedObject;
@@ -31,9 +33,11 @@ import reactor.core.publisher.Mono;
 public final class DiscoveryController {
 
     private final DiscoveryService discovery;
+    private final WriteGuard guard;
 
-    public DiscoveryController(DiscoveryService discovery) {
+    public DiscoveryController(DiscoveryService discovery, WriteGuard guard) {
         this.discovery = discovery;
+        this.guard = guard;
     }
 
     @PostMapping("/v1/discover")
@@ -99,8 +103,12 @@ public final class DiscoveryController {
             throw new InvalidInputException("invalid import request", problems);
         }
         AccountScope scope = Principals.scope(exchange, accountId, body.region());
-        return discovery.importUnmanaged(scope, body.type(), body.region(), body.providerId(), body.name(), Principals.principal(exchange).subject(),
-                idempotencyKey, requestId).map(Principals::respond);
+        ConsolePrincipal principal = Principals.principal(exchange);
+        return discovery.serviceOf(body.type())
+                .flatMap(service -> guard.requireOnType(principal, service, "create", scope.accountId(), body.region(), body.type()))
+                .then(Mono.defer(() -> discovery.importUnmanaged(scope, body.type(), body.region(), body.providerId(), body.name(), principal.subject(),
+                        principal.internal() || principal.mayReveal(), idempotencyKey, requestId)))
+                .map(Principals::respond);
     }
 
     @PostMapping("/v1/unmanaged:assign")
@@ -128,9 +136,13 @@ public final class DiscoveryController {
             throw new InvalidInputException("invalid assignment", problems);
         }
         AccountScope scope = Principals.scope(exchange, accountId, body.region());
-        String actor = body.actor() != null && !body.actor().isBlank() ? body.actor() : Principals.principal(exchange).subject();
+        ConsolePrincipal principal = Principals.principal(exchange);
+        String actor = WriteGuard.actor(principal, body.actor());
         String note = body.note() == null || body.note().isBlank() ? null : body.note().strip();
-        return discovery.assign(scope, body.type(), body.region(), body.providerId(), body.accountId().strip(), note, actor, idempotencyKey)
+        return discovery.serviceOf(body.type())
+                .flatMap(service -> guard.requireOnType(principal, service, "create", scope.accountId(), body.region(), body.type()))
+                .then(Mono.defer(() -> discovery.assign(scope, body.type(), body.region(), body.providerId(), body.accountId().strip(), note, actor,
+                        idempotencyKey)))
                 .map(Principals::respond);
     }
 }

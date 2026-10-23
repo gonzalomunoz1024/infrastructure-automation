@@ -59,8 +59,9 @@ scripts/demo.sh journey              # with the demo running: drift two VMs in v
 The demo listens on `http://localhost:18084`, the embedded fake platform on `http://localhost:18090`,
 seeded with the two console accounts `123456789012` (compute) and `210987654321` (data). Dev headers
 stand in for the BFF's token: `X-Console-Account`, `X-Console-User`, `X-Console-Groups` (what the
-platform's delegation checks on a revert), or `X-Console-Service` for another console service (and
-`X-Console-Region`, `X-Console-Roles`). The fake's `POST /api/v1/demo/world:mutate` changes an
+platform's delegation checks on a revert) and `X-Console-Roles` (the managed roles the demo's
+writes are checked against: `operator` decides findings, only `account-admin` deletes), or
+`X-Console-Service` for another console service (and `X-Console-Region`). The fake's `POST /api/v1/demo/world:mutate` changes an
 object at the provider behind the console's back; the next read of its tier opens the finding.
 To run against the real state service instead of the stand-in, start it on `18082` against the
 same fake and run `CONSOLE_STATE_URL=http://localhost:18082 scripts/demo.sh`.
@@ -114,7 +115,9 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.service-tokens.signing-key-file`, `key-id` | `CONSOLE_SERVICE_KEY_FILE`, `CONSOLE_SERVICE_KEY_ID` | Elsewhere: a PKCS#8 EC key (P-256 or P-384) registered for the client with the BFF, which signs a one-minute assertion per request |
 | `console.service-tokens.refresh-before`, `timeout` | `60s`, `10s` | A token is asked again this long before it ends; how long the BFF may take |
 | `console.platform.base-url`, `token`, `timeout`, `account-tokens` | `http://localhost:18090`, `CONSOLE_PLATFORM_TOKEN`, `30s`, `{}` | The platform's API; per-account tokens for a dev box without the identity service |
-| `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-drift-service, console]` | Which tokens are accepted |
+| `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-drift-service]` | Which tokens are accepted: a token's `aud` must be exactly one of `audiences` (hub decision 35) |
+| `console.auth.service-callers` | `[console-bff]` | The console services (`svc`, else `sub`) whose tokens may name no account and act for any; any other token without `acct` is a 401 |
+| `console.auth.authorization` | `identity` (`roles` in the demo) | How a person's writes are checked here too: `identity` asks the identity service (`POST /v1/authorize`, refused when it does not answer), `roles` reads the token's managed roles |
 | `console.auth.jwks-timeout` | `10s` | How long a fetch of the BFF's keys may take; a failed or slow fetch is not kept, so the next request fetches again |
 | `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token (demo only) |
 | `console.temporal.target`, `namespace`, `task-queue`, `iterations` | `localhost:7233`, `default`, `console-drift`, `96` | The Temporal frontend and how many turns a loop takes before it continues as new |
@@ -140,9 +143,9 @@ Pages are 1 to 200 items, 50 by default, with the kit's opaque cursors (`after`,
 | `POST /v1/discover` | 202, a discovery run of the `type` in the `region`; 409 `discover.running` with the running run's `runId` in `detail` while one runs (a run still running after two hours lost its walk: it is marked failed and a new one starts) |
 | `GET /v1/discover/{runId}` | The run: types read, objects seen, unmanaged found |
 | `GET /v1/unmanaged` | Provider objects no account manages, with `ownerGuess`, `monthlyCost` and `assignment`; filters `type`, `region`, `owner` (`any`, `mine`: guessed to be or assigned to the account, `unknown`: no guess) |
-| `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on; every account's copy leaves the lists |
+| `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on; every account's copy leaves the lists. Only the account it was handed to may import it, else the guessed owner, else (nobody guessed) an account admin: anyone else is a 409 `unmanaged.notYours` |
 | `POST /v1/unmanaged:assign` | 200, the object handed to another active account (`accountId`, `note` up to 500 characters), which lists it too until either imports it; assigning again moves it, and assigning it back to the account that found it takes the assignment off. 400 `unmanaged.unknownAccount` for this account or one the identity service does not list |
-| `POST /v1/webhooks/{provider}` | 202; `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body); the resources it names are read now |
+| `POST /v1/webhooks/{provider}` | 202; `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body); the resources it names are read now. A signature received in the last 10 minutes schedules nothing, so a replayed notification cannot spend the observe budget |
 | `GET /internal/watches`, `/internal/watches/{wfrn}`, `POST /internal/watches/{wfrn}:check` | For services and operators: the watch list, one watch, read one now |
 | `POST /internal/scan`, `/internal/sync`, `/internal/follow` | Operations: one scan pass over every shard now (`?tier=` for one tier), sync the watch list now, look at the running revert jobs now |
 
@@ -393,6 +396,8 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 13 | An assignment is a second copy, not a pointer | The handed account lists the object with its own reads and pages, scoped like every other read; an import by either account removes every copy, and a run skips an object any account has imported |
 | 14 | Costs from the cost service, a price list without it | The cost service owns prices (WP 7.3); the drift service only asks, and an unpriced type or a failed estimate leaves `monthlyCost` out rather than fail a run |
 | 15 | Window counts by the store | Mongo answers opened and closed per window from indexed top-level `openedAt`, `closedAt` and `resolution`, so the executive home never pages through findings |
+| 16 | Writes are checked here as well as at the BFF | Security review: a token that reaches this service another way must not do more than the person may. Each write asks the identity service for the BFF's own action on the resource (`<service>:update` for a decision, an alarm or a resize, `<service>:delete` for an idle resource's delete, `<service>:create` on the type for an import or an assignment); the demos read the token's managed roles. A person is always the actor of what they do; only an allowed console service may name someone else |
+| 17 | Finding an object is no claim on it | Discovery sees the whole region, so an import is for the account an object was handed to, else its guessed owner; an object nobody is guessed for waits for an account admin or for Assign to team |
 
 ### Contract additions (raised with the hub)
 
