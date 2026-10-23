@@ -17,6 +17,8 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-mongodb-reactive")
     implementation("com.github.ben-manes.caffeine:caffeine")
     implementation("io.projectreactor.kafka:reactor-kafka")
+    // notification emails over SMTP (decision 32); the demo profile collects them in memory instead
+    implementation("org.springframework.boot:spring-boot-starter-mail")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
 

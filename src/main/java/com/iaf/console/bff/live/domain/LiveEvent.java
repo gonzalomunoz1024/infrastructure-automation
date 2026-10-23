@@ -7,8 +7,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
- * One update for open pages: a state or drift event's type, {@code job.updated}, or
- * {@code budget.alert} (a budget crossed a threshold), with the resource it is about.
+ * One update for open pages: a state or drift event's type, {@code job.updated},
+ * {@code budget.alert} (a budget crossed a threshold), or {@code notification} (one of the
+ * person's own, decision 32), with the resource it is about.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record LiveEvent(String type, String wfrn, Instant at, Long version, String key, JsonNode data) {
@@ -19,6 +20,8 @@ public record LiveEvent(String type, String wfrn, Instant at, Long version, Stri
     public static final String RESYNC = "resync";
     /** A budget's spend crossed one of its thresholds: the cost service's {@code BudgetThresholdCrossed}, its data as it was. */
     public static final String BUDGET_ALERT = "budget.alert";
+    /** A notification for the person whose streams it reaches, the Notification in {@code data}. */
+    public static final String NOTIFICATION = "notification";
 
     public LiveEvent {
         Objects.requireNonNull(type, "type");

@@ -9,12 +9,14 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.live.application.ConsoleEventListener;
 import com.iaf.console.bff.live.domain.ConsoleEvents;
 import com.iaf.console.bff.live.domain.LiveHub;
 import com.iaf.console.kit.events.EventEnvelope;
@@ -28,8 +30,10 @@ import reactor.util.retry.Retry;
  * The console's own events from Kafka into the live stream: every envelope of
  * {@code state.resources} and {@code drift.findings} reaches its account's pages, a threshold
  * crossed on {@code cost.events} as {@code budget.alert}, and every
- * {@code identity.changes} event drops the account's cached decisions. Offsets are acknowledged
- * after the hub took the event; a message that is not an envelope is logged and skipped.
+ * {@code identity.changes} event drops the account's cached decisions; every envelope then goes to
+ * the {@link ConsoleEventListener}s (the notifications, the weekly digest's identity record).
+ * Offsets are acknowledged after the hub took the event; a message that is not an envelope is
+ * logged and skipped.
  */
 @Component
 @Profile("kafka")
@@ -41,14 +45,16 @@ public class KafkaConsoleEvents implements SmartLifecycle {
     private final LiveHub hub;
     private final Access access;
     private final ObjectMapper json;
+    private final ObjectProvider<ConsoleEventListener> listeners;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Disposable subscription;
 
-    public KafkaConsoleEvents(KafkaProperties properties, LiveHub hub, Access access, ObjectMapper json) {
+    public KafkaConsoleEvents(KafkaProperties properties, LiveHub hub, Access access, ObjectMapper json, ObjectProvider<ConsoleEventListener> listeners) {
         this.properties = properties;
         this.hub = hub;
         this.access = access;
         this.json = json;
+        this.listeners = listeners;
     }
 
     @Override
@@ -72,6 +78,13 @@ public class KafkaConsoleEvents implements SmartLifecycle {
                             access.invalidate(envelope.accountId());
                         }
                         ConsoleEvents.toLive(envelope).ifPresent(mapped -> hub.publish(mapped.accountId(), mapped.event()));
+                        listeners.orderedStream().forEach(listener -> {
+                            try {
+                                listener.onConsoleEvent(envelope);
+                            } catch (RuntimeException e) {
+                                log.warn("a console event listener failed on {} ({}): {}", envelope.key(), envelope.type(), e.toString());
+                            }
+                        });
                     } catch (Exception e) {
                         log.warn("skipping a message of {} that is not an event envelope: {}", record.topic(), e.getMessage());
                     }
