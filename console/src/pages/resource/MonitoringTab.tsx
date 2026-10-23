@@ -24,11 +24,11 @@ import type { TabProps } from './tabs'
 
 const REFRESH_MS = 60_000
 
-export function MonitoringTab({ type, wfrn, record, detail }: TabProps) {
+export function MonitoringTab({ type, wfrn, detail }: TabProps) {
   const route = useRoute()
   const { decide } = useConsole()
   const range = rangeOf(route.query.range)
-  const resourceName = detail?.name ?? record?.name ?? wfrn.slice(wfrn.lastIndexOf('/') + 1)
+  const resourceName = detail?.name ?? wfrn.slice(wfrn.lastIndexOf('/') + 1)
   const setRange = (id: string) => navigate(pathFor('resource', route.params, { ...route.query, range: id === DEFAULT_RANGE ? undefined : id }, { accountId: route.accountId }), { replace: true })
 
   const metrics = useQuery(['console-metrics', type.name, wfrn, range.id], () => monitoringApi.metrics(type.name, wfrn, windowOf(range, Date.now())), { refetchInterval: REFRESH_MS })

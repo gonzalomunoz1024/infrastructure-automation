@@ -10,7 +10,7 @@ export function verbsOf(type: Pick<ConsoleType, 'actions' | 'create'>): ConsoleA
   return type.actions.filter((a) => a.verb !== 'create' && a.verb !== 'update' && a.workflow !== type.create?.workflow)
 }
 
-/** The verbs that run on many resources at once: those with a batch route (`bulk` in the BFF's descriptor). */
+/** The verbs that run on many resources at once: `bulk` in the BFF's descriptor. */
 export function bulkVerbsOf(type: Pick<ConsoleType, 'actions' | 'create'>): ConsoleAction[] {
-  return verbsOf(type).filter((a) => !!a.batchPath)
+  return verbsOf(type).filter((a) => a.bulk)
 }

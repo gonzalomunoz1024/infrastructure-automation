@@ -4,12 +4,12 @@ import type { ConsoleAction, ConsoleType } from '../../lib/descriptors'
 import type { BatchPreview } from '../../lib/types'
 import { batchBodyOf, bulkVerbsOf, chosenRollout, confirmTextOf, endAtAll, ownInputsOf, plannedRollout, presetWaves, rowInputOf, unrunnableOf, wavesLine } from './bulk'
 
-const action = (verb: string, batchPath?: string): ConsoleAction => ({ workflow: `${verb}-vm`, title: verb, verb, method: 'POST', path: `/api/v1/vms:${verb}`, batchPath, destructive: verb === 'delete', input: { type: 'object' } })
+const action = (verb: string, bulk = false): ConsoleAction => ({ workflow: `${verb}-vm`, title: verb, verb, method: 'POST', bulk, preview: true, destructive: verb === 'delete', input: { type: 'object' } })
 const own = { waves: [5, 25, 100], maxParallel: 10, stopIfFailedPercent: 5 }
 
 describe('the verbs a selection runs in bulk', () => {
-  it('are the type’s actions with a batch route, create aside', () => {
-    const type = { actions: [action('create', '/api/v1/vms:batch'), action('restart', '/api/v1/vms:restart:batch'), action('resize'), action('delete', '/api/v1/vms:delete:batch')] } as ConsoleType
+  it('are the type’s actions the descriptor marks bulk, create aside', () => {
+    const type = { actions: [action('create', true), action('restart', true), action('resize'), action('delete', true)] } as ConsoleType
     expect(bulkVerbsOf(type).map((a) => a.verb)).toEqual(['restart', 'delete'])
   })
 })

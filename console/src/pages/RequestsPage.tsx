@@ -2,18 +2,19 @@ import { useMemo, useState } from 'react'
 import { Button, EmptyState, Icon, IconButton, PageHeader, Stat, Tag, cx, duration, formatNumber, plural } from '@iaf/ui'
 import { CursorPager, ErrorState, PropertyFilterBar, StatusBadge, VirtualTable, When, applyFilters, useCursorPaging, useNow, type FilterProperty, type FilterToken, type VirtualColumn, type VirtualSort } from '@iaf/console-kit'
 import { navigate, pathFor, type PageProps } from '../app/router'
-import { api } from '../lib/api'
+import { bff } from '../lib/bff'
 import { useQuery } from '../lib/queries'
-import type { JobSummary } from '../lib/types'
+import type { BffJobSummary as JobSummary } from '../lib/types'
 
 /*
- * Requests: every job the platform ran, newest first, with the same filter bar and paging as the
- * resource lists. The tiles count what is on screen.
+ * Requests: every job of the account, newest first, as the BFF lists them (GET /console/v1/jobs),
+ * with the same filter bar and paging as the resource lists. The BFF filters by status, workflow
+ * and requester; the rest filters the page on screen. The tiles count what is on screen.
  */
 
 const STATUSES = ['queued', 'running', 'waiting-approval', 'needs-attention', 'succeeded', 'failed', 'cancelled', 'rolled-back']
 const CHANNELS = ['console', 'catalog', 'rest', 'mcp', 'trigger', 'batch']
-const INDEXED = new Set(['status', 'workflow', 'requester', 'channel', 'kind'])
+const INDEXED = new Set(['status', 'workflow', 'requester'])
 
 const PROPERTIES: FilterProperty[] = [
   { key: 'status', label: 'Status', values: STATUSES },
@@ -26,20 +27,19 @@ const PROPERTIES: FilterProperty[] = [
 export function serverParamsOf(tokens: readonly FilterToken[]): Record<string, string> {
   const out: Record<string, string> = {}
   for (const t of tokens) {
-    if (t.property === null) out.q = t.value
-    else if (t.operator === '=' && INDEXED.has(t.property)) out[t.property] = t.value
+    if (t.property !== null && t.operator === '=' && INDEXED.has(t.property)) out[t.property] = t.value
   }
   return out
 }
 
 function fieldValue(job: JobSummary, property: string | null): unknown {
-  if (property === null) return `${job.id} ${job.title} ${job.workflow} ${job.requester} ${job.status} ${job.channel}`
+  if (property === null) return `${job.jobId} ${job.title ?? ''} ${job.workflow} ${job.requester ?? ''} ${job.status} ${job.channel ?? ''}`
   return (job as unknown as Record<string, unknown>)[property]
 }
 
 function elapsed(job: JobSummary, now: number): string {
   if (job.durationMs !== undefined) return duration(job.durationMs)
-  if (job.status === 'running' || job.status === 'waiting-approval' || job.status === 'needs-attention') return duration(now - Date.parse(job.startedAt))
+  if (job.startedAt && (job.status === 'running' || job.status === 'waiting-approval' || job.status === 'needs-attention')) return duration(now - Date.parse(job.startedAt))
   return duration(null)
 }
 
@@ -50,11 +50,11 @@ const columnsFor = (now: number): VirtualColumn<JobSummary>[] => [
     sortable: true,
     width: 'minmax(16rem, 2fr)',
     minRem: 16,
-    accessor: (j) => j.title,
+    accessor: (j) => j.title ?? j.workflow,
     render: (j) => (
       <span className="min-w-0">
-        <span className="block truncate font-medium text-primary">{j.title}</span>
-        <span className="block truncate font-mono text-caption2 text-tertiary">{j.id}</span>
+        <span className="block truncate font-medium text-primary">{j.title ?? j.workflow}</span>
+        <span className="block truncate font-mono text-caption2 text-tertiary">{j.jobId}</span>
       </span>
     ),
   },
@@ -69,7 +69,7 @@ const columnsFor = (now: number): VirtualColumn<JobSummary>[] => [
     render: (j) => (
       <span className="min-w-0">
         <span className="block truncate font-mono text-caption text-primary">{j.workflow}</span>
-        <span className="block truncate text-caption2 text-tertiary">v{j.version}</span>
+        {j.version && <span className="block truncate text-caption2 text-tertiary">v{j.version}</span>}
       </span>
     ),
   },
@@ -81,13 +81,16 @@ const columnsFor = (now: number): VirtualColumn<JobSummary>[] => [
     width: '7rem',
     minRem: 6,
     accessor: (j) => j.channel,
-    render: (j) => (
-      <Tag size="sm" outline mono>
-        {j.channel}
-      </Tag>
-    ),
+    render: (j) =>
+      j.channel ? (
+        <Tag size="sm" outline mono>
+          {j.channel}
+        </Tag>
+      ) : (
+        <span className="text-tertiary">not recorded</span>
+      ),
   },
-  { key: 'startedAt', header: 'Started', sortable: true, width: '8rem', minRem: 7, accessor: (j) => j.startedAt, render: (j) => <When at={j.startedAt} className="text-caption" /> },
+  { key: 'startedAt', header: 'Started', sortable: true, width: '8rem', minRem: 7, accessor: (j) => j.startedAt ?? null, render: (j) => (j.startedAt ? <When at={j.startedAt} className="text-caption" /> : null) },
   { key: 'duration', header: 'Duration', sortable: true, numeric: true, width: '6rem', minRem: 6, accessor: (j) => j.durationMs ?? null, render: (j) => <span className="tabular-nums">{elapsed(j, now)}</span> },
   {
     key: 'progress',
@@ -113,7 +116,7 @@ export default function RequestsPage(_props: PageProps) {
   const [tokens, setTokens] = useState<FilterToken[]>([])
   const [sort, setSort] = useState<VirtualSort>({ key: 'startedAt', dir: 'desc' })
   const server = useMemo(() => serverParamsOf(tokens), [tokens])
-  const list = useQuery(['jobs', 'list', { limit: pageSize, after: paging.after ?? null, ...server }], () => api.jobs({ limit: pageSize, after: paging.after, ...server }))
+  const list = useQuery(['jobs', 'list', { limit: pageSize, after: paging.after ?? null, ...server }], () => bff.jobs.list({ limit: pageSize, after: paging.after, ...server }))
   const now = useNow()
   const columns = useMemo(() => columnsFor(now), [now])
   const rows = useMemo(() => list.data?.items ?? [], [list.data])
@@ -131,7 +134,7 @@ export default function RequestsPage(_props: PageProps) {
     <>
       <PageHeader
         title="Requests"
-        subtitle="Every workflow run the platform recorded, newest first."
+        subtitle="Every workflow run of this account, newest first."
         actions={
           <IconButton label="Refresh the list" onClick={() => void list.refetch()}>
             <Icon name="refresh" size={16} className={cx(list.fetching && 'animate-spin')} />
@@ -153,13 +156,13 @@ export default function RequestsPage(_props: PageProps) {
         <VirtualTable<JobSummary>
           columns={columns}
           rows={filtered}
-          rowKey={(j) => j.id}
+          rowKey={(j) => j.jobId}
           label="Requests"
           loading={list.loading}
           rowHeight={52}
           sort={sort}
           onSortChange={setSort}
-          onRowClick={(j) => navigate(pathFor('request', { id: j.id }))}
+          onRowClick={(j) => navigate(pathFor('request', { id: j.jobId }))}
           maxHeight="max(18rem, calc(100dvh - 28rem))"
           empty={
             tokens.length ? (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ActivityEntry, BffJobDetail, BffJobSummary, CommandAccepted, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Finding, JobDetail, Page, Problem, Quota, Resource } from '../lib/types'
+import type { ActivityEntry, BffJobDetail, BffJobSummary, CommandAccepted, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Finding, Page, Problem, Quota, Resource } from '../lib/types'
 import { buildMockData } from './data'
 import { restoreConsole, saveConsole, MOCK_JOURNAL_KEY } from './install'
 import { APPROVAL_MS, RUN_MS, idFrom } from './commands'
@@ -73,13 +73,14 @@ describe('creating a resource through the BFF', () => {
     expect(detail.observedAt).toBeUndefined()
     expect(detail.can).toEqual(expect.arrayContaining(['get', 'update', 'restart']))
     expect(detail.can).not.toContain('delete')
-    const platform = body<Resource>(dana.get(`/api/v1/vms/${detail.wfrn.split('/').pop()}`))
+    // what the platform holds now (the mock's dataset: the browser never reads it)
+    const platform = dana.data.resources.find((r) => r.id === detail.wfrn.split('/').pop()) as Resource
     expect(platform.status).toBe('building')
     expect(platform.builtFrom).toEqual(['image-demo01'])
     expect(platform.createdBy).toMatchObject({ jobId: accepted.jobId, workflow: 'create-vm', version: '2.0.1' })
-    const job = body<JobDetail>(dana.get(`/api/v1/jobs/${accepted.jobId}`))
+    const job = dana.data.jobs.find((j) => j.id === accepted.jobId)
     expect(job).toMatchObject({ status: 'running', channel: 'console', requester: 'dana', wfrn: accepted.wfrn, accountId: '123456789012', title: 'Create VM web-77' })
-    expect(job.input).toMatchObject({ name: 'web-77', size: 'medium' })
+    expect(dana.data.console?.jobs[accepted.jobId]?.input).toMatchObject({ name: 'web-77', size: 'medium' })
 
     // the apply finishes
     dana.tick(RUN_MS + 1)
@@ -93,8 +94,7 @@ describe('creating a resource through the BFF', () => {
     // nothing left to stop, nothing failed to retry
     expect(done.can).toEqual([])
     expect(done.durationMs).toBe(RUN_MS)
-    const events = body<{ items: { type: string }[] }>(dana.get('/api/v1/events?after=0&limit=500')).items
-    expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(['job.started', 'job.finished', 'resource.registered']))
+    expect(dana.data.events.map((e) => e.type)).toEqual(expect.arrayContaining(['job.started', 'job.finished', 'resource.registered']))
   })
 
   it('needs an approval for production, which the mock approver grants after a while', () => {
@@ -234,7 +234,7 @@ describe('verbs, updates and tags on one resource', () => {
     const gone = gonzalo.get(`/console/v1/r/vm/${enc(VMG)}`)
     expect(gone.status).toBe(410)
     expect(body<{ error: string; detail: Record<string, unknown> }>(gone)).toMatchObject({ error: 'resource.deleted', detail: { wfrn: VMG, deletedAt: expect.any(String), tombstoneUntil: expect.any(String), lastVersion: expect.any(Number) } })
-    expect(body<Resource>(gonzalo.get('/api/v1/vms/vm-gen-001')).status).toBe('retired')
+    expect(gonzalo.data.resources.find((r) => r.id === 'vm-gen-001')?.status).toBe('retired')
     expect(gonzalo.call('POST', `/console/v1/r/vm/${enc(VMG)}:restart`, { input: {} }).status).toBe(409)
     expect(gonzalo.call('POST', `/console/v1/r/vm/${enc(VM)}:dance`, { input: {} }).status).toBe(404)
   })
@@ -277,9 +277,10 @@ describe('verbs, updates and tags on one resource', () => {
     const accepted = body<CommandAccepted>(res)
     expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))).toMatchObject({ workflow: 'update-vm', title: 'Update virtual machine api-01', status: 'running' })
     dana.tick(RUN_MS + 1)
-    const after = body<Resource>(dana.get('/api/v1/vms/vm-demo02'))
-    expect(after.attributes).toMatchObject({ cpu: 8, memoryGb: 32 })
     expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`)).output).toEqual({ changed: ['cpu', 'memoryGb'] })
+    // the platform's record (the mock's dataset, settled by the call above) took the change
+    const after = dana.data.resources.find((r) => r.id === 'vm-demo02') as Resource
+    expect(after.attributes).toMatchObject({ cpu: 8, memoryGb: 32 })
   })
 
   it('sets tags, validates them, and lists them with the resource and its activity', () => {

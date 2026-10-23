@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildMockData } from '../mock/data'
+import { describeTypes } from '../mock/types'
 import { composeTypes } from './descriptors'
 import {
   DEFAULT_PAGE_SIZE,
@@ -22,7 +23,7 @@ import {
 import type { ConsoleResource } from './types'
 
 const data = buildMockData()
-const vm = composeTypes(data.resourceTypes, data.catalog).find((t) => t.name === 'vm')!
+const vm = composeTypes(describeTypes(data)).find((t) => t.name === 'vm')!
 
 const row = (over: Partial<ConsoleResource> = {}): ConsoleResource => ({
   wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-demo01',

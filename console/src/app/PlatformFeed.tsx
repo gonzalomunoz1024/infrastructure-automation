@@ -1,19 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Drawer, EmptyState, Icon, JsonView, OverlayBody, OverlayHeader, StatusDot, Tag, cx, relativeTime, type DotKind } from '@iaf/ui'
 import { WfrnText } from '@iaf/console-kit'
-import { api } from '../lib/api'
-import { openPlatformStream } from '../lib/events'
+import { bff } from '../lib/bff'
+import { openLiveStream } from '../lib/events'
 import type { StreamState } from '../lib/sse'
-import type { PlatformEvent } from '../lib/types'
+import type { LiveEvent } from '../lib/types'
 
 /*
- * The platform feed, for developers: GET /api/v1/events/stream over SSE, every event as it
- * happens, newest first, with the connection's state and a pause for reading. Resumes after the
- * last event seen when the stream drops. The platform names each event after its type, so the
- * stream is opened with the contract's whole list of types (lib/events.ts).
+ * The live feed, for developers: the BFF's GET /console/v1/events over SSE, every update of the
+ * session's account as it happens, newest first, with the connection's state and a pause for
+ * reading. Resumes after the last event seen when the stream drops. The BFF names each event
+ * after its type, so the stream is opened with the whole list of types (lib/events.ts).
  */
 
 const MAX_EVENTS = 200
+
+/** A live event with the cursor its SSE `id:` carried, and a key of its own for the list. */
+interface FeedEntry {
+  cursor: string
+  key: string
+  event: LiveEvent
+}
 
 const STATE: Record<StreamState, { dot: DotKind; pulse?: boolean; label: string }> = {
   connecting: { dot: 'neutral', pulse: true, label: 'Connecting' },
@@ -23,26 +30,29 @@ const STATE: Record<StreamState, { dot: DotKind; pulse?: boolean; label: string 
 }
 
 export function PlatformFeed({ onClose }: { onClose: () => void }) {
-  const [events, setEvents] = useState<PlatformEvent[]>([])
+  const [events, setEvents] = useState<FeedEntry[]>([])
   const [state, setState] = useState<StreamState>('connecting')
   const [delay, setDelay] = useState(0)
   const [paused, setPaused] = useState(false)
   const [held, setHeld] = useState(0)
   const [open, setOpen] = useState<string | null>(null)
   const pausedRef = useRef(false)
-  const buffer = useRef<PlatformEvent[]>([])
+  const buffer = useRef<FeedEntry[]>([])
+  const counter = useRef(0)
 
   useEffect(() => {
-    const stream = openPlatformStream<PlatformEvent>(
-      api.eventsStreamUrl(),
-      (event) => {
+    const stream = openLiveStream<LiveEvent>(
+      bff.eventsUrl(),
+      (event, raw) => {
         if (!event || typeof event !== 'object' || typeof event.type !== 'string') return
+        counter.current += 1
+        const entry: FeedEntry = { cursor: raw.lastEventId, key: `${raw.lastEventId}-${counter.current}`, event }
         if (pausedRef.current) {
-          buffer.current = [event, ...buffer.current].slice(0, MAX_EVENTS)
+          buffer.current = [entry, ...buffer.current].slice(0, MAX_EVENTS)
           setHeld((n) => Math.min(n + 1, MAX_EVENTS))
           return
         }
-        setEvents((list) => [event, ...list].slice(0, MAX_EVENTS))
+        setEvents((list) => [entry, ...list].slice(0, MAX_EVENTS))
       },
       {
         onState: (next, detail) => {
@@ -68,12 +78,12 @@ export function PlatformFeed({ onClose }: { onClose: () => void }) {
 
   const s = STATE[state]
   return (
-    <Drawer onClose={onClose} width="max-w-xl" label="Platform feed">
+    <Drawer onClose={onClose} width="max-w-xl" label="Live feed">
       <OverlayHeader
-        title="Platform feed"
+        title="Live feed"
         subtitle={
           <span className="font-mono text-caption">
-            GET {api.eventsStreamUrl()}
+            GET {bff.eventsUrl()}
           </span>
         }
         icon="pulse"
@@ -101,27 +111,26 @@ export function PlatformFeed({ onClose }: { onClose: () => void }) {
       </div>
       <OverlayBody padded={false}>
         {events.length === 0 ? (
-          <EmptyState icon="pulse" title="Waiting for events" message="Every job and resource event the platform publishes appears here as it happens." />
+          <EmptyState icon="pulse" title="Waiting for events" message="Every change to the requests and resources of this account appears here as it happens." />
         ) : (
           <ol className="divide-y divide-stroke-light" aria-label="Events">
-            {events.map((e) => {
-              const key = `${e.seq}-${e.id}`
+            {events.map(({ cursor, key, event: e }) => {
               const expanded = open === key
+              const subject = typeof e.data?.jobId === 'string' ? e.data.jobId : undefined
               return (
                 <li key={key} className="px-5 py-2.5">
                   <button type="button" onClick={() => setOpen(expanded ? null : key)} aria-expanded={expanded} className="flex w-full items-start gap-3 rounded-md text-left">
-                    <span className="mt-0.5 w-10 shrink-0 font-mono text-caption2 text-tertiary">#{e.seq}</span>
+                    <span className="mt-0.5 w-10 shrink-0 font-mono text-caption2 text-tertiary">{cursor ? `#${cursor}` : ''}</span>
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                         <Tag size="sm" mono outline>
                           {e.type}
                         </Tag>
-                        {e.aggregateId && <span className="truncate font-mono text-caption text-primary">{e.aggregateId}</span>}
-                        {e.actor && <span className="text-caption text-secondary">by {e.actor}</span>}
+                        {subject && <span className="truncate font-mono text-caption text-primary">{subject}</span>}
                       </span>
-                      {e.context?.wfrn && (
+                      {e.wfrn && (
                         <span className="mt-1 block">
-                          <WfrnText wfrn={e.context.wfrn} max={44} copy={false} />
+                          <WfrnText wfrn={e.wfrn} max={44} copy={false} />
                         </span>
                       )}
                     </span>

@@ -1,10 +1,10 @@
 import { Icon, StatusDot, ThemeToggle, cx, useTheme } from '@iaf/ui'
-import { api } from '../lib/api'
+import { bff } from '../lib/bff'
 import { useQuery } from '../lib/queries'
 
 /*
- * The status bar at the bottom: the build, the contracts pin, whether the platform answers, the
- * theme toggle, and the platform feed where developers work: the dev server and mock mode (the
+ * The status bar at the bottom: the build, the contracts pin, whether the console's backend (the
+ * BFF) answers, the theme toggle, and the live feed where developers work: the dev server and mock mode (the
  * journeys run the built mock app).
  */
 
@@ -12,7 +12,7 @@ const developerTools = import.meta.env.DEV || import.meta.env.VITE_CONSOLE_MOCK 
 
 export function Footer({ onOpenFeed, feedOpen }: { onOpenFeed?: () => void; feedOpen?: boolean }) {
   const { mode, cycle } = useTheme()
-  const health = useQuery('health', () => api.health(), { refetchInterval: 60_000 })
+  const health = useQuery('health', () => bff.health(), { refetchInterval: 60_000 })
   const up = health.data?.status === 'UP'
   const state = health.loading ? 'checking' : health.error ? 'unreachable' : up ? 'up' : (health.data?.status ?? 'unknown').toLowerCase()
   return (
@@ -26,7 +26,7 @@ export function Footer({ onOpenFeed, feedOpen }: { onOpenFeed?: () => void; feed
         </span>
         <span className="flex items-center gap-1.5" aria-live="polite">
           <StatusDot kind={state === 'up' ? 'healthy' : state === 'checking' ? 'neutral' : 'critical'} size="sm" pulse={state === 'checking'} />
-          <span className="hidden sm:inline">platform {state}</span>
+          <span className="hidden sm:inline">console {state}</span>
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -38,7 +38,7 @@ export function Footer({ onOpenFeed, feedOpen }: { onOpenFeed?: () => void; feed
             className={cx('flex h-7 items-center gap-1.5 rounded-full px-2.5 text-caption transition-colors hover:bg-surface-secondary hover:text-primary', feedOpen ? 'bg-surface-secondary text-primary' : 'text-secondary')}
           >
             <Icon name="pulse" size={13} />
-            Platform feed
+            Live feed
           </button>
         )}
         <ThemeToggle mode={mode} onCycle={cycle} />

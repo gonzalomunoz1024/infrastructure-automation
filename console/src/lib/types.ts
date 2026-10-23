@@ -4,9 +4,9 @@
  */
 
 export type { CatalogEntry, ConsoleHints, JobStatus, JobStep, JobSummary, Lineage, LifecycleClass, Problem, Resource, ResourceType, Schema, XConsole } from '@iaf/console-kit'
-import type { JobStatus, JobStep, JobSummary } from '@iaf/console-kit'
+import type { JobStatus, JobStep, JobSummary, LifecycleClass, Rollout as KitRollout, Schema } from '@iaf/console-kit'
 
-/** GET /api/v1/me */
+/** The signed-in person as the pages read them, from the BFF session. */
 export interface Me {
   id: string
   name: string
@@ -49,6 +49,16 @@ export interface PlatformEvent {
   context?: { accountId?: string; region?: string; wfrn?: string; consoleRequestId?: string }
   traceparent?: string
   data?: unknown
+}
+
+/** One live update of `GET /console/v1/events` (hub LiveEvent), for the session's account; its cursor rides the SSE `id:`. */
+export interface LiveEvent {
+  type: string
+  wfrn?: string
+  at: string
+  version?: number
+  key?: string
+  data?: Record<string, unknown>
 }
 
 /** One page of a list (P-05): the rows and the cursor of the next page, if any. */
@@ -133,6 +143,14 @@ export interface BffConsoleAction {
   denied?: Denial
   /** the BFF's first spelling of a refusal, before the Denial block */
   deniedReason?: string
+  /** the input naming the resource the verb runs on (P-08) */
+  subjectInput?: string | null
+  /** the JSON Schema of the inputs the form shows */
+  input?: Schema
+  mutableFields?: string[]
+  deprecated?: { since?: string; sunset?: string; message?: string }
+  /** the console's addition to the contract: a bulk verb's most rows per request and the workflow's own rollout */
+  batch?: { max: number; rollout: KitRollout }
 }
 
 /** A type as the BFF composes it; the console reads the actions' decisions from it in phase 1. */
@@ -146,6 +164,20 @@ export interface BffConsoleType {
   /** what the drift service reads of the type (P-06, P-09) */
   observe?: { supported?: boolean; interval?: string; metrics?: boolean; discover?: boolean }
   etag?: string
+  icon?: string
+  description?: string
+  /** the JSON Schema of the attributes, with the x-console hints merged in */
+  schema?: Schema
+  states?: string[]
+  /** an empty `columns` leaves the console's own default columns */
+  list?: { columns?: unknown[]; defaultSort?: string }
+  /** an empty `tabs` leaves the console's own default tabs */
+  detail?: { tabs?: unknown[] }
+  /** platform status to lifecycle class */
+  lifecycle?: Record<string, LifecycleClass>
+  /** the console's additions to the contract: the team that publishes the type, and its visibility */
+  owner?: string
+  visibility?: string
   [key: string]: unknown
 }
 
@@ -319,6 +351,13 @@ export interface ResourceRef {
   type: string
   name?: string
   state?: ResourceState | string
+}
+
+/** `GET /console/v1/r/{type}/{wfrn}/lineage`: what a resource was built from and what depends on it, within the account. */
+export interface BffLineage {
+  resource: ResourceRef
+  nodes: ResourceRef[]
+  edges: { from: string; to: string; via?: string }[]
 }
 
 /** A resource as `GET /console/v1/r/{type}` lists it: the state service's row, the account's view. */
@@ -535,6 +574,8 @@ export interface BffJobSummary {
   progress?: { done: number; total: number; failed: number }
   errorClass?: string
   failedStep?: string
+  /** the console's addition to the contract: where the run came from (console, catalog, rest, mcp, trigger, batch) */
+  channel?: string
 }
 
 /** What a person may do with a job (the BFF's `can`): stop it, or steer a step that stopped. */
