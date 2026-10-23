@@ -36,7 +36,7 @@ console:
     scan:
       page-size: 500      # the platform's largest observe-list page (P-09)
       batch-size: 100     # the platform's largest resources:observe batch
-      list-threshold: 20  # fewer due resources than this are read in a batch, not a list
+      list-threshold: 20  # a list never walked is walked once this many of its resources are due (across the shards)
       max-per-scan: 5000
       observation-refresh: 24h
       in-flight-retry: 1m # a resource with a change in flight is looked at again after this

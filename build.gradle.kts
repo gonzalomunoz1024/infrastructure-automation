@@ -47,3 +47,28 @@ springBoot {
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName.set("console-drift-service.jar")
 }
+
+// The scan load test (work package 6.2), in src/load: the real shard scanner, reconciler, budget and
+// tiers over a synthetic estate of up to 10 million watches, a counting platform and a virtual clock,
+// so hours of shard loops run in minutes. Settings come from -Pload.<name>=… (README, "Load").
+val load: SourceSet = sourceSets.create("load") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+configurations[load.implementationConfigurationName].extendsFrom(configurations.implementation.get())
+configurations[load.runtimeOnlyConfigurationName].extendsFrom(configurations.runtimeOnly.get())
+
+dependencies {
+    // the virtual clock the loops, the platform's latency and the budget's waits run on
+    "loadImplementation"("io.projectreactor:reactor-test")
+}
+
+tasks.register<JavaExec>("scanLoad") {
+    description = "Runs the shard loops over a synthetic estate on a virtual clock and reports the platform calls (-Pload.size, -Pload.accounts, -Pload.hours)"
+    group = "console"
+    classpath = load.runtimeClasspath
+    mainClass.set("com.iaf.console.drift.load.ScanLoad")
+    systemProperties(providers.gradlePropertiesPrefixedBy("load.").get())
+    maxHeapSize = providers.gradleProperty("load.heap").getOrElse("10g")
+    jvmArgs("-XX:+UseParallelGC")
+}

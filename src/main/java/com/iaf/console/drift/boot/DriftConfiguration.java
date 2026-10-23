@@ -57,6 +57,7 @@ import com.iaf.console.drift.drift.ports.outbound.OnBehalfOfPort;
 import com.iaf.console.drift.drift.ports.outbound.PlatformCredentialsPort;
 import com.iaf.console.drift.drift.ports.outbound.ResourceTypesPort;
 import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
+import com.iaf.console.drift.drift.ports.outbound.WalkStorePort;
 import com.iaf.console.drift.drift.ports.outbound.WatchStorePort;
 import com.iaf.console.drift.drift.ports.outbound.WorkflowStarterPort;
 import com.iaf.console.fake.PlatformFake;
@@ -238,10 +239,10 @@ public class DriftConfiguration {
     }
 
     @Bean
-    public ShardScanner shardScanner(WatchStorePort watches, ResourceTypesPort types, PlatformPort platform, Reconciler reconciler, ObserveBudget budget,
-            DriftProperties properties, DriftMetrics metrics, Clock clock) {
+    public ShardScanner shardScanner(WatchStorePort watches, WalkStorePort walks, ResourceTypesPort types, PlatformPort platform, Reconciler reconciler,
+            ObserveBudget budget, TierRules tiers, DriftProperties properties, DriftMetrics metrics, Clock clock) {
         DriftProperties.ScanSettings s = properties.drift().scan();
-        return new ShardScanner(watches, types, platform, reconciler, budget,
+        return new ShardScanner(watches, walks, types, platform, reconciler, budget, tiers,
                 new ShardScanner.Settings(properties.drift().shards(), s.pageSize(), s.batchSize(), s.listThreshold(), s.maxPerScan(), s.errorRetry()), metrics, clock);
     }
 
