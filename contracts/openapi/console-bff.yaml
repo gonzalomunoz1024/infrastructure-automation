@@ -138,6 +138,10 @@ tags:
     description: The console home's recent visits and favourite resources (decision 32)
   - name: Digests
     description: Each account's weekly digest (decision 32)
+  - name: Organization
+    description: The organization admins' pages, every account and the guardrails (decision 34)
+  - name: Activity
+    description: The account's activity trail, its seals and its evidence (decision 29)
   - name: Health
 security:
   - session: []
@@ -479,6 +483,11 @@ paths:
       summary: A resource's detail page
       description: The resource, its observed truth, its open finding, its last jobs, its neighbours and what the user may do with it, in one answer.
       tags: [Resources]
+      parameters:
+        - name: at
+          in: query
+          description: 'Decision 29 (WP 9.8): the resource as it was then, from the state service''s `?at=`; read only, so `can` is empty'
+          schema: { type: string, format: date-time }
       responses:
         '200':
           description: The detail
@@ -1980,6 +1989,355 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/iam/access-reviews/{id}/items:
+    parameters:
+      - $ref: '#/components/parameters/IamId'
+    get:
+      operationId: listAccessReviewItems
+      summary: The grants an access review asks about
+      description: 'Decision 34: passes through to the identity service''s `GET /v1/accounts/{accountId}/access-reviews/{reviewId}/items` (WP 9.11)'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/iam/access-reviews/{id}/items/{itemId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/IamId'
+      - name: itemId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideAccessReviewItem
+      summary: Keep or remove one grant of an access review
+      description: 'Decision 34: passes through to the identity service''s `:decide` on the review item, the body unchanged'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/organization/accounts:
+    get:
+      operationId: listOrganizationAccounts
+      summary: Every account of the organization
+      description: 'Decision 34: organization admins only (404 for anyone else). The BFF asks the identity service''s `GET /v1/accounts` as the console-internal principal, naming the person in `X-On-Behalf-Of`; closed accounts are included.'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/organization/accounts/{accountId}:close:
+    parameters:
+      - $ref: '#/components/parameters/OrganizationAccountId'
+    post:
+      operationId: closeOrganizationAccount
+      summary: Close an account
+      description: 'Decision 34: organization admins only, after a fresh sign-in (the step-up 403); the identity service''s `POST /v1/accounts/{accountId}:close`'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/organization/accounts/{accountId}/break-glass:
+    parameters:
+      - $ref: '#/components/parameters/OrganizationAccountId'
+    post:
+      operationId: grantBreakGlass
+      summary: Emergency access to an account
+      description: 'Decision 34: organization admins only, after a fresh sign-in; the identity service''s `POST /v1/accounts/{accountId}/break-glass` with `approvedBy` set to the admin calling, never the person given access'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '201': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/organization/guardrails:
+    get:
+      operationId: listGuardrails
+      summary: The organization's guardrails
+      description: 'Decision 34: organization admins only; the identity service''s `GET /v1/guardrails`'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createGuardrail
+      summary: Add a guardrail
+      description: 'Decision 34: organization admins only, after a fresh sign-in'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '201': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/organization/guardrails/{guardrailId}:
+    parameters:
+      - name: guardrailId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getGuardrail
+      summary: One guardrail
+      tags: [Organization]
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateGuardrail
+      summary: Change a guardrail
+      description: 'Decision 34: after a fresh sign-in; `If-Match` carries the version'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteGuardrail
+      summary: Remove a guardrail
+      description: 'Decision 34: after a fresh sign-in'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/r/{type}/{wfrn}/revert-plan:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getRevertPlan
+      summary: What bringing a resource back to an earlier time takes
+      description: 'Decision 29 (WP 9.8): decided as `<service>:get`; the state service''s `GET /v1/wfrn/{wfrn}/revert-plan`. Nothing runs: the console shows the plan and runs its update only when the person confirms, as the ordinary `PATCH` with `confirm`.'
+      tags: [Resources]
+      parameters:
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/activity:verify:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: verifyResourceActivity
+      summary: Check a resource's activity has not been altered
+      description: 'Decision 29 (WP 7.1): decided as `<service>:get`; the state service''s hash chain check `GET /v1/wfrn/{wfrn}/events:verify`'
+      tags: [Resources]
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}:transfer:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: transferResource
+      summary: Move a resource to another account
+      description: 'Decision 30: needs `<service>:transfer` on the wfrn in its account and `<service>:create` on the type in the target account, each decided in its own account, plus `confirm: true` and a fresh sign-in. The BFF runs the target''s budget check as a create does (409 `budget.exceeded`; the cost service being down lets it go on), the state service''s `:transfer`, then the platform''s re-home of the registry record (safe to repeat; 409 `resource.rehomed` when it moved since). The answer is the resource under its new wfrn; the old wfrn then answers 410 `resource.transferred` with `transferredTo`.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferInput' }
+      responses:
+        '201': { $ref: '#/components/responses/StateAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r:blast-radius:
+    post:
+      operationId: blastRadius
+      summary: What deleting a set of resources would touch
+      description: 'Decision 29: at most 100 wfrns, each decided as its `<service>:get`; the state service''s `POST /v1/resources:blast-radius`, each dependent counted once'
+      tags: [Resources]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [wfrns]
+              properties:
+                wfrns:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/map:
+    get:
+      operationId: getResourceMap
+      summary: The resource map
+      description: 'Decision 29 (WP 9.4): the session account''s resources and their links, from the state service''s `GET /v1/graph`; `accountIds` widens it to the person''s other accounts, each where `<service>:list` allows'
+      tags: [Resources]
+      parameters:
+        - name: accountIds
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/AccountId' }
+        - name: type
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/activity:
+    get:
+      operationId: listAccountActivity
+      summary: The account's activity trail
+      description: 'Decision 29 (WP 7.1): the state service''s `GET /v1/activity` for the session account, as `activity:list` allows'
+      tags: [Activity]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/activity/digests:
+    get:
+      operationId: listActivityDigests
+      summary: The trail's sealed periods
+      description: 'Decision 29: the state service''s `GET /v1/activity/digests`'
+      tags: [Activity]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/activity/keys:
+    get:
+      operationId: listActivityKeys
+      summary: The public keys that seal the trail
+      description: 'Decision 29: the state service''s `GET /v1/activity/keys`'
+      tags: [Activity]
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/activity/evidence:
+    get:
+      operationId: getActivityEvidence
+      summary: The audit evidence pack for a period
+      description: 'Decision 29 (WP 7.1): `account-admin` and `auditor` only (403 for anyone else); the state service''s `GET /v1/activity/evidence`'
+      tags: [Activity]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/StateAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 components:
   securitySchemes:
     session:
@@ -2014,7 +2372,8 @@ components:
       name: collection
       in: path
       required: true
-      schema: { type: string, enum: [users, groups, roles, policies, access-keys, quotas] }
+      description: 'Decision 34 adds guardrails (the ones that apply to the account; read only), policy-simulations (POST only; nothing is written), access-reviews (WP 9.11), elevations (WP 9.12), and quota-rules and elevation-rules (not account-scoped; GET only, anyone signed in)'
+      schema: { type: string, enum: [users, groups, roles, policies, access-keys, quotas, guardrails, policy-simulations, access-reviews, elevations, quota-rules, elevation-rules] }
     IamId:
       name: id
       in: path
@@ -2025,13 +2384,19 @@ components:
       name: action
       in: path
       required: true
-      schema: { type: string, enum: [rotate, request-increase] }
+      description: '`decide` and `revoke` on an elevation, `cancel` on an access review (decision 34)'
+      schema: { type: string, enum: [rotate, request-increase, decide, cancel, revoke] }
     TypePath:
       name: type
       in: path
       required: true
       description: A resource type name
       schema: { type: string, pattern: '^[a-z0-9-]{1,64}$' }
+    OrganizationAccountId:
+      name: accountId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/AccountId' }
     WfrnPath:
       name: wfrn
       in: path
@@ -2110,6 +2475,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    StateAnswer:
+      description: 'The state service''s answer, unchanged: its schema for the operation (contracts/openapi/console-state-service.yaml)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StateBody' }
     Gone:
       description: Ended, such as a device grant past its expiry
       content:
@@ -2180,6 +2550,8 @@ components:
         policyId: { type: string, description: 'console-iam: the policy' }
         statement: { type: string, description: 'console-iam: the statement id' }
         scope: { type: string, description: 'platform: the scope the service account lacks' }
+        refusedBy: { type: string, enum: [policy, boundary, guardrail], description: 'console-iam (decision 34): a policy, the role''s permissions boundary or an organization guardrail; a boundary or guardrail refusal is never requestable' }
+        guardrailId: { type: string, description: 'console-iam: the guardrail that refused it' }
         requestable: { type: boolean, description: Whether the person may open an access request for it }
         suggestedRole: { type: string, description: The managed role that would allow it }
     Problem:
@@ -2214,6 +2586,7 @@ components:
         region: { $ref: '#/components/schemas/RegionName' }
         csrfToken: { type: string, description: Computed at run time, sent back as X-Csrf-Token }
         expiresAt: { type: string, format: date-time }
+        organizationAdmin: { type: boolean, description: 'Decision 34: the person''s sign-in groups include one of the organization admin groups, which opens the organization pages' }
     AccountSummary:
       type: object
       required: [accountId, name]
@@ -2652,6 +3025,18 @@ components:
       type: object
       description: 'A body of the identity service''s API, unchanged (contracts/openapi/console-identity-service.yaml)'
       additionalProperties: true
+    StateBody:
+      type: object
+      description: 'A body of the state service''s API, unchanged (contracts/openapi/console-state-service.yaml)'
+      additionalProperties: true
+    TransferInput:
+      type: object
+      description: Decision 30
+      required: [toAccountId, confirm]
+      properties:
+        toAccountId: { $ref: '#/components/schemas/AccountId' }
+        reason: { type: string, maxLength: 500 }
+        confirm: { type: boolean, const: true, description: The person confirmed the move }
     AccessRequestStatus:
       type: string
       enum: [pending, approved, rejected, expired]
