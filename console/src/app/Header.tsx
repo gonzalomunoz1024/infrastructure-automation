@@ -447,6 +447,7 @@ function UserButton() {
       items={[
         { id: 'iam', label: 'Identity and access', icon: 'shield', onSelect: () => navigate(pathFor('iam')) },
         { id: 'settings', label: 'Settings', icon: 'settings', onSelect: () => navigate(pathFor('settings')) },
+        { id: 'cli-sign-ins', label: 'CLI sign-ins', icon: 'terminal', onSelect: () => navigate(pathFor('iam-cli')) },
         { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => void switchIdentity() },
         {
           id: 'sign-out',

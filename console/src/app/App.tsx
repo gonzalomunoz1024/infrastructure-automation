@@ -34,7 +34,7 @@ function Gate() {
 
   // nobody signed in: the sign-in page, remembering where they were going; signed in: never the door
   useEffect(() => {
-    if (state.status === 'signed-out' && route.name !== 'signin') navigate(pathFor('signin', {}, { next: route.path === '/' ? undefined : route.path }), { replace: true })
+    if (state.status === 'signed-out' && route.name !== 'signin') navigate(pathFor('signin', {}, { next: route.path === '/' ? undefined : nextOf(route) }), { replace: true })
     if (state.status === 'signed-in' && route.name === 'signin') navigate(route.query.next || '/', { replace: true })
   }, [state.status, route])
 
@@ -54,6 +54,12 @@ function Gate() {
       <AppShell route={route} />
     </ConsoleProvider>
   )
+}
+
+/** Where to come back to after signing in: the path with its query, so `#/device?code=` keeps its code. */
+function nextOf(route: Route): string {
+  const q = new URLSearchParams(route.query).toString()
+  return q ? `${route.path}?${q}` : route.path
 }
 
 /** A link scoped to another account (`#/account/<id>/…`) switches the session to it once. */

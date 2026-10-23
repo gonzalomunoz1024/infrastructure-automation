@@ -10,6 +10,7 @@ import { tagRoutes } from './tags'
 import { driftRoutes } from './drift'
 import { monitoringRoutes } from './monitoring'
 import { accessRoutes, isOrganizationAdmin, settleAccess } from './access'
+import { cliRoutes } from './cli'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -572,6 +573,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* findings, discovery and unmanaged resources; metrics, alarms and rightsizing (phase 5) */
     const drifted = driftRoutes(data, routeCtx, path, params, method) ?? monitoringRoutes(data, routeCtx, path, params, method)
     if (drifted) return drifted
+
+    /* device sign-in, API sessions and the console API's description (phase 7) */
+    const signedIn = cliRoutes(data, routeCtx, path, params, method)
+    if (signedIn) return signedIn
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)

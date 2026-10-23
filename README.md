@@ -25,6 +25,19 @@ Phases 7 and 9 keep access right over time, and close the account's life:
 - the organization's accounts, for its admins: emergency (break-glass) access with its warning
   and the line the account's trail records, and closing an account by typing its name, refused
   while the account still holds resources, with what it holds
+Phase 7 brings the CLI's web side and the developer portal:
+
+- `#/device` approves a CLI or SDK sign-in: the code from the terminal (in the link, or typed),
+  what asks, from which machine and address, for what and until when, then Approve or Deny;
+  approving asks for a fresh sign-in first, as a delete does
+- CLI sign-ins (the user menu, and Identity and access beside Access keys): the CLIs and SDKs the
+  person signed in, newest first, each signed out after asking once
+- the console shell (Developer tools): a terminal in the page that runs the CLI's commands with
+  the page's own session (`help`, `whoami`, `types`, `ls`, `get`, `run`, `jobs`, `job --follow`),
+  with history on Up and Down, Tab completing a command, and every result in a log region
+- the developer portal: the console API by tag from its OpenAPI document, how to get the CLI and
+  SDKs, sample calls for a type built from its workflows' schemas, and sample portal tiles, any of
+  them kept as a shortcut
 
 Phase 5 decides on drift and finds what nobody manages:
 
@@ -668,6 +681,46 @@ type, so the feed must subscribe to every one).
     (409 `account.hasResources` with the count of each type, the plan's rule for WP 7.7), since
     closing leaves resources where they are. In mock mode (`mock/access.ts`) Gonzalo is the
     organization admin and the rule is the identity service's `operators-admin-two-hours`.
+80. **A device sign-in is approved by a person who sees what asks, and never by a link.** `#/device`
+    reads the grant by its code (`?code=` from the CLI's `verification_uri_complete`, or typed and
+    normalised to `XXXX-XXXX`) and shows the client, the machine in words from its user agent, the
+    address, when it asked, the time left and the one scope in plain words, with a warning to
+    approve only a sign-in one started. Approve and Deny are buttons the person presses: the page
+    never approves from its address. Approving is the BFF's step-up 403 past ten minutes; live the
+    API client follows it to the BFF's own `/auth/` sign-in and back to the code (the page builds no
+    redirect), in mock mode the page signs in again in place; either way Approve is pressed again.
+    Denying needs no fresh sign-in. A signed-out link keeps its query through the sign-in, so the
+    code survives it.
+81. **CLI sign-ins sit beside access keys and belong to the person.** `GET /console/v1/api-sessions`
+    lists the open ones newest first (client, machine, address, account, signed in, last used,
+    ends); everyone signs their own out after one confirmation (`DELETE`), whatever their role, so
+    nothing is greyed by role. The mock seeds each person a laptop CLI and a CI job's SDK, opens a
+    session when a grant is approved, and journals approvals, denials and revocations (`cli.`).
+82. **The console shell runs the CLI's command core, through the BFF only.** No `console-sdk`
+    branch exists yet, so `lib/shell/core.ts` is the core, written to the interface the generated
+    one would have (`execute(line, { client, emit, describeError, sleep, signal, newKey })`, output
+    as text, table or JSON blocks, `toText` for a terminal); `lib/shell/console.ts` adapts it to the
+    BFF client with the page's session, so swapping in `@iaf/console-cli-core` is one import. It
+    makes no platform call. `ls <type> --filter k=v` sends `q`, `state` and `drift` as themselves
+    and anything else as `tag.<k>`; `run` checks the type's decision first and refuses with its
+    reason, asks `--confirm` for a destructive verb, sends one Idempotency-Key, and `--wait` or
+    `job <id> --follow` reads the job every 2 seconds until it ends or pauses (Ctrl+C stops
+    following, the job goes on). A leading `iaf` is dropped, so a sample line runs as it is.
+83. **The shell is a keyboard page that a screen reader can follow.** Enter runs, Up and Down walk
+    a history kept per person in this browser (100 lines), Tab completes a command only when one
+    name fits and otherwise moves on, Ctrl+L clears. Each result lands in a `log` region; tables
+    are real tables in their own focusable scrolling region, so a phone scrolls a wide table and
+    never the page; tones are a rule at the left, never colour on the words alone. A wfrn links to
+    its resource and a job id to its request, built from the console's own routes.
+84. **The developer portal reads the API's own description, and its tiles are samples.** The
+    operations come from `GET /console/v1/openapi.json` grouped by tag (the mock serves an outline;
+    the full contract is linked), and sample calls are built from the chosen type's workflow schemas
+    (examples, defaults, first choices, the required tags from the tag policy) for the shell, the
+    CLI, REST and the TypeScript and Java SDKs. The IDP tiles (team resources, drift, a sample cost,
+    and create workflows) are marked as samples until the firm's examples arrive; a tile is kept as
+    a shortcut in this browser for the person, a workflow tile is greyed with the refusal where the
+    person may not run it, and a tile's target becomes a link only when it is a console route or
+    https.
 
 ## Layout of the code
 
@@ -675,6 +728,8 @@ type, so the feed must subscribe to every one).
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
                   tags, bulk, drift, monitoring, access), their helpers and screenshots
+                  tags, bulk, drift, monitoring), their helpers and screenshots; cli (the device
+                  sign-in, CLI sign-ins, the console shell and the developer portal)
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -693,12 +748,18 @@ console/
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
                   (scales, ticks, time labels and the keyboard's steps), accessReviews,
                   elevations and organization (access over time and the accounts, and their words)
+                  (scales, ticks, time labels and the keyboard's steps); cli (device grants and
+                  API sessions, and their words), shell/ (the CLI's command core, its parser, the
+                  terminal's text and the console adapter), portal (the API by tag, sample calls,
+                  tiles and shortcuts)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),
                   monitoring (series, alarms and the rightsizing pass), access (review campaigns,
                   elevations, break-glass and closing accounts), and the browser installer,
+                  monitoring (series, alarms and the rightsizing pass), cli (device grants, API
+                  sessions and the console API's outline), and the browser installer,
                   with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews and elevations among them), src/pages/organization/ the accounts page,
@@ -711,7 +772,8 @@ console/
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
                   resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
-                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
+                  and Rightsizing pages and the alarm dialog, src/pages/developer/ the device
+                  sign-in, the console shell and the developer portal (CLI sign-ins sit in iam/); the resource page's Monitoring tab
                   and its MetricChart sit with its other tabs
 packages/
   console-kit/    the composites and their tests
