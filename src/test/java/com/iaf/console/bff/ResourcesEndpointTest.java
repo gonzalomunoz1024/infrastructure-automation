@@ -100,6 +100,13 @@ class ResourcesEndpointTest extends DemoApp {
             assertFalse(retagged.json().has("team"), "a tag the body leaves out is removed");
             Console.Reply byTag = console.get(VM + "?tag.env=prod", gonzalo);
             assertTrue(stream(byTag.json().path("items")).anyMatch(i -> wfrn.equals(i.path("wfrn").asText())), byTag.body());
+            Map<String, String> odd = new java.util.HashMap<>(retags);
+            odd.put("lang", "c++ {x}");
+            assertEquals(200, console.sendAt(HttpMethod.PUT, VM + "/{wfrn}/tags", gonzalo, odd, Map.of(), wfrn).status());
+            Console.Reply byOddTag = console.getAt(VM + "?tag.lang={v}", gonzalo, Map.of(), "c++ {x}");
+            assertEquals(200, byOddTag.status(), byOddTag.body());
+            assertTrue(stream(byOddTag.json().path("items")).anyMatch(i -> wfrn.equals(i.path("wfrn").asText())),
+                    "a tag value with + and braces filters as it is: " + byOddTag.body());
 
             Awaitility.await().atMost(Duration.ofSeconds(10)).until(() -> received.stream()
                     .anyMatch(e -> "ResourceRequested".equals(e.event()) && wfrn.equals(e.data().path("wfrn").asText())));
