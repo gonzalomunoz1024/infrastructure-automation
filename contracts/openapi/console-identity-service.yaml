@@ -2243,7 +2243,7 @@ components:
         suggestedRole: { type: string, description: 'When denied: the managed role that would allow it' }
         scope: { type: string, enum: [policy, boundary, guardrail], description: 'What decided: a role''s policy, a role''s permission boundary, or a guardrail' }
         guardrailId: { type: string, description: The guardrail whose deny statement decided }
-        elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group' }
+        elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group. The roles from groups are tried first, so it marks only what the time-boxed role alone allows' }
     AccessReviewInput:
       type: object
       properties:
