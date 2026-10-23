@@ -8,18 +8,26 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
+import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.access.domain.DeniedException;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.CountsRequest;
 import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
@@ -28,10 +36,12 @@ import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.application.CurrentSession;
+import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.Session;
 import com.iaf.console.bff.types.application.Types;
 import com.iaf.console.bff.types.domain.ConsoleType;
 import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.scope.AccountScope;
@@ -50,7 +60,15 @@ import reactor.core.publisher.Mono;
  */
 public class Search {
 
+    private static final Logger log = LoggerFactory.getLogger(Search.class);
+
     static final String LIST_VERB = "list";
+    static final String ACCOUNT = "account";
+    static final String ORGANIZATION = "organization";
+    /** A membership of an account that is closed, which an organization's counts leave out. */
+    static final String CLOSED = "closed";
+    /** How many accounts' policies are asked at once for an organization's counts. */
+    static final int ACCOUNTS_AT_ONCE = 4;
     public static final int MAX_QUERY = 256;
     public static final int MAX_SUGGEST_QUERY = 128;
     public static final int MAX_SUGGESTIONS = 20;
@@ -224,6 +242,98 @@ public class Search {
     }
 
     /**
+     * Resources counted by one grouping ({@code GET /console/v1/search:counts}) with the filters
+     * of a search, in the session's region. With {@code scope=account}, the default, the session's
+     * account is counted, asked as the person. With {@code scope=organization} every account of
+     * the person's that is not closed and in which they may list what is counted is, asked as the
+     * console-internal principal with {@code accountId} repeated, so no person's token ever names
+     * another account. An account counts with a type when {@code <service>:list} on the type is
+     * allowed there, and without one when every type of its catalogue is, each decided with the
+     * session switched to that account. One the person may not list in is refused as its list is:
+     * the session's account for {@code account}, and for {@code organization} only when no account
+     * counts; a type no account's catalogue holds is a 404. The answer is {@link GroupedCounts}
+     * with {@code asOf}, the index's last event, when it is known.
+     */
+    public Mono<JsonNode> groupedCounts(Session session, CountsRequest request) {
+        return Mono.defer(() -> {
+            String groupBy = groupBy(request.groupBy());
+            boolean organization = organization(request.scope());
+            Map<String, String> tags = new LinkedHashMap<>();
+            request.tags().forEach((name, value) -> tags.put(tagName(name), value == null ? "" : value));
+            CountsQuery query = new CountsQuery(text(request.q(), MAX_TEXT, false), blankToNull(request.type()), session.region(), state(request.state()),
+                    tags, request.drift() == null ? null : drift(request.drift()), groupBy);
+            return (organization ? inEveryAccount(session, query) : inTheAccount(session, query)).flatMap(counts -> asOf(session, counts));
+        });
+    }
+
+    /** The session's account's counts, as the person, when they may list what is counted there. */
+    private Mono<JsonNode> inTheAccount(Session session, CountsQuery query) {
+        return counted(session, query.type()).flatMap(decision -> decision.allowed()
+                ? index.countGroups(scope(session), caller(session), query).map(answer -> (JsonNode) GroupedCounts.of(answer, true))
+                : Mono.error(new DeniedException(decision.denial())));
+    }
+
+    /**
+     * The counts of every account of the person's that is not closed and may be counted, added up,
+     * as the console-internal principal. When none may, the session's account's refusal (else the
+     * first) is the answer; a type no account's catalogue holds is a 404.
+     */
+    private Mono<JsonNode> inEveryAccount(Session session, CountsQuery query) {
+        List<AccountMembership> members = session.accounts().stream().filter(m -> !CLOSED.equals(m.status())).toList();
+        return Flux.fromIterable(members).flatMapSequential(m -> {
+            Session there = m.accountId().equals(session.accountId()) ? session : session.switchedTo(m.accountId(), session.region());
+            // a type an account's catalogue does not hold counts nothing there
+            return counted(there, query.type()).onErrorResume(NotFoundException.class, e -> Mono.empty()).map(d -> Map.entry(m.accountId(), d));
+        }, ACCOUNTS_AT_ONCE).collectList().flatMap(decisions -> {
+            List<String> accounts = decisions.stream().filter(d -> d.getValue().allowed()).map(Map.Entry::getKey).toList();
+            if (!accounts.isEmpty()) {
+                return across(session, accounts, query);
+            }
+            Optional<Denial> refused = refusal(decisions, session.accountId()).or(() -> refusal(decisions, null));
+            if (refused.isPresent()) {
+                return Mono.error(new DeniedException(refused.get()));
+            }
+            return query.type() == null ? Mono.just(GroupedCounts.empty(query.grouped())) : Mono.error(NotFoundException.of("type", query.type()));
+        });
+    }
+
+    /** The first refusal among the accounts' decisions, of the one account named, or of any when {@code accountId} is {@code null}. */
+    private static Optional<Denial> refusal(List<Map.Entry<String, Decision>> decisions, String accountId) {
+        return decisions.stream().filter(d -> accountId == null || d.getKey().equals(accountId)).map(d -> d.getValue().denial())
+                .filter(Objects::nonNull).findFirst();
+    }
+
+    /** Whether the session's account may be counted: the type listable there, or with no type every type of its catalogue. */
+    private Mono<Decision> counted(Session session, String type) {
+        if (type != null) {
+            return types.byType(session, type).flatMap(t -> access.decide(session,
+                    List.of(new AccessCheck(AccessCheck.action(t.service(), LIST_VERB), pattern(session, t))))).map(decisions -> decisions.get(0));
+        }
+        return catalogue(session).map(c -> c.every() ? Decision.allow() : Decision.deny(c.refused()));
+    }
+
+    /** The counts with {@code asOf}, the index's last event, when the index says; the counts alone when it cannot. */
+    private Mono<JsonNode> asOf(Session session, JsonNode counts) {
+        return lastEventAt(session).map(Optional::of).defaultIfEmpty(Optional.empty()).onErrorResume(e -> {
+            log.warn("the search index's last event is unknown for {}: {}", session.accountId(), e.toString());
+            return Mono.just(Optional.empty());
+        }).map(last -> {
+            if (last.isPresent() && counts instanceof ObjectNode object) {
+                object.put("asOf", last.get().toString());
+            }
+            return counts;
+        });
+    }
+
+    private static boolean organization(String scope) {
+        String value = scope == null || scope.isBlank() ? ACCOUNT : scope.strip();
+        if (!value.equals(ACCOUNT) && !value.equals(ORGANIZATION)) {
+            throw invalid("enum", "/scope", "scope is account or organization");
+        }
+        return value.equals(ORGANIZATION);
+    }
+
+    /**
      * Counts over accounts the caller has already decided the person may see counted (the
      * executive home's), asked as the console-internal principal with {@code accountId} repeated,
      * in calls of at most {@value SearchPort#MAX_ACCOUNTS} accounts whose answers are added up
@@ -319,7 +429,7 @@ public class Search {
     }
 
     private static String state(String value) {
-        String state = blankToNull(value);
+        String state = blankToNull(value == null ? null : value.strip());
         if (state != null && !ResourceCounts.STATES.contains(state)) {
             throw invalid("enum", "/state", "state is one of: " + String.join(", ", ResourceCounts.STATES));
         }
@@ -327,7 +437,7 @@ public class Search {
     }
 
     private static Boolean drift(String value) {
-        String drift = value.strip();
+        String drift = value == null ? "" : value.strip();
         if (drift.isEmpty()) {
             return null;
         }
