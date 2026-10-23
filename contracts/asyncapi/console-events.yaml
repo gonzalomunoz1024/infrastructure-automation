@@ -874,6 +874,10 @@ components:
             registryId: { type: string, description: The platform's registry id }
             providerId: { type: string }
             attributes: { type: object, additionalProperties: true }
+            builtFrom:
+              type: array
+              description: The registry ids of what the resource was built from, as the job that registered it recorded them (P-02); absent when the registry names none
+              items: { type: string }
     ProvisioningFailedData:
       allOf:
         - $ref: '#/components/schemas/JobData'
@@ -951,3 +955,7 @@ components:
         registryId: { type: string }
         providerId: { type: string }
         attributes: { type: object, additionalProperties: true }
+        builtFrom:
+          type: array
+          description: The registry ids of what the resource was built from, when the registry or the import names them
+          items: { type: string }
