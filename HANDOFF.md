@@ -242,7 +242,7 @@ Every service PR is stacked: each topic branch is based on the previous one. Hea
 | Service | Stack (PR: head branch → base) | Head |
 |---|---|---|
 | console-libs | #4 `console-libs--phase-0` → `console-libs` | 6861ed5 |
-| console-web | #3 `--phase-0` → `console-web`; #5 `--phase-1` → `console-web`; #9 `--phase-3a` → phase-1; #13 `--phase-3b` → 3a; #37 `--phase-4` → 3b; #41 `--phase-5` → phase-4; #23 `--phase-9` → 3b; #31 `--phase-9-explainer` → phase-9; #36 `--phase-9-retry` → explainer (merges phase 4 in); #40 `--phase-9-home` → phase-9; #43 `--phase-9-copilot` → phase-9 | #41 8b7980c, #43 563fd5b, #36 03676ef |
+| console-web | #3 `--phase-0` → `console-web`; #5 `--phase-1` → `console-web`; #9 `--phase-3a` → phase-1; #13 `--phase-3b` → 3a; #37 `--phase-4` → 3b; #41 `--phase-5` → phase-4; #23 `--phase-9` → 3b; #31 `--phase-9-explainer` → phase-9; #36 `--phase-9-retry` → explainer (merges phase 4 in); #40 `--phase-9-home` → phase-9; #43 `--phase-9-copilot` → phase-9; #49 `--phase-9-cost` → phase-9 | #41 8b7980c, #43 563fd5b, #36 03676ef |
 | console-bff | #6 `--phase-1` → `console-bff`; #26 `--phase-4` → phase-1; #34 `--cost` → phase-4; #42 `--drift` → phase-4. Pushed without a PR: `console-bff--org` (2dfa817), `console-bff--search-p9` (16d0d05). **Not on GitHub:** `console-bff--phase-9` | #26 7e3b5d4, #34 69c0853, #42 1096484 |
 | console-identity-service | #8 `--phase-1` → root; #24 `--phase-7` → phase-1 | #24 317bc40 |
 | console-state-service | #7 `--phase-2` → root; #33 `--phase-9` → phase-2; #45 `--blueprints` → phase-9; #48 `--load` → phase-9 | #33 61ef5d1, #45 6ce9ba1, #48 90ee637 |
@@ -273,7 +273,7 @@ at a time, bottom of each stack first; after each merge retarget its children to
    - drift #12, #32, #21 (#21 is beside #32 on phase-5; after #32 merges, merge `console-drift-service` into #21 and re-run CI)
    - cost #28
    - BFF #6, #26, then #34 and #42 (both on phase-4; the second needs the first merged in), then the phase 9, org and search-p9 work once they have PRs
-   - web #3, #5, #9, #13, #37, #41, then #23, #31, #36, #40, #43 (the phase 9 PRs were cut from phase-3b; merge `console-web` into each before its merge)
+   - web #3, #5, #9, #13, #37, #41, then #23, #31, #36, #40, #43, #49 (the phase 9 PRs were cut from phase-3b; merge `console-web` into each before its merge)
 4. After each service merges, re-pin its `contracts.lock` to the merged `console-root` commit
    (WP H-2).
 
@@ -338,15 +338,15 @@ CI states are as reported by the owners at 18:25 to 18:53 UTC **(unverified; run
 ### console-web
 - Done and pushed: phases 0, 1, 3a, 3b, 4 (#37 green), 5 (#41 green), phase 9 groundwork (#23),
   failure explainer (#31), retry with fix (#36 green), executive home (#40 green), copilot (#43
-  green).
+  green), cost, budgets and chargeback (#49 `console-web--phase-9-cost` on phase-9, opened
+  18:57 UTC, CI not yet finished).
 - In progress, **not on GitHub (at risk)**: a phase 7 branch stacked on #41 with seven streams
   (7.2/7.5/9.13 notifications and digests; 7.2/7.6 recent, favourites, Service Quotas and
   increases; 7.4/9.16 device sign-in, CLI sessions, console shell, developer portal; 7.8 policy
   editor, simulator, boundaries, guardrails; 9.11/9.12/7.7 access reviews, elevation, break
   glass, closure; 7.1/9.8/9.4 activity trail, evidence, time travel, lineage, resource map;
   9.7/9.10/9.6/9.14 blueprints, change risk, scorecards, event subscriptions); then 9.18, 9.19,
-  9.20. Also the cost/budgets/chargeback pages (7.3, 9.3, 9.9) on `console-web--phase-9-cost`.
-  And the security fix: every platform `/api/v1` call moved behind the BFF.
+  9.20. And the security fix: every platform `/api/v1` call moved behind the BFF.
 - **Known integration bug** (found by the e2e session): console-web reads
   `GET /console/v1/types` as a bare array; the BFF and the hub contract answer `{items: [...]}`,
   so the live console renders blank after sign-in on every web branch. Mock mode hides it.
@@ -527,9 +527,9 @@ journey with `expectNoSeriousA11y` and `expectNoHorizontalOverflow`.
   health, drift or cost) (7.1, 9.8, 9.4).
 - **W-7** Blueprints launch/teardown/resume, change risk on previews, scorecards and org heat map,
   event subscriptions (9.7, 9.10, 9.6, 9.14).
-- **W-8** Cost Explorer, budgets with forecasts and alerts, chargeback, create-preview budget check
-  (7.3, 9.3, 9.9) on `console-web--phase-9-cost` from `--phase-9`; money only from the mock ledger
-  `console/src/mock/cost.ts` in mock mode.
+- **W-8** Cost Explorer, budgets, chargeback (7.3, 9.3, 9.9): built as PR #49. Remaining: drive
+  #49 green, make the mock event stream emit `budget.alert`, show the budget name in its
+  breadcrumb, then switch to live against BFF #34.
 - **W-9** Mobile approvals (installable responsive view), team dashboards, service health (9.18,
   9.19, 9.20).
 - **W-10** Account transfer action (decision 30/34) on the resource page and whole-account move for
