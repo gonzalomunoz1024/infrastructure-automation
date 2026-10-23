@@ -71,6 +71,12 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'alarms':
     case 'rightsizing':
       return [home, { label: 'Operations', href: pathFor('drift') }, { label: route.def?.title ?? 'Operations' }]
+    case 'dashboards':
+      return [home, { label: 'Dashboards' }]
+    case 'dashboard':
+      return [home, { label: 'Dashboards', href: pathFor('dashboards') }, { label: 'Dashboard' }]
+    case 'health':
+      return [home, { label: 'Service health' }]
     case 'settings':
       return [home, { label: 'Settings' }]
     default:

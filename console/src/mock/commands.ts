@@ -8,6 +8,7 @@ import { applyJobCommand, settleBatches, type MockBatch } from './jobs'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
 import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
 import { applyMonitoringCommand, type MonitoringState } from './monitoring'
+import { applyDashboardCommand, type DashboardsState } from './dashboards'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -108,6 +109,8 @@ export interface MockConsoleState {
   drift?: DriftState
   /** alarms and rightsizing decisions (./monitoring), made on first use */
   monitoring?: MonitoringState
+  /** team dashboards (./dashboards), made on first use */
+  dashboards?: DashboardsState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
 }
@@ -702,6 +705,7 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   unmanaged: (data, cmd) => applyDriftCommand(data, cmd),
   alarm: (data, cmd) => applyMonitoringCommand(data, cmd),
   recommendation: (data, cmd) => applyMonitoringCommand(data, cmd),
+  dashboard: (data, cmd) => applyDashboardCommand(data, cmd),
   job: (data, cmd) => applyJobCommand(data, cmd),
   batch: (data, cmd) => applyJobCommand(data, cmd),
 }

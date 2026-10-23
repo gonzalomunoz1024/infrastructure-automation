@@ -9,6 +9,8 @@ import { pathFor, type Route, type RouteName } from './router'
  */
 
 export type ToolSectionId = 'tags' | 'operations'
+  // team dashboards and service health (phase 9)
+  | 'insights'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -34,6 +36,7 @@ export interface ConsoleTool {
 export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'tags', title: 'Resource groups and tags', icon: 'tag', subtitle: 'Across every resource type' },
   { id: 'operations', title: 'Operations', icon: 'pulse', subtitle: 'Drift, discovery, alarms and rightsizing' },
+  { id: 'insights', title: 'Dashboards and health', icon: 'grid', subtitle: 'Team dashboards and how the services are doing' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -44,6 +47,8 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'unmanaged', section: 'operations', label: 'Unmanaged resources', icon: 'eye', hint: 'What the providers have that no account manages', keywords: 'discovery shadow infrastructure import assign owner', routes: ['unmanaged'] },
   { route: 'alarms', section: 'operations', label: 'Alarms', icon: 'bell', hint: 'Metric alarms on the account’s resources', keywords: 'monitoring metrics cpu memory disk thresholds', routes: ['alarms'] },
   { route: 'rightsizing', section: 'operations', label: 'Rightsizing', icon: 'chart', hint: 'Idle and oversized resources, and what resizing saves', keywords: 'idle oversized savings cost optimisation resize', routes: ['rightsizing'] },
+  { route: 'dashboards', section: 'insights', label: 'Dashboards', icon: 'grid', hint: 'Boards of charts and counts, kept for yourself or shared with your team', keywords: 'dashboards cloudwatch charts widgets team board', routes: ['dashboards', 'dashboard'] },
+  { route: 'health', section: 'insights', label: 'Service health', icon: 'pulse', hint: 'Whether the platform and the console’s services meet their objectives', keywords: 'status slo availability latency incidents uptime', routes: ['health'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

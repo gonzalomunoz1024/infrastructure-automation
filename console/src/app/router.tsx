@@ -34,6 +34,9 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'dashboards'
+  | 'dashboard'
+  | 'health'
   | 'settings'
   | 'not-found'
 
@@ -76,6 +79,10 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // team dashboards and service health (phase 9)
+  { name: 'dashboards', pattern: '/dashboards', title: 'Dashboards' },
+  { name: 'dashboard', pattern: '/dashboards/:id', title: 'Dashboard' },
+  { name: 'health', pattern: '/health', title: 'Service health' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 

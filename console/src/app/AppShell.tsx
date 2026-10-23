@@ -45,6 +45,9 @@ const DriftPage = lazy(() => import('../pages/operations/DriftPage'))
 const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
+const DashboardsPage = lazy(() => import('../pages/dashboards/DashboardsPage'))
+const DashboardPage = lazy(() => import('../pages/dashboards/DashboardPage'))
+const ServiceHealthPage = lazy(() => import('../pages/health/ServiceHealthPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
@@ -81,6 +84,9 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   unmanaged: UnmanagedPage,
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
+  dashboards: DashboardsPage,
+  dashboard: DashboardPage,
+  health: ServiceHealthPage,
   settings: SettingsPage,
   'not-found': NotFoundPage,
 }

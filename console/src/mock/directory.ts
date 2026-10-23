@@ -378,6 +378,8 @@ export function suggestedRoleFor(dir: Directory, accountId: string, action: stri
 
 /** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
 const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups'])
+// team dashboards (phase 9) are the console's own too
+CONSOLE_SERVICES.add('dashboards')
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {
