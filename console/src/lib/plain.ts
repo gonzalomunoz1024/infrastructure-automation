@@ -49,6 +49,26 @@ const CODES: Record<string, { title: string; message?: string; next?: string; re
   'quota.exceeded': { title: 'The account’s quota is used up', message: 'The account holds as many resources of this type as its quota allows.', next: 'Delete what you no longer need, or request an increase from the platform team on IAM, Access keys, Quotas.' },
   'batch.too-large': { title: 'Too many rows for one run', message: 'The workflow takes only so many rows in one bulk run.', next: 'Select fewer, and run the rest as another batch.' },
   'bulk.unsupported': { title: 'This action does not run in bulk', message: 'The provider publishes no bulk route for it.', next: 'Run it on one resource at a time.' },
+  'finding.closed': { title: 'This finding is already closed', message: 'Someone decided on it first, or the provider came to match what was asked for.', next: 'Reload to see how it closed.' },
+  'finding.reverting': { title: 'A revert is already running', message: 'The type’s update workflow is putting these fields back; the finding closes when that request succeeds.', next: 'Follow the request, then decide again if it fails.' },
+  'finding.notRevertable': { title: 'The console cannot put these fields back', message: 'The type has no update workflow, or a drifted field is not one it sets.', next: 'Accept the provider’s values, or ignore the fields.' },
+  'finding.unwatched': { title: 'This resource left the inventory', message: 'The drift service no longer watches it, so nothing can be decided on its findings.' },
+  'finding.notFound': { title: 'Finding not found', message: 'It may have been settled and left the account’s history.', next: 'Go back to the account’s drift and look for it there.' },
+  'revert.needsPerson': { title: 'This change needs a person', message: 'The update workflow asks for something the console cannot give on your behalf.', next: 'Make the change from the resource’s Edit configuration instead.' },
+  'discover.running': { title: 'A discovery run is already going', message: 'One run per type and region at a time; what it finds shows when it ends.', next: 'Wait for it to finish.', retryable: true },
+  'discover.notSupported': { title: 'This type cannot be discovered', message: 'Its provider publishes no discovery read, so the console cannot list what it holds.' },
+  'discover.notFound': { title: 'Discovery run not found', message: 'The run belongs to another account or region, or it is too old to be kept.' },
+  'unmanaged.unknownAccount': { title: 'No such account', message: 'The id does not name an active account other than this one.', next: 'Check the 12-digit account id with the other team.' },
+  'unmanaged.imported': { title: 'Already under management', message: 'Someone imported this object first, so it is a managed resource now.', next: 'Find it in the list of its type.' },
+  'unmanaged.notFound': { title: 'This object is no longer in the list', message: 'It was imported, assigned elsewhere or no longer exists at the provider.', next: 'Run Find unmanaged again.' },
+}
+
+/** The table's code a server's `error` names: exactly, or opening it (the drift service's 409 codes open `error` with a stable prefix). */
+export function codeOf(error: string | undefined): string | undefined {
+  if (!error) return undefined
+  if (CODES[error]) return error
+  const m = /^([a-z][\w-]*(?:\.[\w-]+)+)(?=[\s:;,(]|$)/.exec(error)
+  return m && CODES[m[1]] ? m[1] : undefined
 }
 
 const STATUS: Record<number, { title: string; message: string; next?: string; retryable?: boolean }> = {
@@ -103,8 +123,8 @@ export function explain(error: unknown, what?: string): Explanation {
   const conflict = conflictWords(error)
   if (conflict && isApiError(error)) return { ...conflict, correlationId: error.correlationId }
   if (isApiError(error)) {
-    // the BFF names a 400's code on its problems, and a 409's as the error itself
-    const byCode = CODES[error.stepUp ? 'step-up.required' : error.error] ?? CODES[error.problems?.find((p) => CODES[p.code])?.code ?? '']
+    // the BFF names a 409's code as the error itself (the drift service's open it with a stable prefix), and a 400's on its problems
+    const byCode = CODES[error.stepUp ? 'step-up.required' : (codeOf(error.error) ?? '')] ?? CODES[error.problems?.find((p) => CODES[p.code])?.code ?? '']
     const byStatus = STATUS[error.status] ?? (error.status >= 500 ? STATUS[500] : error.status >= 400 ? STATUS[400] : undefined)
     const detail = detailOf(error)
     const base = byCode ?? byStatus ?? { title: error.error || 'Something went wrong', message: '', retryable: false }

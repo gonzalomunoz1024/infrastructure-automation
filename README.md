@@ -39,6 +39,23 @@ Phase 4 adds tags and resource groups, across every type of the account and regi
 - create similar: the wizard filled from a resource, in its account or handed to another
 - required tags: what each tag takes, its default and where that comes from
 
+Phase 5 decides on drift and finds what nobody manages:
+
+- a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
+  with what was asked for, the card says Reverting with its request and follows it, and the
+  finding closes when the request succeeded (a failed revert says so and is offered again); Accept
+  makes the provider's values the desired ones after asking once, and Ignore asks for how long
+  (until what was asked for changes, or 1, 7 or 30 days) and why; the findings closed in the last
+  30 days are listed below, with who decided, when and why
+- the account's Drift page counts the open findings by severity and type, says when the last scan
+  ran and what the last 30 days found and closed, and lists every finding across the watched
+  types, filtered by type, severity and status, each with its three decisions; selected rows are
+  reverted together, one call each, counted as they go
+- Unmanaged resources runs a discovery for each type whose provider has a discovery read, lists
+  what no account manages with what the provider reports, a guess at the owning account with its
+  reasons and what it costs a month, and imports an object (a new wfrn, then its page) or assigns
+  it to another team's account, where it shows too until either imports it
+
 Phase 3b makes the console change resources, with the request in view at every step:
 
 - a create wizard for every type a workflow creates, generated from the workflow's input schema:
@@ -103,8 +120,8 @@ Phase 0 built the shell and the read-only pages:
 - a development-only platform feed over server-sent events
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
-What the console does not do yet is still shown, and says which phase brings it: drift's revert,
-accept and ignore in phase 5.
+What the console does not do yet is still shown, and says which phase brings it: custom roles and
+policies in phase 7.
 
 ## Workspaces
 
@@ -534,13 +551,46 @@ type, so the feed must subscribe to every one).
     the draft for it is fetched in this session, kept in sessionStorage under a one-time token,
     and read once by that account's wizard (`#/account/<id>/.../create?draft=<token>`), which
     switches the session to it first.
+42. **A revert is one click; accept and ignore ask once.** A revert only puts back what was asked
+    for, through the type's own update workflow and its approvals, so it needs no confirmation:
+    the card says Reverting, links the request and follows it, and the finding closes when the
+    request succeeded, never when it was merely sent. Accept changes the desired state, and Ignore
+    silences the drift service, so each asks once in a small dialog, with an optional reason that
+    the history keeps. Each decision is gated twice: the type's `update` permission (refused, it
+    shows its lock and the refusal) and the finding's `can` (not offered, it is greyed with the
+    reason in words beside it, such as a field the update workflow does not set).
+43. **Drift codes are read by their prefix.** The drift service's 409 codes open `error` with a
+    stable prefix (`finding.closed`, `finding.reverting`, `finding.notRevertable`,
+    `finding.unwatched`, `revert.needsPerson`), and `lib/plain.ts` matches the table's code when
+    it stands alone or opens the error, so a code with words after it is still explained. A
+    refused decision reads the findings again, since the refusal means they changed.
+44. **Reverting many is many single reverts.** Selected rows are reverted
+    one call each, with their own Idempotency-Keys, counted as they go; what could not start is
+    named with its reason and stays selected for another try. There is no batch revert in the
+    contract, and a revert's request is the update workflow's own, so each one is followed and
+    approved like any other change. Findings carry no name, so the page shows the resource's id
+    from its wfrn and links to its Drift tab.
+45. **The unmanaged list is what the runs found, never a scan of its own.** Find unmanaged starts
+    a discovery run per type (one per type and region at a time; a second follows the running
+    one) and shows it going; the list holds what the account's finished runs found and what
+    another account assigned to it. Import asks for the name to manage the object under, then
+    links to its page; Assign to team offers the guessed account first, or an account id typed.
+    Both need the type's `create` permission and the object's `can`, so an account whose platform
+    role may not create the type can still find and read what it holds. In mock mode
+    (`console/src/mock/drift.ts`) the findings are the scan's with the decisions laid over them,
+    a revert closes when its update job succeeded (the provider refuses the first revert of
+    `vm-gen-037`: its request pauses on the failed step, as hub decision 24 has every failed step
+    do, so the revert stays running until someone retries, skips or aborts it there, and an
+    aborted one leaves the finding open, offered again), each resource carries a short seeded history,
+    and a discovery run takes 4 seconds and finds twelve machines and four clusters across the two
+    accounts, with owner guesses of each confidence.
 
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk), their helpers and screenshots
+                  tags, bulk, drift), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -552,20 +602,24 @@ console/
                   filters, sorts, columns and counts), listState (the list in the query),
                   preferences (saved views and columns), keyed, csv, code (view as code), plain
                   (failures in words), tour, verbs, submission (Idempotency-Keys), poll, tags
-                  (the tag policy, Tag Editor, resource group and clone client, and their rules)
+                  (the tag policy, Tag Editor, resource group and clone client, and their rules),
+                  rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
+                  words)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
-                  (resources) and the writes on a clock (commands), the tag policy, Tag Editor,
-                  resource groups and clone drafts (tags), and the browser installer, with the
-                  samples
+                  (resources) and the writes on a clock (commands), jobs (steering, approvals and
+                  bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
+                  (tags), drift (findings, decisions, discovery and unmanaged objects), and the
+                  browser installer, with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
                   src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
-                  src/pages/resource/ the resource page's tabs, request banner, action drawer,
+                  src/pages/resource/ the resource page's tabs (DriftTab and the decisions it
+                  shares with the Drift page in DriftDecisions), request banner, action drawer,
                   edit drawer, blast radius and Tags drawer, src/pages/request/ the request
                   page's parts (the paused step, what went wrong, approvals, a bulk run's waves
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
-                  resource groups
+                  resource groups, src/pages/operations/ the Drift and Unmanaged resources pages
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

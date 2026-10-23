@@ -488,17 +488,32 @@ export interface ActivityEntry {
   data?: unknown
 }
 
-/** A drift finding: the fields where what the provider reports differs from what was asked for. */
+/** A drift finding: the fields where what the provider reports differs from what was asked for (the drift service's Finding, through the BFF). */
 export interface Finding {
   findingId: string
   wfrn: string
+  accountId?: string
+  region?: string
+  type?: string
   status: 'open' | 'closed'
   severity: 'info' | 'warning' | 'critical'
-  fields: { path: string; expected: unknown; observed: unknown }[]
+  /** bumped on every change to the finding: a scan's new fields, a decision */
+  version?: number
+  /** `ignored`: the field differs but an ignore silences it */
+  fields: { path: string; expected: unknown; observed: unknown; ignored?: boolean }[]
   openedAt: string
   observedAt?: string
   closedAt?: string
-  resolution?: string
+  resolution?: 'reverted' | 'accepted' | 'ignored' | 'vanished'
+  /** who reverted, accepted or ignored it */
+  decidedBy?: string
+  reason?: string
+  /** the update job a revert started; the finding stays open while it runs, and after it failed */
+  revertJobId?: string
+  revertStatus?: 'running' | 'succeeded' | 'failed'
+  /** an ignore's end; without one it lasts until the desired state changes */
+  ignoredUntil?: string
+  /** what the signed-in person may decide on it */
   can?: ('revert' | 'accept' | 'ignore')[]
 }
 

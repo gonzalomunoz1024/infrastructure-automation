@@ -263,6 +263,12 @@ export function inputSchemaOf(entry: CatalogEntry, subject: string | undefined):
   return { ...schema, properties: rest, required: (schema.required ?? []).filter((n) => n !== subject) }
 }
 
+/** The fields an update may change: the x-console `mutable` ones. */
+export function updateSchemaOf(rt: ResourceType): Schema {
+  const props = Object.entries(rt.schema?.properties ?? {}).filter(([, p]) => p?.['x-console']?.mutable === true)
+  return { type: 'object', properties: Object.fromEntries(props) }
+}
+
 /** What an update workflow's input may carry besides its subject (P-08): the mutable fields it changes, and operational inputs such as its reason. */
 export function updateInputsOf(entry: CatalogEntry, rt: ResourceType): { mutable: string[]; operational: string[] } {
   const subject = subjectFieldOf(entry, rt)
