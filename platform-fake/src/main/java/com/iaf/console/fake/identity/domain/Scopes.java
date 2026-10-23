@@ -18,9 +18,11 @@ public final class Scopes {
     public static final String CONSOLE_ACT = "console:act";
     public static final String RESOURCES_OBSERVE = "resources:observe";
     public static final String EVENTS_READ = "events:read";
+    /** P-05's backfill, for the console-internal preset, so the state service imports the registry without a person. */
+    public static final String RESOURCES_BACKFILL = "resources:backfill";
 
     public static final Set<String> ALL = Set.of(REGISTRY_READ, WORKFLOWS_VALIDATE, WORKFLOWS_DRY_RUN, WORKFLOWS_WRITE, JOBS_START, JOBS_READ,
-            PROVIDERS_WRITE, ADMIN, CONSOLE_ACT, RESOURCES_OBSERVE, EVENTS_READ);
+            PROVIDERS_WRITE, ADMIN, CONSOLE_ACT, RESOURCES_OBSERVE, EVENTS_READ, RESOURCES_BACKFILL);
 
     /** The named scope sets. */
     public static final Map<String, List<String>> PRESETS = Map.of(
@@ -28,7 +30,7 @@ public final class Scopes {
             "assistant", List.of(REGISTRY_READ, WORKFLOWS_VALIDATE, WORKFLOWS_DRY_RUN, JOBS_READ),
             "ci", List.of(REGISTRY_READ, WORKFLOWS_VALIDATE, WORKFLOWS_WRITE, JOBS_START, JOBS_READ),
             "console", List.of(REGISTRY_READ, JOBS_START, JOBS_READ, RESOURCES_OBSERVE, CONSOLE_ACT),
-            "console-internal", List.of(REGISTRY_READ, JOBS_READ, RESOURCES_OBSERVE, EVENTS_READ));
+            "console-internal", List.of(REGISTRY_READ, JOBS_READ, RESOURCES_OBSERVE, EVENTS_READ, RESOURCES_BACKFILL));
 
     /** What a console account can never hold. */
     public static final Set<String> FORBIDDEN_FOR_CONSOLE = Set.of(ADMIN, WORKFLOWS_WRITE, PROVIDERS_WRITE);

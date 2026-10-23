@@ -128,7 +128,7 @@ public final class ResourceRoutes {
 
     private Mono<ServerResponse> backfill(ServerRequest request) {
         Caller caller = Callers.of(request);
-        Access.requireAdmin(caller);
+        Access.requireAdminOrScope(caller, Scopes.RESOURCES_BACKFILL);
         return commands.handle(request, body -> {
             String accountId = body.path("accountId").asText(null);
             String region = body.path("region").asText(null);

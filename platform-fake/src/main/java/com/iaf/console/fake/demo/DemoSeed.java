@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.fake.PlatformFake;
+import com.iaf.console.fake.common.ApiException;
 import com.iaf.console.fake.common.FakeClock;
 import com.iaf.console.fake.common.Ids;
 import com.iaf.console.fake.common.Json;
@@ -224,8 +225,21 @@ public final class DemoSeed {
             if (decide) {
                 Set<String> family = family(fake, job.id());
                 for (ApprovalRecord approval : fake.jobs().approvals("pending", admin)) {
-                    if (family.contains(approval.jobId())) {
+                    if (!family.contains(approval.jobId())) {
+                        continue;
+                    }
+                    // an approval is listed as soon as its step asks for it; the job pauses a moment later
+                    boolean paused = fake.jobs().get(approval.jobId()).map(j -> j.status() == JobStatus.WAITING_APPROVAL).orElse(false);
+                    if (!paused) {
+                        continue;
+                    }
+                    try {
                         fake.jobs().decideApproval(approval, true, approver(approval.group()), "approved for the demo");
+                    } catch (ApiException e) {
+                        if (e.status() != 409) {
+                            throw e;
+                        }
+                        // the job moved on between the check and the decision; the next pass sees it
                     }
                 }
             }

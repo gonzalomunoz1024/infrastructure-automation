@@ -21,4 +21,12 @@ public final class Access {
             throw ApiException.forbidden("admins only");
         }
     }
+
+    /** An admin passes, and so does a service account holding the scope (a person who is not an admin does not). */
+    public static void requireAdminOrScope(Caller caller, String scope) {
+        if (caller.admin() || (caller.isService() && caller.hasScope(scope))) {
+            return;
+        }
+        throw ApiException.forbidden("admins or scope " + scope + " required");
+    }
 }

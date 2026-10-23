@@ -564,9 +564,9 @@ paths:
     post:
       operationId: backfillWfrns
       summary: Mint wfrns for a team's existing resources
-      description: 'The import path of the console: mints a wfrn for every resource of `owner` that has none, under the account and region given, and emits `resource.registered` for each. Idempotent, a resource with a wfrn is skipped. Admins only.'
+      description: 'The import path of the console: mints a wfrn for every resource of `owner` that has none, under the account and region given, and emits `resource.registered` for each. Idempotent, a resource with a wfrn is skipped. For admins, or a service account holding `resources:backfill` (the `console-internal` preset, so the state service''s import runs it).'
       tags: [ Resources ]
-      x-scopes: [ admin ]
+      x-scopes: [ admin, resources:backfill ]
       x-platform-change: [ P-05 ]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
