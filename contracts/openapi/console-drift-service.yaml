@@ -23,15 +23,32 @@ info:
     the observed values the desired ones, `ignore` silences the fields until the desired state
     changes.
 
+    **Reverts act for a person and never run on their own.** A revert runs through the account's
+    platform service account on behalf of the person who asked: the BFF relays its `X-On-Behalf-Of`
+    assertion for them (P-02), and a call without a person to act for is 409 `revert.needsPerson`.
+    The job carries the label `drift-finding` with the finding id and the resource's wfrn, so the
+    platform's job list ties it to the finding. While it runs the finding stays open with
+    `revertStatus: running`; it closes as `reverted` when the job succeeded and the next read
+    agrees, and a failed job leaves it open with `revertStatus: failed`.
+
     **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
     sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console API).
 
     **Errors.** `{ error, problems?, correlationId? }`: 400 bad input, 401 no valid JWT, 404
-    unknown or out of scope, 409 a finding already closed, 429 the provider's observe budget is
-    used up (with `Retry-After`), 502 the platform answered an error.
+    unknown or out of scope, 409 a decision the finding's state refuses, 429 the provider's observe
+    budget is used up (with `Retry-After`), 502 the platform answered an error. The 409 codes open
+    `error` with a stable prefix: `finding.closed` (closed meanwhile or before; names the
+    `resolution`), `finding.reverting` (a revert job is running), `finding.notRevertable` (the type
+    has no update workflow in the catalog, or a drifted field is not one it sets),
+    `finding.unwatched` (the resource left the inventory) and `revert.needsPerson`.
 
     **wfrns in URLs.** Findings are filtered by wfrn as a query parameter, as the platform does;
-    no wfrn appears in a path here.
+    no public path carries a wfrn. The internal watch paths take it percent-encoded, as the state
+    service's do (`/internal/watches/wfrn%3Awf%3A...`).
+
+    **Internal operations.** `/internal/*` answers the console-internal principal only (a service
+    token, no `acct`); a person's token gets 404. They show the watch list and run a read, a scan,
+    an inventory sync or a revert-follower pass now, for operators and the other services.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -40,6 +57,8 @@ tags:
   - name: Findings
   - name: Discovery
   - name: Webhooks
+  - name: Internal
+    description: For console services and operators (the console-internal principal)
   - name: Health
 security:
   - consoleJwt: []
@@ -143,11 +162,16 @@ paths:
     post:
       operationId: revertFinding
       summary: Put the resource back to its desired state
-      description: Starts the type's update workflow with the desired values of the drifted fields; the finding closes as `reverted` when the job succeeds.
+      description: Starts the type's update workflow with the desired values of the drifted fields, on behalf of the person who asks (never on its own). The job carries the label `drift-finding` with the finding id; the finding stays open with `revertStatus` `running` and closes as `reverted` when the job succeeded and the next read agrees.
       tags: [Findings]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/ConsoleRequestId'
+        - name: X-On-Behalf-Of
+          in: header
+          required: false
+          description: The BFF's signed assertion for the person who asked (P-02), relayed onto the platform job. Without it, and without a person the service may sign for itself (the demo), the answer is 409 `revert.needsPerson`.
+          schema: { type: string }
       requestBody:
         required: false
         content:
@@ -166,7 +190,11 @@ paths:
                   jobId: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: '`finding.closed`, `finding.reverting`, `finding.notRevertable`, `finding.unwatched` or `revert.needsPerson`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '502': { $ref: '#/components/responses/BadGateway' }
   /v1/findings/{findingId}:accept:
@@ -192,7 +220,11 @@ paths:
               schema: { $ref: '#/components/schemas/Finding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: '`finding.closed`, or `finding.reverting` while a revert job runs'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /v1/findings/{findingId}:ignore:
     parameters:
       - $ref: '#/components/parameters/FindingId'
@@ -222,7 +254,11 @@ paths:
               schema: { $ref: '#/components/schemas/Finding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: '`finding.closed`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /v1/discover:
     post:
       operationId: startDiscovery
@@ -305,7 +341,7 @@ paths:
     post:
       operationId: importUnmanaged
       summary: Take a discovered object under management
-      description: Mints a wfrn through the state service (`POST /v1/resources:import`, source `discover`) and removes the object from the unmanaged list.
+      description: Mints a wfrn through the state service (`POST /v1/resources:import`, source `discover`) and removes the object from the unmanaged list. A discovered object has no registry record, so the import sends the provider id as its `registryId`, which the state contract requires; the resource is watched from then on and read through the type's `discover` pages.
       tags: [Discovery]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -346,7 +382,7 @@ paths:
     post:
       operationId: receiveProviderWebhook
       summary: A provider's change notification
-      description: Schedules an observe of the resources the notification names instead of waiting for the interval. Verified with the `X-Webhook-Signature` header, an HMAC of the body with the signing material configured per provider; a bad signature is 401.
+      description: Schedules an observe of the resources the notification names instead of waiting for the interval. Verified with the `X-Webhook-Signature` header (`sha256=<hex>`, an HMAC-SHA256 of the raw body with the signing material configured per provider); a bad signature, or a provider with no signing material configured, is 401.
       tags: [Webhooks]
       security: []
       parameters:
@@ -387,6 +423,125 @@ paths:
                   scheduled: { type: integer, description: How many managed resources will be observed }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /internal/watches:
+    get:
+      operationId: listWatches
+      summary: An account's watch list
+      description: The resources under watch in an account, with their tier and next read. Internal principal only.
+      tags: [Internal]
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/AccountId' }
+        - name: type
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Watch' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/watches/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/WatchWfrn'
+    get:
+      operationId: getWatch
+      summary: One resource's watch
+      tags: [Internal]
+      responses:
+        '200':
+          description: The watch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Watch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/watches/{wfrn}:check:
+    parameters:
+      - $ref: '#/components/parameters/WatchWfrn'
+    post:
+      operationId: checkWatch
+      summary: Read one resource now
+      description: Refreshes the resource from the state service and reads it from its provider whatever its due time; the answer says what the read did to its finding.
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the read did
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wfrn, action]
+                properties:
+                  wfrn: { $ref: '#/components/schemas/Wfrn' }
+                  action: { type: string, enum: [none, opened, updated, closed, skipped, error] }
+                  findingId: { type: string }
+                  status: { type: string, enum: [open, closed] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/scan:
+    post:
+      operationId: scanNow
+      summary: One scan pass over every shard now
+      tags: [Internal]
+      parameters:
+        - name: tier
+          in: query
+          description: Only the due resources of this tier
+          schema: { type: string, enum: [hot, warm, cold] }
+      responses:
+        '200':
+          description: What the pass did
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/sync:
+    post:
+      operationId: syncNow
+      summary: Sync the watch list from the state service now
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the sync changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/follow:
+    post:
+      operationId: followRevertsNow
+      summary: Look at the running revert jobs now
+      tags: [Internal]
+      responses:
+        '200':
+          description: How many revert jobs had ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ended]
+                properties:
+                  ended: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     consoleJwt:
@@ -400,6 +555,12 @@ components:
       in: path
       required: true
       schema: { type: string }
+    WatchWfrn:
+      name: wfrn
+      in: path
+      required: true
+      description: The resource's wfrn, percent-encoded
+      schema: { $ref: '#/components/schemas/Wfrn' }
     AccountId:
       name: accountId
       in: query
@@ -532,6 +693,10 @@ components:
         decidedBy: { type: string }
         reason: { type: string }
         revertJobId: { type: string }
+        revertStatus:
+          type: string
+          enum: [running, succeeded, failed]
+          description: How the revert job of `revertJobId` stands; a failed one leaves the finding open
         ignoredUntil: { type: string, format: date-time }
     FindingsSummary:
       type: object
@@ -569,3 +734,66 @@ components:
         observed: { type: object, additionalProperties: true }
         seenAt: { type: string, format: date-time }
         firstSeenAt: { type: string, format: date-time }
+    IgnoredField:
+      type: object
+      required: [path, desiredDigest, by, since]
+      properties:
+        path: { type: string, description: 'A JSON pointer into the resource''s attributes' }
+        desiredDigest: { type: string, description: The digest of the desired attributes the silence is bound to; a new desired state ends it }
+        until: { type: string, format: date-time }
+        by: { type: string }
+        since: { type: string, format: date-time }
+    Watch:
+      type: object
+      description: One managed resource as the drift service watches it
+      required: [wfrn, accountId, region, type, shard, tier, rev]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        service: { type: string }
+        environment: { type: string }
+        name: { type: string }
+        registryId: { type: string }
+        providerId: { type: string }
+        state: { type: string, description: The state service's lifecycle state; a change in flight is not compared }
+        desiredVersion: { type: integer }
+        desired: { type: object, additionalProperties: true, description: The desired attributes the state service holds }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        resourceUpdatedAt: { type: string, format: date-time }
+        shard: { type: integer, minimum: 0 }
+        tier: { type: string, enum: [hot, warm, cold] }
+        nextCheckAt: { type: string, format: date-time }
+        lastCheckedAt: { type: string, format: date-time }
+        lastObservationAt: { type: string, format: date-time }
+        lastObservedDigest: { type: string }
+        openFindingId: { type: string }
+        lastDriftAt: { type: string, format: date-time }
+        ignored:
+          type: array
+          items: { $ref: '#/components/schemas/IgnoredField' }
+        source: { type: string, description: '`discover` for a resource imported from discovery, read through the type''s discover pages' }
+        rev: { type: integer, description: The stored revision; every write is conditional on it }
+    ScanReport:
+      type: object
+      required: [checked, opened, updated, closed, deferred, errors, pages]
+      properties:
+        checked: { type: integer }
+        opened: { type: integer }
+        updated: { type: integer }
+        closed: { type: integer }
+        deferred: { type: integer, description: Left for a later turn (a change in flight, the observe budget, the scan's cap) }
+        errors: { type: integer }
+        pages: { type: integer, description: Provider pages read }
+    SyncReport:
+      type: object
+      required: [accounts, seen, added, changed, removed]
+      properties:
+        accounts: { type: integer }
+        seen: { type: integer }
+        added: { type: integer }
+        changed: { type: integer }
+        removed: { type: integer }
