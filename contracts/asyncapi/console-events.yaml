@@ -5,8 +5,9 @@ info:
   version: 1.0.0
   description: |
     The events the console's own services exchange: the state service's resource stream
-    (`state.resources`), the drift service's findings (`drift.findings`) and the identity service's
-    changes (`identity.changes`), and the cost service's budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    (`state.resources`), the drift service's findings (`drift.findings`) and compliance scores
+    (`drift.scorecards`), the identity service's changes (`identity.changes`), and the cost service's
+    budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
     **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
@@ -118,6 +119,24 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: wfrn
     x-retention: 30d
+  driftScorecards:
+    address: drift.scorecards
+    title: Compliance scorecards
+    description: 'A resource''s rule evaluations changed, or an account''s daily score was recorded (WP 9.6). Partitioned by accountId, so one account''s changes are in order; kept 30 days. Keys: `EvaluationChanged:<wfrn>:<version>` and `ScoreSnapshotted:<accountId>:<day>`.'
+    messages:
+      evaluationChanged: { $ref: '#/components/messages/evaluationChanged' }
+      scoreSnapshotted: { $ref: '#/components/messages/scoreSnapshotted' }
+    bindings:
+      kafka:
+        topic: drift.scorecards
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 30d
   identityChanges:
     address: identity.changes
     title: Identity changes
@@ -179,6 +198,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/driftFindings' }
     summary: The state service (drift flag), the BFF and the indexer follow findings
+  publishScorecards:
+    action: send
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The drift service publishes evaluation changes and daily scores
+  followScorecards:
+    action: receive
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The BFF (live updates, notifications) and the weekly digest follow compliance
   publishIdentityChanges:
     action: send
     channel: { $ref: '#/channels/identityChanges' }
@@ -421,6 +448,40 @@ components:
                   resolution: { $ref: '#/components/schemas/Resolution' }
                   by: { type: string }
                   jobId: { type: string, description: "The revert job, for a reverted finding" }
+    evaluationChanged:
+      name: EvaluationChanged
+      title: A resource's rule evaluations changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: EvaluationChanged }
+              aggregate: { const: evaluation }
+              aggregateId: { $ref: '#/components/schemas/Wfrn' }
+              context:
+                type: object
+                required: [accountId, region, wfrn]
+              data: { $ref: '#/components/schemas/EvaluationChangedData' }
+    scoreSnapshotted:
+      name: ScoreSnapshotted
+      title: An account's daily compliance score was recorded
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: ScoreSnapshotted }
+              aggregate: { const: scorecard }
+              aggregateId: { $ref: '#/components/schemas/AccountId' }
+              context:
+                type: object
+                required: [accountId]
+              data: { $ref: '#/components/schemas/ScoreSnapshottedData' }
     accountChanged:
       name: AccountChanged
       title: An account was created, changed or suspended
@@ -654,7 +715,7 @@ components:
         seq: { type: integer, minimum: 1, description: "The publisher's outbox sequence, one total order per service" }
         type: { type: string }
         at: { type: string, format: date-time }
-        aggregate: { type: string, description: 'What the event is about: resource, finding, or an identity subject kind' }
+        aggregate: { type: string, description: 'What the event is about: resource, finding, evaluation, scorecard, or an identity subject kind' }
         aggregateId: { type: string, description: 'The wfrn, the finding id, or the identity subject id' }
         actor: { type: string, description: The console user or service that caused it }
         onBehalfOf: { $ref: '#/components/schemas/OnBehalfOf' }
@@ -749,6 +810,39 @@ components:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
                 action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
+    EvaluationChangedData:
+      type: object
+      required: [version, type, passed, failed, changes]
+      properties:
+        version: { type: integer, minimum: 1, description: "The resource's evaluation version after this event" }
+        type: { type: string, description: The resource type }
+        passed: { type: integer }
+        failed: { type: integer }
+        changes:
+          type: array
+          description: The rules whose status changed; `none` where the rule did not apply before or does not apply now
+          items:
+            type: object
+            required: [pack, ruleId, severity, from, to]
+            properties:
+              pack: { type: string }
+              ruleId: { type: string }
+              severity: { type: string, enum: [info, warning, critical] }
+              from: { type: string, enum: [pass, fail, error, none] }
+              to: { type: string, enum: [pass, fail, error, none] }
+              message: { type: string }
+    ScoreSnapshottedData:
+      type: object
+      required: [version, day, score, packs]
+      properties:
+        version: { type: integer, minimum: 1, description: 'The day as days since 1970-01-01, which only grows' }
+        day: { type: string, format: date }
+        score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+        previousScore: { type: [integer, 'null'], description: "The last snapshot's score, when there is one" }
+        packs:
+          type: object
+          additionalProperties: { type: [integer, 'null'] }
+        failed: { type: integer }
     DriftField:
       type: object
       required: [path]
