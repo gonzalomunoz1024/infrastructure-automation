@@ -1,0 +1,19 @@
+{
+  "name": "console-hub",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The hub of the customer console: contracts, schemas, type overlays and the checks that keep them honest.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "check": "node scripts/check-contracts.mjs",
+    "check:platform": "node scripts/platform-contract-check.mjs"
+  },
+  "devDependencies": {
+    "@asyncapi/parser": "3.4.0",
+    "@seriousme/openapi-schema-validator": "2.4.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "yaml": "2.8.1"
+  }
+}
