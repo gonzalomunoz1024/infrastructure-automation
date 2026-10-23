@@ -1,0 +1,13 @@
+{
+  "name": "platform-feed-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Kafka half of the platform's event feed (P-01) for platform-fake, for the console's e2e stack",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "kafkajs": "2.2.4"
+  }
+}

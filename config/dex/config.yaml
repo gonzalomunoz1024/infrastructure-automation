@@ -1,0 +1,35 @@
+# The dev SSO: Dex, a real OpenID Connect provider, standing where the enterprise identity provider
+# stands in production. The BFF runs the authorization-code flow with PKCE against it exactly as it
+# would against the firm's provider (console.oidc.* in config/bff/application.yaml).
+#
+# DEV ONLY. The people below sign in with the password "console-e2e-dev-only"; the hashes are
+# bcrypt of that string. Nothing here protects anything: the stack lives for one test run.
+issuer: http://dex:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+logger:
+  level: info
+oauth2:
+  skipApprovalScreen: true
+  responseTypes: [code]
+staticClients:
+  - id: console
+    name: Customer console (e2e)
+    # a public client: the BFF proves the code exchange with PKCE (S256), no client secret
+    public: true
+    redirectURIs:
+      - http://localhost:3000/auth/callback
+enablePasswordDB: true
+staticPasswords:
+  # the people of the seed (scripts/seed.mjs); the identity service links each one by email at
+  # the first sign-in (principals:resolve)
+  - email: gonzalo@example.com
+    username: Gonzalo Munoz
+    userID: 6a0f0c3e-6f43-4f7d-9d1a-6f0e2e000001
+    hash: "$2a$10$wn896axhEqXtAEefI2VQ9O7XDCAOxBG5X0EPffCxwglhIDOWcBQMW"
+  - email: dana@example.com
+    username: Dana Reyes
+    userID: 6a0f0c3e-6f43-4f7d-9d1a-6f0e2e000002
+    hash: "$2a$10$wn896axhEqXtAEefI2VQ9O7XDCAOxBG5X0EPffCxwglhIDOWcBQMW"

@@ -1,0 +1,32 @@
+# console-drift-service in the e2e stack: profiles mongo,kafka,temporal (production), no demo.
+# Service tokens come from the BFF with this service's own registered EC key (hub decision 23).
+console:
+  state:
+    base-url: http://state:18082
+  identity:
+    base-url: http://identity:18083
+  cost:
+    base-url: http://cost:18086
+  service-tokens:
+    mode: bff
+    token-url: http://bff:18081/internal/v1/token
+    signing-key-file: /e2e/keys/drift.pk8.pem
+    key-id: ${E2E_DRIFT_CLIENT_KEY_ID}
+  platform:
+    base-url: http://platform-fake:18090
+    token: ${E2E_PLATFORM_INTERNAL_TOKEN}
+  auth:
+    jwks-uri: http://bff:18081/.well-known/jwks.json
+  temporal:
+    target: temporal:7233
+    namespace: default
+  kafka:
+    bootstrap-servers: kafka:9092
+spring:
+  data:
+    mongodb:
+      uri: mongodb://mongo:27017
+      database: console_drift
+logging:
+  level:
+    com.iaf.console: info

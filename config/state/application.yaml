@@ -1,0 +1,27 @@
+# console-state-service in the e2e stack: profiles mongo,kafka (production), no demo. Under kafka
+# it reads the platform's events from platform.jobs and platform.resources, which the
+# platform-feed-bridge fills from platform-fake's feed (the fake has no Kafka relay of its own).
+console:
+  platform:
+    base-url: http://platform-fake:18090
+    token: ${E2E_PLATFORM_INTERNAL_TOKEN}
+  auth:
+    jwks-uri: http://bff:18081/.well-known/jwks.json
+  crypto:
+    master-key: ${E2E_STATE_MASTER_KEY}
+  trail:
+    signing-key: ${E2E_STATE_TRAIL_KEY}
+  ingest:
+    kafka:
+      bootstrap-servers: kafka:9092
+  outbox:
+    kafka:
+      bootstrap-servers: kafka:9092
+spring:
+  data:
+    mongodb:
+      uri: mongodb://mongo:27017
+      database: console_state
+logging:
+  level:
+    com.iaf.console: info
