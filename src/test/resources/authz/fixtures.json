@@ -210,7 +210,10 @@
                     "access-request:get",
                     "access-request:list",
                     "access-request:decide",
-                    "access-review:*"
+                    "access-review:*",
+                    "cost:export",
+                    "budgets:create",
+                    "budgets:update"
                   ],
                   "resources": [
                     "wfrn:wf:*:*:123456789012:*"
@@ -267,7 +270,8 @@
                   "sid": "audit",
                   "effect": "allow",
                   "actions": [
-                    "audit:*"
+                    "audit:*",
+                    "cost:export"
                   ],
                   "resources": [
                     "wfrn:wf:*:*:123456789012:*"
@@ -1603,6 +1607,193 @@
           {
             "action": "access-review:cancel",
             "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        }
+      ]
+    },
+    {
+      "name": "cost and budgets: viewers read them; the export is an auditor's, a budget change an admin's",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "cost:list",
+            "resource": "wfrn:wf:cost::123456789012:*"
+          },
+          {
+            "action": "budgets:list",
+            "resource": "wfrn:wf:budgets::123456789012:budget/*"
+          },
+          {
+            "action": "budgets:get",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
+          },
+          {
+            "action": "cost:export",
+            "resource": "wfrn:wf:cost::123456789012:*"
+          },
+          {
+            "action": "budgets:create",
+            "resource": "wfrn:wf:budgets::123456789012:budget/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "viewer",
+          "statement": "reads"
+        },
+        {
+          "allowed": true,
+          "role": "viewer",
+          "statement": "reads"
+        },
+        {
+          "allowed": true,
+          "role": "viewer",
+          "statement": "reads"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "operators read budgets but neither change them nor export the chargeback (notActions)",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "budgets:get",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
+          },
+          {
+            "action": "budgets:update",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
+          },
+          {
+            "action": "budgets:delete",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
+          },
+          {
+            "action": "cost:export",
+            "resource": "wfrn:wf:cost::123456789012:*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "operator",
+          "statement": "changes"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        }
+      ]
+    },
+    {
+      "name": "auditors export the chargeback, admins change budgets",
+      "input": {
+        "principal": {
+          "userId": "usr_auditor",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "cost:export",
+            "resource": "wfrn:wf:cost::123456789012:*"
+          },
+          {
+            "action": "budgets:list",
+            "resource": "wfrn:wf:budgets::123456789012:budget/*"
+          },
+          {
+            "action": "budgets:update",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "audit"
+        },
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "reads"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "admins export the chargeback and change budgets",
+      "input": {
+        "principal": {
+          "userId": "usr_admin",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "cost:export",
+            "resource": "wfrn:wf:cost::123456789012:*"
+          },
+          {
+            "action": "budgets:create",
+            "resource": "wfrn:wf:budgets::123456789012:budget/*"
+          },
+          {
+            "action": "budgets:delete",
+            "resource": "wfrn:wf:budgets::123456789012:budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf"
           }
         ]
       },

@@ -66,7 +66,10 @@ class PolicyValidationTest {
         assertThat(CATALOG.knows("*:get")).isTrue();
         assertThat(CATALOG.knows("compute:*")).isTrue();
         assertThat(CATALOG.knows("iam:manage")).isTrue();
-        assertThat(ActionCatalog.consoleOnly().services()).contains("iam", "account", "quota", "audit", "cost", "search", "access-request");
+        assertThat(ActionCatalog.consoleOnly().services()).contains("iam", "account", "quota", "audit", "cost", "budgets", "search", "access-request");
+        assertThat(ActionCatalog.consoleOnly().knows("cost:export")).isTrue();
+        assertThat(ActionCatalog.consoleOnly().knows("budgets:create")).isTrue();
+        assertThat(ActionCatalog.consoleOnly().knows("budgets:approve")).isFalse();
         assertThat(Actions.isValid("compute:get")).isTrue();
         assertThat(Actions.isValid("compute")).isFalse();
         assertThat(Actions.isValid("a:b:c")).isFalse();

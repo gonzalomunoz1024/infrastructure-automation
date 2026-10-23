@@ -7,7 +7,10 @@ import java.util.List;
  * {@code account-admin}, {@code auditor}), their policies, and four groups that hold them
  * ({@code owners}, which cannot be deleted; {@code members}, which the owning team joins at
  * sign-in; {@code viewers}; {@code auditors}). The policies grant every service of the account;
- * what a verb means is the platform's catalog.
+ * what a verb means is the platform's catalog. Cost and budgets (decision 25): every role reads
+ * them; exporting the chargeback is an admin's and an auditor's, changing a budget an admin's. A
+ * release that changes these policies reaches the accounts made before it at the next start
+ * ({@code ManagedPolicyUpgrade}).
  */
 public final class ManagedIam {
 
@@ -52,21 +55,21 @@ public final class ManagedIam {
         List<String> all = List.of(everything);
         return List.of(
                 // a person always sees their own access requests; reading the account's is for those who decide them, auditors and admins;
-                // access reviews are for auditors (who read them) and admins only
+                // access reviews are for auditors (who read them) and admins only; *:get and *:list read cost and budgets too
                 new ManagedRole(VIEWER, "Reads everything in the account", "managed-viewer", "The viewer role's policy: every read, no change",
                         List.of(Statement.allowExcept("reads", List.of("*:get", "*:list", "*:observe", "*:history", "search:query", "cost:get", "cost:list",
                                 "access-request:create", "quota:request-increase"), List.of("access-request:get", "access-request:list", "access-review:*"), all))),
                 new ManagedRole(OPERATOR, "Reads and every change that is not a delete, no IAM", "managed-operator",
                         "The operator role's policy: everything but deletes and IAM",
                         List.of(Statement.allowExcept("changes", List.of("*:*"), List.of("*:delete", "iam:*", "quota:set", "account:update", "access-request:get",
-                                "access-request:list", "access-request:decide", "access-review:*"), all),
+                                "access-request:list", "access-request:decide", "access-review:*", "cost:export", "budgets:create", "budgets:update"), all),
                                 Statement.allow("iam-reads", List.of("iam:get", "iam:list"), all))),
                 new ManagedRole(ACCOUNT_ADMIN, "Everything in the account, IAM and deletes included", "managed-account-admin",
                         "The account-admin role's policy: everything", List.of(Statement.allow("everything", List.of("*:*"), all))),
                 new ManagedRole(AUDITOR, "Reads everything and the audit trail", "managed-auditor",
-                        "The auditor role's policy: every read and the audit trail, no change",
+                        "The auditor role's policy: every read, the audit trail and the chargeback export, no change",
                         List.of(Statement.allow("reads", List.of("*:get", "*:list", "*:observe", "*:history", "search:query", "cost:get", "cost:list"), all),
-                                Statement.allow("audit", List.of("audit:*"), all))));
+                                Statement.allow("audit", List.of("audit:*", "cost:export"), all))));
     }
 
     public static List<ManagedGroup> groups() {

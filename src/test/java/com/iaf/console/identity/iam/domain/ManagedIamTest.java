@@ -97,6 +97,26 @@ class ManagedIamTest {
         assertThat(viewerCreate.suggestedRole()).isEqualTo("operator");
         assertThat(decide(compiled, "usr_auditor", "audit:export", "wfrn:wf:audit:global:" + ACCOUNT + ":trail/*").allowed()).isTrue();
         assertThat(decide(compiled, "usr_auditor", "compute:restart", vm).allowed()).isFalse();
+
+        // cost and budgets (decision 25), on the names the BFF decides them on
+        String cost = "wfrn:wf:cost::" + ACCOUNT + ":*";
+        String budgets = "wfrn:wf:budgets::" + ACCOUNT + ":budget/*";
+        String budget = "wfrn:wf:budgets::" + ACCOUNT + ":budget/bud-01jbx9r2m4k9d3c8f5r6t1w0yf";
+        assertThat(decide(compiled, "usr_viewer", "cost:list", cost).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_viewer", "budgets:list", budgets).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_viewer", "cost:export", cost).suggestedRole()).isEqualTo("auditor");
+        assertThat(decide(compiled, "usr_dev", "budgets:get", budget).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_dev", "budgets:create", budgets).suggestedRole()).isEqualTo("account-admin");
+        assertThat(decide(compiled, "usr_dev", "budgets:update", budget).suggestedRole()).isEqualTo("account-admin");
+        assertThat(decide(compiled, "usr_dev", "budgets:delete", budget).allowed()).isFalse();
+        assertThat(decide(compiled, "usr_dev", "cost:export", cost).suggestedRole()).isEqualTo("auditor");
+        Decision export = decide(compiled, "usr_auditor", "cost:export", cost);
+        assertThat(export.allowed()).isTrue();
+        assertThat(export.statement()).isEqualTo("audit");
+        assertThat(decide(compiled, "usr_auditor", "budgets:update", budget).allowed()).isFalse();
+        assertThat(decide(compiled, "usr_owner", "budgets:delete", budget).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_owner", "cost:export", cost).allowed()).isTrue();
+
         assertThat(decide(compiled, "usr_nobody", "compute:get", vm).reason()).isEqualTo("not a member of the account");
         assertThat(Evaluator.decide(compiled, new Principal(null, ACCOUNT, null, "console-state-service"), new Check("compute:delete", vm, null)).allowed())
                 .isTrue();

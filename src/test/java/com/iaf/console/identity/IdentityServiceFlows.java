@@ -41,13 +41,18 @@ import com.iaf.console.identity.authz.Tars;
 import com.iaf.console.identity.demo.DemoSeed;
 import com.iaf.console.identity.iam.application.GroupCommands;
 import com.iaf.console.identity.iam.application.IamSupport;
+import com.iaf.console.identity.iam.application.ManagedPolicyUpgrade;
 import com.iaf.console.identity.iam.application.PolicyCommands;
 import com.iaf.console.identity.iam.application.RoleCommands;
+import com.iaf.console.identity.iam.domain.Policy;
+import com.iaf.console.identity.iam.domain.Statement;
+import com.iaf.console.identity.iam.ports.outbound.PolicyStore;
 import com.iaf.console.identity.principals.application.PrincipalCommands;
 import com.iaf.console.identity.principals.ports.outbound.UserStore;
 import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.kit.outbox.OutboxEntry;
 import com.iaf.console.kit.outbox.OutboxPort;
+import com.iaf.console.kit.scope.AccountScope;
 
 /** The flows of the contract, end to end over HTTP: the same tests run on the in-memory stores and on MongoDB. */
 abstract class IdentityServiceFlows extends WithService {
@@ -76,6 +81,10 @@ abstract class IdentityServiceFlows extends WithService {
     GroupCommands groupCommands;
     @Autowired
     IamSupport iamSupport;
+    @Autowired
+    PolicyStore policyStore;
+    @Autowired
+    ManagedPolicyUpgrade managedPolicyUpgrade;
     @Autowired
     Clock clock;
 
@@ -1306,6 +1315,61 @@ abstract class IdentityServiceFlows extends WithService {
                 .asText()).isEqualTo("iam:list");
         Seeded other = newAccount();
         call(POST, other.base() + "/policy-simulations", s.owner(), Map.of("principal", Map.of("userId", other.ownerId()), "checks", one), NOT_FOUND);
+    }
+
+    @Test
+    void aManagedPolicyFromAnEarlierReleaseIsBroughtUpToDate() {
+        Seeded s = newAccount();
+        String dana = addUser(s, "dana", "members");
+        String budgets = "wfrn:wf:budgets::" + s.accountId() + ":budget/*";
+        String cost = "wfrn:wf:cost::" + s.accountId() + ":*";
+        String reviews = "wfrn:wf:iam::" + s.accountId() + ":access-review/*";
+        AccountScope scope = AccountScope.of(s.accountId(), "global", "test");
+        Policy now = policyStore.findByName(scope, "managed-operator").block();
+        assertThat(now).isNotNull();
+        // the operator's policy as an earlier release made it: everything but deletes and IAM, in an account made then
+        Policy earlier = new Policy(now.policyId(), now.accountId(), now.name(), "The operator role's policy", List.of(Statement.allowExcept("changes",
+                List.of("*:*"), List.of("*:delete", "iam:*"), List.of("wfrn:wf:*:*:" + s.accountId() + ":*"))), true, now.version() + 1, now.createdAt(),
+                now.updatedAt());
+        assertThat(policyStore.update(earlier, now.version()).block()).isNotNull();
+        Seeded closed = newAccount();
+        Policy closedNow = policyStore.findByName(AccountScope.of(closed.accountId(), "global", "test"), "managed-operator").block();
+        assertThat(policyStore.update(new Policy(closedNow.policyId(), closedNow.accountId(), closedNow.name(), "old", earlier.statements(), true,
+                closedNow.version() + 1, closedNow.createdAt(), closedNow.updatedAt()), closedNow.version()).block()).isNotNull();
+        call(POST, closed.base() + ":close", internal(), Map.of("reason", "the team left"), ACCEPTED);
+
+        assertThat(managedPolicyUpgrade.run().block()).isEqualTo(1L);
+        Policy upgraded = policyStore.findByName(scope, "managed-operator").block();
+        assertThat(upgraded.policyId()).isEqualTo(now.policyId());
+        assertThat(upgraded.version()).isEqualTo(now.version() + 2);
+        assertThat(upgraded.statements()).isEqualTo(now.statements());
+        assertThat(upgraded.description()).isEqualTo(now.description());
+        assertThat(upgraded.builtIn()).isTrue();
+        assertThat(policyStore.findByName(AccountScope.of(closed.accountId(), "global", "test"), "managed-operator").block().description())
+                .as("a closed account's policies are left as they were").isEqualTo("old");
+        assertThat(managedPolicyUpgrade.run().block()).as("a second run finds nothing to do").isZero();
+
+        EventEnvelope changed = outbox.after(0, 100_000).filter(e -> now.policyId().equals(e.event().aggregateId())).map(OutboxEntry::event).blockLast();
+        assertThat(changed).isNotNull();
+        assertThat(changed.type()).isEqualTo("PolicyChanged");
+        assertThat(changed.actor()).isEqualTo("svc:console-identity-service");
+        assertThat(changed.data().get("action").asText()).isEqualTo("updated");
+        assertThat(changed.data().get("version").asLong()).isEqualTo(now.version() + 2);
+
+        // the account is compiled again: the operator reads budgets, and neither changes them nor exports the chargeback nor reads the reviews
+        JsonNode decisions = call(POST, "/v1/authorize", internal(), authorize(dana, s.accountId(), List.of(check("budgets:list", budgets),
+                check("budgets:create", budgets), check("cost:export", cost), check("access-review:list", reviews))), OK).get("decisions");
+        assertThat(decisions.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(decisions.get(0).get("role").asText()).isEqualTo("operator");
+        assertThat(decisions.get(1).get("allowed").asBoolean()).isFalse();
+        assertThat(decisions.get(1).get("suggestedRole").asText()).isEqualTo("account-admin");
+        assertThat(decisions.get(2).get("allowed").asBoolean()).isFalse();
+        assertThat(decisions.get(2).get("suggestedRole").asText()).isEqualTo("auditor");
+        assertThat(decisions.get(3).get("allowed").asBoolean()).isFalse();
+        JsonNode admin = call(POST, "/v1/authorize", internal(), authorize(s.ownerId(), s.accountId(), List.of(check("budgets:delete", budgets.replace("*",
+                "bud-01jbx9r2m4k9d3c8f5r6t1w0yf")), check("cost:export", cost))), OK).get("decisions");
+        assertThat(admin.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(admin.get(1).get("allowed").asBoolean()).isTrue();
     }
 
     @Test

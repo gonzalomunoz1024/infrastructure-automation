@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 
 import com.iaf.console.identity.accounts.ports.outbound.AccountProvisioningPort;
+import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.common.IdentityProperties;
 import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.auth.AccessGuard;
@@ -23,6 +24,7 @@ import com.iaf.console.identity.iam.application.GroupCommands;
 import com.iaf.console.identity.iam.application.GroupQueries;
 import com.iaf.console.identity.iam.application.IamProvisioning;
 import com.iaf.console.identity.iam.application.IamSupport;
+import com.iaf.console.identity.iam.application.ManagedPolicyUpgrade;
 import com.iaf.console.identity.iam.application.Memberships;
 import com.iaf.console.identity.iam.application.PolicyCommands;
 import com.iaf.console.identity.iam.application.PolicyQueries;
@@ -132,5 +134,15 @@ public class IamConfiguration {
     public AccountProvisioningPort accountProvisioningPort(PolicyStore policies, RoleStore roles, GroupStore groups, UserStore users,
             MembershipStore memberships, IdentityEvents events, IamSupport support, Ids ids, Clock clock) {
         return new IamProvisioning(policies, roles, groups, users, memberships, events, support, ids, clock);
+    }
+
+    @Bean
+    public ManagedPolicyUpgrade managedPolicyUpgrade(AccountStore accounts, PolicyStore policies, IdentityEvents events, IamSupport support, Clock clock) {
+        return new ManagedPolicyUpgrade(accounts, policies, events, support, clock);
+    }
+
+    @Bean
+    public ManagedPolicyUpgradeOnStart managedPolicyUpgradeOnStart(ManagedPolicyUpgrade upgrade) {
+        return new ManagedPolicyUpgradeOnStart(upgrade);
     }
 }

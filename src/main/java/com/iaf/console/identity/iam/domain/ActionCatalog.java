@@ -23,7 +23,8 @@ public record ActionCatalog(Map<String, Set<String>> verbsByService, Set<String>
             "account", Set.of("get", "list", "update"),
             "quota", Set.of("get", "list", "set", "request-increase"),
             "audit", Set.of("get", "list", "export"),
-            "cost", Set.of("get", "list"),
+            "cost", Set.of("get", "list", "export"),
+            "budgets", Set.of("get", "list", "create", "update", "delete"),
             "search", Set.of("query"),
             "access-request", Set.of("get", "list", "create", "decide"),
             "access-review", Set.of("get", "list", "create", "decide", "cancel"));

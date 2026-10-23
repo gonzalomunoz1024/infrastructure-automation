@@ -27,7 +27,13 @@ info:
     `account-admin` and `auditor` (shown as Viewer, Operator, Admin and Auditor), their policies,
     and four groups that hold them: `viewers`, `members` (operator; the account's owning identity
     provider team joins it at sign-in), `owners` (account-admin) and `auditors`. Managed roles keep
-    their names and policies; `owners` keeps the account-admin role and at least one member. The
+    their names and policies; `owners` keeps the account-admin role and at least one member. Every
+    managed role reads cost and budgets (`cost:get`, `cost:list`, `budgets:get`, `budgets:list`,
+    decision 25); exporting the chargeback (`cost:export`) is `account-admin`'s and `auditor`'s,
+    and `budgets:create`, `budgets:update` and `budgets:delete` are `account-admin`'s alone. A
+    release that changes a managed policy reaches the accounts made before it: at start the service
+    replaces each managed policy of an account that is not closed which differs from the release's,
+    in place, with a `PolicyChanged` of action `updated` by `svc:console-identity-service`. The
     internal JWT the BFF signs carries the person's `groups` and `roles` (the membership this
     service serves), so every service decides admin-only things on `roles` containing
     `account-admin`, never on a group name.

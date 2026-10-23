@@ -30,7 +30,7 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `6fe3333` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `72485db` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first).
 
@@ -52,13 +52,18 @@ to the hub first).
   and `auditor` (each with one managed policy, immutable), and four built-in groups, `owners`
   (account-admin), `members` (operator; the owning IdP team joins it at sign-in), `viewers` and
   `auditors`. Built-in groups keep their names, `owners` keeps the account-admin role and at least
-  one active member, and cannot be deleted. Custom groups, roles and policies are free.
+  one active member, and cannot be deleted. Custom groups, roles and policies are free. Every
+  managed role reads cost and budgets; `cost:export` (the chargeback) is account-admin's and
+  auditor's, and budget writes are account-admin's alone (hub decision 25). Managed policies follow
+  the release: at start `ManagedPolicyUpgrade` replaces, in place, each managed policy of an
+  account that is not closed which differs from `ManagedIam`'s, with a `PolicyChanged` `updated`
+  by `svc:console-identity-service`, so a change to a managed role reaches older accounts.
 - **Policies.** AWS-shaped statements: `effect`, `actions` (`<service>:<verb>`, wildcards on
   either side), optional `notActions` on allow statements, `resources` (wfrn patterns) and
   `conditions` (`region`, `account`, `service`, `type`, `requester.user`, `requester.email`,
   `requester.group`, `tag.<name>`, `context.<name>`). Actions are validated against the platform's
   resource types and catalog plus the console's own services (`iam`, `account`, `quota`, `audit`,
-  `cost`, `search`, `access-request`, `access-review`). A deny wins; without an allow the decision says which managed
+  `cost`, `budgets`, `search`, `access-request`, `access-review`). A deny wins; without an allow the decision says which managed
   role would have allowed it (`requestable`, `suggestedRole`), so the console can offer an access
   request.
 - **Permission boundaries.** A role may name one of the account's policies as its `boundary`:
@@ -124,9 +129,8 @@ to the hub first).
   `scheduled.cadence` 90 days, `scheduled.due-in-days` 14). The reviews are the console service
   `access-review` (`get`, `list`, `create`, `decide`, `cancel`): the managed account-admin policy
   allows them all, the auditor policy the reads, and the viewer and operator policies leave
-  `access-review:*` out. Managed policies are written when an account is created and not
-  reconciled at start, so the viewers and operators of an account created before then still read
-  the reviews until its policies are migrated. Every change publishes `AccessReviewChanged`
+  `access-review:*` out (accounts created before then are brought up to date at start, as managed
+  policies are). Every change publishes `AccessReviewChanged`
   (`created`; `updated` on each decision, with the item, and on cancel; `expired` when the due date
   closes it) with the campaign and its counts. The code is the `accessreviews` slice.
 
