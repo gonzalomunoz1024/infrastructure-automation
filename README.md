@@ -10,6 +10,22 @@ contracts this build pins.
 
 ## What is here (phases 0, 1, 3, 4 and 5)
 
+The state service's views show what happened, what was and what is built from what:
+
+- the Activity trail lists every change to the account's resources (what, who, through which
+  request), filtered by person, resource type, event type, outcome and period; Verify the chain
+  checks the period's evidence pack in the browser and says in words whether the chain holds or
+  where it breaks, and Download evidence pack saves it for the auditors (admins and auditors)
+- a resource's Activity tab replays it to any point of its history (a slider, a day, Yesterday,
+  A week ago), what was asked for and what the provider reported then beside what is asked for
+  now, with what changed since; Revert to this opens Edit configuration filled with then, to
+  review before anything runs; Inventory as of a date lists the account's resources at the end of
+  a day
+- the Relationships tab shows what made the resource (its workflow, its request, its image) and
+  what was built from it, each a link; the Resource map draws the account (and, if chosen, other
+  accounts the person can read) as columns of what is built from what, coloured by health, drift
+  or cost, zoomed and moved through with the keyboard, with a list view holding the same
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -621,12 +637,52 @@ type, so the feed must subscribe to every one).
     arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
     chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
 
+95. **The trail is verified in the browser, from the evidence pack alone.** Verify the chain reads
+    `GET /console/v1/activity/evidence` for the period and checks it with `lib/trail.ts`: every
+    event's sha-256 over its canonical JSON (sorted keys, no whitespace, `hash` left out), every
+    link to the event before it per resource, every seal's count, root and link to the seal
+    before, and every ES256 signature against the published keys through Web Crypto. The answer is
+    one sentence: the chain holds over the span, or it breaks at a named resource and version, and
+    why ("changed after it was recorded", "a version is missing", "it does not link"). The pack is
+    for the account's admins and auditors (`activity:evidence`); everyone who may list activity
+    reads the trail. A URL inside the pack (a job's evidence) is never made a link.
+96. **Time travel replays the resource's own events, and a revert is an edit.** The Activity tab
+    reads the resource's state events once and replays them (`lib/timeTravel.ts`) to any instant,
+    so moving the slider costs no request; the table sets what was asked for and what the provider
+    reported then beside what is asked for now. Revert to this asks the BFF's revert plan, then
+    opens the ordinary Edit configuration drawer filled with the plan's values and a note naming the
+    moment, so the change is reviewed, previewed and approved like any other edit; a plan that
+    cannot run says why (not yet built, deleted then, busy now, nothing to change). Inventory as of
+    a date lists each type with `?at=` at the end of the chosen UTC day.
+97. **Lineage is the state service's, through the BFF.** The Relationships tab reads
+    `/console/v1/r/{type}/{wfrn}/lineage` and lays it out in columns by hops: built from to the
+    left, built from it to the right. What made it (the workflow, its version and the request)
+    comes from the resource's first events. Resources in accounts the person cannot read are
+    counted and never named; parents the console does not manage are listed by reference. The
+    browser talks only to the BFF: no platform read remains on the resource page's tabs.
+98. **The map is laid out by depth and moved through by its links.** `lib/graph.ts` puts each
+    resource in the column of its longest chain of parents, stacks a column in blocks of 16, and
+    maps the arrow keys to the links (left to what it was built from, right to what was built from
+    it, up and down within a column); the page draws SVG by hand, zooms with buttons, + and - and
+    Ctrl with the wheel, pans by dragging, and says each focused resource aloud with what it was
+    built from. Cost is shown by the dot's size as well as the legend, so no colour stands alone.
+    The list view holds the same resources and links as a table. A big map starts at a size its
+    names can be read at; Fit shows all of it.
+99. **The mock's trail is a real chain with one break on purpose.** `mock/state.ts` derives every
+    resource's events from the dataset, the console's own jobs and its drift history, chains them
+    with sha-256 (`lib/sha256.ts`, synchronous so the mock stays a pure function), seals each UTC
+    day and signs the seals with two demo P-256 keys (`mock/es256.ts`, rotated on 1 October). One
+    event, the first change requested on cache-043 (`vm-gen-033`), is altered after hashing, so a
+    week verifies and the month breaks there. batch-01 (`vm-demo04`) carries the history the
+    journeys replay: sized up to 8 CPUs three days ago and back down to 2 this morning. Lineage
+    and the map come from the same rows, with each machine's monthly price from the cost mock.
+
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift, monitoring), their helpers and screenshots
+                  tags, bulk, drift, monitoring, state), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -641,12 +697,15 @@ console/
                   (the tag policy, Tag Editor, resource group and clone client, and their rules),
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
-                  (scales, ticks, time labels and the keyboard's steps)
+                  (scales, ticks, time labels and the keyboard's steps), state (the trail, time
+                  travel, lineage and map reads, and their words), trail (the chain's checks),
+                  sha256, timeTravel (replay and diff), graph (the map's layout and keyboard)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),
-                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
+                  monitoring (series, alarms and the rightsizing pass), state (the chained and
+                  sealed trail, time travel, lineage and the map) with es256 (the demo keys), and the browser installer,
                   with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
@@ -658,8 +717,9 @@ console/
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
                   resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
-                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
-                  and its MetricChart sit with its other tabs
+                  and Rightsizing pages and the alarm dialog, src/pages/state/ the Activity trail,
+                  Inventory as of a date and Resource map; the resource page's Monitoring tab and
+                  its MetricChart, TimeTravel, RevertEdit and LineageView sit with its other tabs
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched
