@@ -8,7 +8,15 @@ This branch is shaped like the repository it will become: an npm workspace at th
 CI, no platform files. The hub branch `console-root` holds the plan, the decisions and the
 contracts this build pins.
 
-## What is here (phases 0, 1 and 3)
+## What is here (phases 0, 1, 3 and 4)
+
+Phase 4 changes resources in place, safely:
+
+- Edit configuration on a resource's page (the Actions menu, or Edit on its Configuration tab):
+  the type's update workflow as a form, what changes against what is asked for now and what the
+  provider reports, a preview, the request as code, and a stale version caught before it lands
+- before a delete, what depends on the resource, in words and nearest first, and a delete refused
+  while anything does
 
 Phase 3b makes the console change resources, with the request in view at every step:
 
@@ -74,7 +82,7 @@ Phase 0 built the shell and the read-only pages:
 - a development-only platform feed over server-sent events
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
-What the console does not do yet is still shown, and says which phase brings it: editing, tags,
+What the console does not do yet is still shown, and says which phase brings it: tags,
 cloning, bulk actions and retrying a failed request in phase 4, drift's revert, accept and ignore
 in phase 5.
 
@@ -428,12 +436,28 @@ type, so the feed must subscribe to every one).
     than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
     review's quota rule and the Quotas card count `resources.<type>` with one function
     (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+36. **A delete shows what depends on the resource first, and is refused while anything does.** The
+    preview of a delete or a destructive verb carries its blast radius (what was built from it, up
+    to three steps away; `byAccount` counts what lives in other accounts and never names it), and
+    `BlastRadiusCard` says it in words above the preview: how many would be left without what they
+    were built from, nearest first, each a link, other accounts as counts, a note past 500. A live
+    dependent (judged by its own type's lifecycle) denies a delete by the `dependents.exist` rule;
+    the drawer says to delete or move them first, a 409 `dependents.exist` at send time shows the
+    radius it carries, and the confirmation repeats it in one line.
+37. **Edit configuration sends only what changed, against the version the person read.** The
+    type's update workflow (P-08) is the form: its input without the subject, its `mutable` fields
+    and `operational` inputs, starting from the desired attributes. "What changes" lists only the
+    changed fields, now and after, with what the provider reports beside now when it differs; the
+    PATCH carries them as `input` (absent means unchanged), the reason beside it, and `If-Match`.
+    A 409 naming a newer version reads "Someone changed this first", and Load the latest carries
+    the edits onto it; a type with mutable fields but no update workflow says "Editing is not
+    offered by this provider".
 
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources), their
+  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes), their
                   helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
@@ -452,7 +476,7 @@ console/
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu and column chooser,
                   src/pages/create/ the wizard's steps, src/pages/resource/ the resource page's
-                  tabs, request banner and action drawer
+                  tabs, request banner, action drawer, edit drawer and blast radius
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched
