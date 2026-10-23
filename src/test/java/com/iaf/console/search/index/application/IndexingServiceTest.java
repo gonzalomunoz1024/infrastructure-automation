@@ -21,6 +21,7 @@ import com.iaf.console.search.index.domain.EventOutcome;
 import com.iaf.console.search.index.domain.Fixtures;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.ResourceState;
+import com.iaf.console.search.index.domain.StateResource;
 import com.iaf.console.search.support.FakeStateService;
 import com.iaf.console.search.support.FixedTypes;
 
@@ -96,6 +97,16 @@ class IndexingServiceTest {
     }
 
     @Test
+    void aReadInOneAccountWritesNothingOfAnother() {
+        state.put(Fixtures.stateResource(VM, "web-03", 1, "active", Map.of("name", "web-03"), Map.of(), T0));
+        AccountScope other = AccountScope.of(Fixtures.OTHER_ACCOUNT, "global", "test");
+        assertThat(indexing.refetch(other, VM).block()).isInstanceOf(EventOutcome.Ignored.class);
+        assertThat(indexing.documentOf(StateResource.of(Fixtures.stateResource(VM, "web-03", 1, "active", Map.of("name", "web-03"), Map.of(), T0)),
+                other).blockOptional()).isEmpty();
+        assertThat(index.find(scope, VM).blockOptional()).isEmpty();
+    }
+
+    @Test
     void aTombstoneOfTheStateServiceKeepsTheName() {
         handler.handle(Fixtures.requested(VM, "web-03", Map.of())).block();
         state.tombstone(VM, 5, T0.plusSeconds(9));
@@ -105,6 +116,28 @@ class IndexingServiceTest {
         assertThat(doc.name()).isEqualTo("web-03");
         assertThat(doc.version()).isEqualTo(5);
         assertThat(doc.tombstoneUntil()).isNotNull();
+    }
+
+    @Test
+    void aMovedResourceShowsInItsNewAccountAndItsOldNameStaysATombstone() {
+        String moved = "wfrn:wf:compute:global:" + Fixtures.OTHER_ACCOUNT + ":vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yz";
+        handler.handle(Fixtures.requested(VM, "web-03", Map.of())).block();
+        handler.handle(Fixtures.succeeded(VM, 2, Map.of("name", "web-03", "environment", "dev"), T0.plusSeconds(2))).block();
+        assertThat(handler.handle(Fixtures.resourceEvent("Transferred", VM, 3, "deleted", T0.plusSeconds(3), Fixtures.data()
+                .put("transferredTo", moved).put("toAccountId", Fixtures.OTHER_ACCOUNT).put("registryId", "reg-1"))).block()).isTrue();
+        var imported = Fixtures.data().put("source", "transfer").put("transferredFrom", VM).put("registryId", "reg-1");
+        imported.putObject("attributes").put("name", "web-03").put("environment", "dev");
+        assertThat(handler.handle(Fixtures.resourceEvent("Imported", moved, 1, "active", T0.plusSeconds(4), imported)).block()).isTrue();
+
+        IndexedResource old = index.find(scope, VM).block();
+        assertThat(old.state()).isEqualTo(ResourceState.DELETED);
+        assertThat(old.tombstoneUntil()).isNull();
+        assertThat(index.find(scope, moved).blockOptional()).as("the new wfrn is another account's").isEmpty();
+        AccountScope theirs = AccountScope.of(Fixtures.OTHER_ACCOUNT, "global", "test");
+        IndexedResource now = index.find(theirs, moved).block();
+        assertThat(now.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(now.name()).isEqualTo("web-03");
+        assertThat(state.finds()).as("a move needs no re-read").isZero();
     }
 
     @Test

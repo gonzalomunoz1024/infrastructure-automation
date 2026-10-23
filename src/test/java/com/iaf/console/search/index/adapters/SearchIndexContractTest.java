@@ -271,6 +271,8 @@ public abstract class SearchIndexContractTest {
                 .tombstoneUntil(clock.instant().minusSeconds(1)).build()).block();
         index.index(doc(vm("resting"), "resting", 1, Map.of(), Map.of(), T0).toBuilder().state(ResourceState.DELETED).deletedAt(T0)
                 .tombstoneUntil(clock.instant().plusSeconds(3600)).build()).block();
+        index.index(doc(vm("moved"), "moved", 1, Map.of(), Map.of(), T0).toBuilder().state(ResourceState.DELETED).deletedAt(T0)
+                .tombstoneUntil(null).build()).block();
         assertThat(index.removeStale(SCOPE, before).block()).isEqualTo(1);
         assertThat(index.find(SCOPE, vm("old")).blockOptional()).isEmpty();
         assertThat(index.find(SCOPE, vm("new")).blockOptional()).isPresent();
@@ -278,6 +280,7 @@ public abstract class SearchIndexContractTest {
         assertThat(index.expireTombstones(clock.instant()).block()).isEqualTo(1);
         assertThat(index.find(SCOPE, vm("dead")).blockOptional()).isEmpty();
         assertThat(index.find(SCOPE, vm("resting")).blockOptional()).isPresent();
+        assertThat(index.find(SCOPE, vm("moved")).blockOptional()).as("a moved resource's tombstone has no end").isPresent();
         assertThat(index.listAccountIds().collectList().block()).containsExactlyInAnyOrder(ACCOUNT, OTHER_ACCOUNT);
     }
 

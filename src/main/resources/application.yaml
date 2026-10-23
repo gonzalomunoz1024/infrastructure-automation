@@ -63,7 +63,12 @@ console:
   auth:
     jwks-uri: http://localhost:18081/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-search-indexer, console]
+    # a token must name this service and nothing else (hub decision 35)
+    audiences: [console-search-indexer]
+    # the services that may call as themselves (svc and no acct): everything, and counts across
+    # accounts only; any other service token, and the dev header of one, is a 401
+    services: [console-bff]
+    counting-services: [console-drift-service, console-cost-service]
     dev-headers: false
     # this service's own tokens for the state and identity services come from the BFF (hub decision
     # 23), asked for with the pod's projected service-account token (the file) or, outside a cluster,

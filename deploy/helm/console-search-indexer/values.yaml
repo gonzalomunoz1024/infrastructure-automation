@@ -35,6 +35,8 @@ service:
   type: ClusterIP
   port: 80
   targetPort: 18085
+  # the actuator (health, metrics) answers on its own port, which the API's callers cannot reach
+  managementPort: 18185
 
 resources:
   requests:
@@ -89,7 +91,11 @@ console:
   auth:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-search-indexer, console]
+    # a token must name this service and nothing else (hub decision 35)
+    audiences: [console-search-indexer]
+    # the services that may call as themselves: everything, and counts across accounts only
+    services: [console-bff]
+    countingServices: [console-drift-service, console-cost-service]
     # this service's own tokens for the state and identity services come from the BFF (hub decision
     # 23), asked for with the pod's projected service-account token: no secret holds them
     tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
@@ -138,11 +144,15 @@ metrics:
     labels: {}
 
 networkPolicy:
-  enabled: false
+  enabled: true
   # who may call the API: the BFF and the console's own services
   ingressFrom:
     - podSelector:
         matchLabels:
           app.kubernetes.io/part-of: console
+  # who may read the actuator's port: Prometheus, from any namespace by default (the kubelet's
+  # probes are not subject to the policy)
+  managementFrom:
+    - namespaceSelector: {}
 
 env: []

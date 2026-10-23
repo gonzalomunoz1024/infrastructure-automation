@@ -431,8 +431,11 @@ abstract class SearchJourneyTest {
     void theBffsTokenIsTheWayIn() throws JOSEException {
         seeded(dana());
         assertThat(names(get("/v1/search?q=web&sort=name", bearer(token(List.of("console-search-indexer"))), 200))).containsExactly("web-01", "web-02");
-        assertThat(get("/v1/counts?type=vm", bearer(token(List.of("console"))), 200).path("total").asLong()).isEqualTo(2);
+        assertThat(get("/v1/counts?type=vm", bearer(token(List.of("console-search-indexer"))), 200).path("total").asLong()).isEqualTo(2);
         get("/v1/search?q=web", bearer(token(List.of("console-state-service"))), 401);
+        // decision 35: the shared audience no longer opens this service, nor a token for two
+        get("/v1/search?q=web", bearer(token(List.of("console"))), 401);
+        get("/v1/search?q=web", bearer(token(List.of("console-search-indexer", "console"))), 401);
         get("/v1/search?q=web", bearer("not-a-jwt"), 401);
         web().get().uri("/v1/search?q=web").exchange().expectStatus().isUnauthorized().expectHeader().exists(HttpHeaders.WWW_AUTHENTICATE);
         web().get().uri("/actuator/health").exchange().expectStatus().isOk();

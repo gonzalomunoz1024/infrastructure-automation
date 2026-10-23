@@ -11,6 +11,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.kit.events.EventEnvelope;
 
 /** The fold of state.resources: versions gate, first sights open, gaps ask, tombstones close. */
@@ -93,6 +94,41 @@ class ResourceEventsTest {
         IndexedResource tombstone = applied(ResourceEvents.apply(v1, deleted, VM_HINTS));
         assertThat(tombstone.name()).as("the name stays findable for the tombstone's life").isEqualTo("web-03");
         assertThat(tombstone.deleted()).isTrue();
+    }
+
+    @Test
+    void aTransferLeavesATombstoneForGoodAndTheNewWfrnIsAnOrdinaryImport() {
+        IndexedResource v1 = applied(ResourceEvents.apply(null, Fixtures.requested(VM, "web-03", Map.of("environment", "dev")), VM_HINTS));
+        IndexedResource v2 = applied(ResourceEvents.apply(v1, Fixtures.resourceEvent("DriftDetected", VM, 2, "active", T0.plusSeconds(2),
+                Fixtures.data().put("findingId", "f-1")), VM_HINTS));
+        String moved = "wfrn:wf:compute:global:" + Fixtures.OTHER_ACCOUNT + ":vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yz";
+        EventEnvelope transferred = Fixtures.resourceEvent("Transferred", VM, 3, "deleted", T0.plusSeconds(3), Fixtures.data()
+                .put("transferredTo", moved).put("toAccountId", Fixtures.OTHER_ACCOUNT).put("registryId", "reg-1").put("reason", "team moved"));
+        IndexedResource tombstone = applied(ResourceEvents.apply(v2, transferred, VM_HINTS));
+        assertThat(tombstone.deleted()).isTrue();
+        assertThat(tombstone.deletedAt()).isEqualTo(T0.plusSeconds(3));
+        assertThat(tombstone.tombstoneUntil()).as("the state service keeps a moved resource's name for good").isNull();
+        assertThat(tombstone.drift()).isFalse();
+        assertThat(tombstone.driftFindingId()).isNull();
+        assertThat(tombstone.name()).isEqualTo("web-03");
+        assertThat(tombstone.accountId()).as("the old wfrn stays in its own account").isEqualTo(Fixtures.ACCOUNT);
+        assertThat(v2.fields()).isNotEmpty();
+        assertThat(tombstone.fields()).as("the fields leave with the resource").isEmpty();
+        assertThat(tombstone.tags()).as("and so do its tags").isEmpty();
+        assertThat(ResourceEvents.apply(v1, Fixtures.resourceEvent("Transferred", VM, 9, "deleted", T0.plusSeconds(9), Fixtures.data()
+                .put("transferredTo", moved)), VM_HINTS)).as("like a delete, a transfer needs nothing in between").isInstanceOf(EventOutcome.Applied.class);
+
+        ObjectNode data = Fixtures.data().put("name", "web-03").put("source", "transfer").put("transferredFrom", VM).put("registryId", "reg-1");
+        data.putObject("attributes").put("name", "web-03").put("environment", "dev");
+        data.putArray("builtFrom").add("reg-0");
+        IndexedResource opened = applied(ResourceEvents.apply(null, Fixtures.resourceEvent("Imported", moved, 1, "active", T0.plusSeconds(4), data),
+                VM_HINTS));
+        assertThat(opened.wfrn()).isEqualTo(moved);
+        assertThat(opened.accountId()).isEqualTo(Fixtures.OTHER_ACCOUNT);
+        assertThat(opened.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(opened.name()).isEqualTo("web-03");
+        assertThat(opened.fields()).containsEntry("environment", "dev");
+        assertThat(opened.deleted()).isFalse();
     }
 
     @Test

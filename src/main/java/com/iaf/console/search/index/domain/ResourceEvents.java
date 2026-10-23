@@ -15,7 +15,11 @@ import com.iaf.console.wfrn.Wfrn;
  * one (or one, for a resource not seen yet), ignored when it is not newer, and otherwise the state
  * service is asked for the whole resource, because the events in between carried names, tags or
  * fields this one does not repeat. A {@code Deleted} event is applied whatever was seen, because
- * a tombstone needs nothing but the envelope.
+ * a tombstone needs nothing but the envelope. So is {@code Transferred} (hub decision 30): the
+ * resource moved to another account, its old wfrn is a tombstone with no end, as the state service
+ * keeps a moved resource's name for good, and the new wfrn opens with an ordinary {@code Imported}
+ * in the other account. That tombstone keeps only the name, type and dates: the old account no
+ * longer owns the resource, so its tags and fields leave with it.
  */
 public final class ResourceEvents {
 
@@ -44,7 +48,7 @@ public final class ResourceEvents {
         if (current != null && version <= current.version()) {
             return new EventOutcome.Ignored("version " + version + " is not after " + current.version());
         }
-        boolean deleted = "Deleted".equals(event.type()) || state == ResourceState.DELETED;
+        boolean deleted = "Deleted".equals(event.type()) || "Transferred".equals(event.type()) || state == ResourceState.DELETED;
         if (current == null && version > 1 && !deleted) {
             return new EventOutcome.Refetch(wfrn, "first seen at version " + version);
         }
@@ -98,10 +102,15 @@ public final class ResourceEvents {
             }
             case "DriftDetected" -> b.drift(true).driftFindingId(Json.text(data, "findingId")).driftSeverity(Json.text(data, "severity"));
             case "DriftResolved" -> b.drift(false).driftFindingId(null).driftSeverity(null);
-            case "Deleted" -> {
+            case "Deleted", "Transferred" -> {
                 b.deletedAt(event.at());
+                // a transfer carries none: the old name answers where the resource went for good
                 b.tombstoneUntil(Json.instant(data, "tombstoneUntil"));
                 b.drift(false).driftFindingId(null).driftSeverity(null);
+                if ("Transferred".equals(event.type())) {
+                    b.tags.clear();
+                    b.fields.clear();
+                }
             }
             default -> {
                 // ProvisioningStarted, ProvisioningFailed, Observed, DeleteRequested and any later type: the state and the job say it all
