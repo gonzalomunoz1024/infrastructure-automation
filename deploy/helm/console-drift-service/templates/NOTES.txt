@@ -1,0 +1,14 @@
+console-drift-service {{ .Chart.AppVersion }} is rolling out as {{ include "console-drift-service.fullname" . }}.
+
+Profiles: {{ include "console-drift-service.profiles" . }}
+API:      http://{{ include "console-drift-service.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/findings
+Health:   /actuator/health/readiness
+Metrics:  /actuator/prometheus
+
+Secrets this release reads (create them before the pods start):
+  {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}            the MongoDB URI of database {{ .Values.mongodb.database }}
+  {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's console-internal service-account token
+  {{ .Values.stateToken.existingSecret }}/{{ .Values.stateToken.tokenKey }}       the console JWT for the state service (svc console-drift-service)
+{{- if .Values.webhooks.existingSecret }}
+  {{ .Values.webhooks.existingSecret }}                                          the providers' webhook HMAC secrets
+{{- end }}

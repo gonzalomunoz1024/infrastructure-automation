@@ -1,0 +1,104 @@
+# console-drift-service. Profiles: `mongo` stores in MongoDB (else in memory), `kafka` publishes the
+# outbox to Kafka and follows the state service's `state.resources` topic (else the outbox stays
+# in memory and the inventory is synced from the state service's list alone), `temporal` runs the
+# shard loops as Temporal workflows (else as loops inside this process), `demo` embeds the fake
+# platform and a stand-in of the state service in this JVM and accepts dev headers.
+server:
+  port: 18084
+
+spring:
+  application:
+    name: console-drift-service
+  autoconfigure:
+    # the kit's MongoDB handle is wired under the mongo profile; without it Boot's client stays off
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+      - org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+console:
+  region: global
+  wfrn:
+    partition: wf
+  drift:
+    shards: 64
+    tiers:
+      hot: 15m            # changed in the last 24 hours, in production, or drifted lately
+      warm: 1h            # the type's observe.interval when it has one
+      cold: 24h           # untouched for 30 days and never drifted
+      recent-change: 24h
+      drifted-for: 7d
+      cold-after: 30d
+    scan:
+      page-size: 500      # the platform's largest observe-list page (P-09)
+      batch-size: 100     # the platform's largest resources:observe batch
+      list-threshold: 20  # fewer due resources than this are read in a batch, not a list
+      max-per-scan: 5000
+      observation-refresh: 24h
+      in-flight-retry: 1m # a resource with a change in flight is looked at again after this
+      error-retry: 5m     # and one whose read failed
+    budget:
+      observe-per-minute: 300   # the platform's observe bucket per provider and region (P-09)
+      burst: 50
+      account-share: 0.25
+    loop:
+      enabled: true
+      interval: 30s
+    sync:
+      interval: 60s
+      accounts-refresh: 5m
+      accounts: []
+    follower:
+      interval: 5s
+    idempotency-ttl: 24h
+    types-ttl: 60s
+    webhooks: {}          # <provider>: { secret: ... }
+  state:
+    mode: http            # http (the state service) or embedded (the demo's stand-in)
+    base-url: http://localhost:18082
+    token: ${CONSOLE_STATE_TOKEN:}
+    dev-headers: false
+    timeout: 30s
+  identity:
+    base-url: http://localhost:18083
+  platform:
+    base-url: http://localhost:18090
+    token: ${CONSOLE_PLATFORM_TOKEN:}
+    timeout: 30s
+    account-tokens: {}    # <accountId>: <token>, for a dev box without the identity service
+  auth:
+    jwks-uri: http://localhost:18081/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-drift-service, console]
+    dev-headers: false
+  temporal:
+    target: localhost:7233
+    namespace: default
+    task-queue: console-drift
+    iterations: 96        # loop turns before a workflow continues as new
+  kafka:
+    bootstrap-servers: localhost:9092
+    group-id: console-drift-service
+    topics: [state.resources]
+  outbox:
+    relay:
+      enabled: true
+      interval: 1s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.iaf.console: info

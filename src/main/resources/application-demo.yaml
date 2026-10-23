@@ -1,0 +1,33 @@
+# The demo: the fake platform runs inside this JVM on its own port, seeded with the two console
+# accounts, and a stand-in of the state service (fed from the fake's registry) answers the state
+# calls unless console.state.mode=http points at a running state service. Dev headers stand in for
+# the BFF's JWT. The loops run fast so a change in the recorded world shows within seconds.
+console:
+  demo:
+    platform-port: 18090
+    step-delay: 250ms
+  auth:
+    dev-headers: true
+  state:
+    mode: embedded
+    dev-headers: true
+  drift:
+    tiers:
+      hot: 10s
+      warm: 30s
+      cold: 60s
+    scan:
+      # the fake's single reads (vm.get) answer a fixed sample for small VMs, its pages the
+      # recorded world: the demo reads every shard by page so only real changes show as drift
+      list-threshold: 1
+      in-flight-retry: 2s
+      error-retry: 5s
+    loop:
+      interval: 2s
+    sync:
+      interval: 3s
+    follower:
+      interval: 1s
+    webhooks:
+      vsphere:
+        secret: demo-vsphere-webhook-secret
