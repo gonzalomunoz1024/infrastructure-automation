@@ -16,11 +16,13 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import com.iaf.console.bff.trust.adapters.outbound.InMemoryUsedAssertions;
 import com.iaf.console.bff.trust.domain.IssuedServiceToken;
 import com.iaf.console.bff.trust.domain.ServiceTokenException;
 import com.iaf.console.bff.trust.domain.ServiceTokenRequest;
 import com.iaf.console.bff.trust.ports.outbound.ClientKeysPort;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
+import com.iaf.console.bff.trust.ports.outbound.UsedAssertionsPort;
 import com.iaf.console.platform.assertion.OnBehalfOfAssertions;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
 import com.nimbusds.jose.jwk.Curve;
@@ -50,8 +52,13 @@ class ServiceTokensTest {
             "console-drift-service", new TrustProperties.Client(List.of(STATE), "console:console-drift-service", null, null));
 
     private ServiceTokens tokens(boolean cluster, Clock clock) {
+        return tokens(cluster, clock, true, new InMemoryUsedAssertions(clock), new TrustProperties.RateLimit(100, 600));
+    }
+
+    private ServiceTokens tokens(boolean cluster, Clock clock, boolean singleUse, UsedAssertionsPort used, TrustProperties.RateLimit rate) {
         TrustProperties properties = new TrustProperties("console-bff", "platform", Duration.ofSeconds(60), Duration.ofSeconds(30), null, null,
-                Duration.ofMinutes(5), Duration.ofMinutes(5), new TrustProperties.Kubernetes(cluster ? CLUSTER : null, null, null, null, null), clients);
+                Duration.ofMinutes(5), Duration.ofMinutes(5),
+                new TrustProperties.Kubernetes(cluster ? CLUSTER : null, null, null, null, null, Duration.ofHours(1), singleUse), clients, rate);
         SigningKeyPort keys = new SigningKeyPort() {
             @Override
             public ECKey currentKey() {
@@ -74,14 +81,19 @@ class ServiceTokensTest {
                 return cluster && clusterKey.getKeyID().equals(kid) ? Mono.just(clusterKey.toPublicJWK()) : Mono.empty();
             }
         };
-        return new ServiceTokens(new Trust(keys, properties, clock), properties, clientKeys, clock);
+        return new ServiceTokens(new Trust(keys, properties, clock), properties, clientKeys, used, clock);
     }
 
     private ServiceTokens tokens() {
         return tokens(true, Clock.fixed(now, ZoneOffset.UTC));
     }
 
-    private static ServiceTokenRequest request(String assertion, String... audiences) {
+    /** A request for the state service, the audience every test client is registered for. */
+    private static ServiceTokenRequest request(String assertion) {
+        return requestFor(assertion, STATE);
+    }
+
+    private static ServiceTokenRequest requestFor(String assertion, String... audiences) {
         return new ServiceTokenRequest(ServiceTokenRequest.CLIENT_CREDENTIALS, ServiceTokenRequest.JWT_BEARER, assertion, null, List.of(audiences));
     }
 
@@ -90,15 +102,15 @@ class ServiceTokensTest {
     }
 
     @Test
-    void aServiceSignedAssertionGetsAFiveMinuteTokenForItsRegisteredServices() throws Exception {
-        IssuedServiceToken issued = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+    void aServiceSignedAssertionGetsAFiveMinuteTokenForTheOneServiceAskedFor() throws Exception {
+        IssuedServiceToken issued = tokens().issue(requestFor(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY)).block();
         assertEquals(300, issued.expiresIn());
-        assertEquals(List.of(STATE, IDENTITY), issued.audience());
+        assertEquals(IDENTITY, issued.audience());
         SignedJWT jwt = SignedJWT.parse(issued.token());
         assertTrue(jwt.verify(new ECDSAVerifier(signing.toECPublicKey())), "signed with the BFF's key");
         JWTClaimsSet claims = jwt.getJWTClaimsSet();
         assertEquals("console-bff", claims.getIssuer());
-        assertEquals(List.of(STATE, IDENTITY), claims.getAudience(), "never the shared console audience");
+        assertEquals(List.of(IDENTITY), claims.getAudience(), "exactly the service asked for, never the shared console audience");
         assertEquals("console-search-indexer", claims.getSubject());
         assertEquals("console-search-indexer", claims.getStringClaim("svc"));
         assertNull(claims.getClaim("acct"), "no account: the console-internal principal");
@@ -107,14 +119,29 @@ class ServiceTokensTest {
     }
 
     @Test
-    void theTokenNamesOnlyTheAudiencesAskedFor() {
-        IssuedServiceToken one = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now), STATE)).block();
-        assertEquals(List.of(STATE), one.audience());
-        IssuedServiceToken spaced = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY + " " + STATE)).block();
-        assertEquals(List.of(IDENTITY, STATE), spaced.audience());
-        ServiceTokenException e = refused(tokens(), request(Assertions.own(indexerKey, "console-search-indexer", now), STATE, "console-bff"));
-        assertEquals("invalid_target", e.error());
-        assertEquals(400, e.status());
+    void aTokenIsForExactlyOneRegisteredService() {
+        IssuedServiceToken one = tokens().issue(requestFor(Assertions.own(indexerKey, "console-search-indexer", now), STATE)).block();
+        assertEquals(STATE, one.audience());
+        for (ServiceTokenRequest asked : List.of(
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now)),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), STATE, IDENTITY),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY + " " + STATE),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), "console-bff"),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), "console"))) {
+            ServiceTokenException e = refused(tokens(), asked);
+            assertEquals("invalid_target", e.error(), asked.audiences().toString());
+            assertEquals(400, e.status());
+        }
+    }
+
+    @Test
+    void anAssertionForAnotherAudienceBesideTheBffIsRefused() {
+        String both = Assertions.signed(indexerKey, new JWTClaimsSet.Builder().issuer("console-search-indexer").subject("console-search-indexer")
+                .audience(List.of("console-bff", STATE)).jwtID(UUID.randomUUID().toString()).issueTime(Date.from(now))
+                .expirationTime(Date.from(now.plusSeconds(60))).build());
+        ServiceTokenException e = refused(tokens(), request(both));
+        assertEquals("invalid_client", e.error());
+        assertTrue(e.getMessage().contains("exactly console-bff"), e.getMessage());
     }
 
     @Test
@@ -136,7 +163,7 @@ class ServiceTokensTest {
         String tooLong = Assertions.signed(indexerKey, claims("console-search-indexer", "console-search-indexer", "console-bff", now, Duration.ofMinutes(30)));
         assertTrue(refused(tokens, request(tooLong)).getMessage().contains("longer"));
         String elsewhere = Assertions.signed(indexerKey, claims("console-search-indexer", "console-search-indexer", "console-state-service", now, Duration.ofSeconds(60)));
-        assertTrue(refused(tokens, request(elsewhere)).getMessage().contains("not for console-bff"));
+        assertTrue(refused(tokens, request(elsewhere)).getMessage().contains("exactly console-bff"));
         String someoneElse = Assertions.signed(indexerKey, claims("console-search-indexer", "console-drift-service", "console-bff", now, Duration.ofSeconds(60)));
         assertEquals("invalid_client", refused(tokens, request(someoneElse)).error());
         String stranger = Assertions.own(indexerKey, "console-unknown", now);
@@ -165,14 +192,28 @@ class ServiceTokensTest {
     }
 
     @Test
-    void aClusterServiceAccountTokenProvesItsRegisteredClientAgainAndAgain() throws Exception {
+    void aClusterServiceAccountTokenProvesItsRegisteredClientOnce() throws Exception {
         ServiceTokens tokens = tokens();
         String token = Assertions.serviceAccount(clusterKey, CLUSTER, "console", "console-drift-service", now);
         IssuedServiceToken first = tokens.issue(request(token)).block();
-        IssuedServiceToken again = tokens.issue(request(token)).block();
         assertEquals("console-drift-service", first.clientId());
-        assertEquals(List.of(STATE), again.audience());
-        assertEquals("console-drift-service", SignedJWT.parse(again.token()).getJWTClaimsSet().getStringClaim("svc"));
+        assertEquals(STATE, first.audience());
+        assertEquals("console-drift-service", SignedJWT.parse(first.token()).getJWTClaimsSet().getStringClaim("svc"));
+        ServiceTokenException replayed = refused(tokens, request(token));
+        assertEquals("invalid_client", replayed.error(), "a token without jti is remembered by its hash");
+        assertTrue(replayed.getMessage().contains("used before"), replayed.getMessage());
+
+        String withJti = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).jwtID("sa-jti-1").issueTime(Date.from(now)).expirationTime(Date.from(now.plusSeconds(600))).build());
+        tokens.issue(request(withJti)).block();
+        String sameJti = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).jwtID("sa-jti-1").issueTime(Date.from(now.plusSeconds(1))).expirationTime(Date.from(now.plusSeconds(601))).build());
+        assertTrue(refused(tokens, request(sameJti)).getMessage().contains("used before"), "a jti is used once, whatever else differs");
+
+        ServiceTokens reusable = tokens(true, Clock.fixed(now, ZoneOffset.UTC), false, new InMemoryUsedAssertions(Clock.fixed(now, ZoneOffset.UTC)),
+                new TrustProperties.RateLimit(100, 600));
+        reusable.issue(request(token)).block();
+        assertEquals("console-drift-service", reusable.issue(request(token)).block().clientId(), "single-use off: the kubelet's token serves again");
 
         String other = Assertions.serviceAccount(clusterKey, CLUSTER, "default", "console-drift-service", now);
         assertTrue(refused(tokens, request(other)).getMessage().contains("not a registered client"));
@@ -184,7 +225,72 @@ class ServiceTokensTest {
         assertTrue(refused(tokens, request(forever)).getMessage().contains("needs exp"));
         String apiServer = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
                 .audience(List.of("https://kubernetes.default.svc")).expirationTime(Date.from(now.plusSeconds(600))).build());
-        assertTrue(refused(tokens, request(apiServer)).getMessage().contains("not for console-bff"));
+        assertTrue(refused(tokens, request(apiServer)).getMessage().contains("exactly console-bff"));
+    }
+
+    @Test
+    void aClusterTokenLivesAnHourAtMost() {
+        String day = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).issueTime(Date.from(now)).expirationTime(Date.from(now.plus(Duration.ofHours(24)))).build());
+        assertTrue(refused(tokens(), request(day)).getMessage().contains("lives longer than 3600s"));
+        String noIat = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
+                .audience(List.of("console-bff")).expirationTime(Date.from(now.plus(Duration.ofDays(365)))).build());
+        assertTrue(refused(tokens(), request(noIat)).getMessage().contains("lives longer"), "a year-long legacy token is refused");
+    }
+
+    @Test
+    void anAssertionIsUsedOnceAcrossReplicas() {
+        Clock clock = Clock.fixed(now, ZoneOffset.UTC);
+        UsedAssertionsPort shared = new InMemoryUsedAssertions(clock);
+        ServiceTokens one = tokens(true, clock, true, shared, new TrustProperties.RateLimit(100, 600));
+        ServiceTokens other = tokens(true, clock, true, shared, new TrustProperties.RateLimit(100, 600));
+        String assertion = Assertions.own(indexerKey, "console-search-indexer", now);
+        one.issue(request(assertion)).block();
+        assertTrue(refused(other, request(assertion)).getMessage().contains("used before"), "the second replica sees the first one's use");
+    }
+
+    @Test
+    void eachClientHasATokenBucket() {
+        MutableClock clock = new MutableClock(now);
+        ServiceTokens tokens = tokens(true, clock, true, new InMemoryUsedAssertions(clock), new TrustProperties.RateLimit(2, 60));
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+        ServiceTokenException slowed = refused(tokens, request(Assertions.own(indexerKey, "console-search-indexer", now)));
+        assertEquals("slow_down", slowed.error());
+        assertEquals(429, slowed.status());
+        assertEquals(1, slowed.retryAfterSeconds());
+        String drift = Assertions.serviceAccount(clusterKey, CLUSTER, "console", "console-drift-service", now);
+        assertEquals("console-drift-service", tokens.issue(request(drift)).block().clientId(), "another client has its own bucket");
+        clock.set(now.plusSeconds(1));
+        tokens.issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+    }
+
+    static final class MutableClock extends Clock {
+
+        private volatile Instant at;
+
+        MutableClock(Instant at) {
+            this.at = at;
+        }
+
+        void set(Instant instant) {
+            at = instant;
+        }
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return at;
+        }
     }
 
     @Test

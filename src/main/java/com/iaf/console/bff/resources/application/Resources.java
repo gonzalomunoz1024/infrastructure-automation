@@ -21,6 +21,9 @@ import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.access.domain.Decision;
 import com.iaf.console.bff.jobs.application.JobRetries;
 import com.iaf.console.bff.jobs.application.Jobs;
+import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.access.domain.DeniedRow;
+import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
 import com.iaf.console.bff.jobs.domain.JobNotFailedException;
 import com.iaf.console.bff.jobs.domain.JobView;
@@ -205,15 +208,17 @@ public class Resources {
                 .onErrorResume(e -> e instanceof NotFoundException || e instanceof GoneException, e -> Mono.empty());
     }
 
-    /** One resource, as {@code <service>:get} on its wfrn allows. */
+    /**
+     * One resource, as {@code <service>:get} on its wfrn allows. Its ETag is
+     * {@code "<version>.<digest>"}: the state service's version, which {@code If-Match} on an update
+     * is checked against, and a digest of the whole page, so a 304 never hides a last job, jobs,
+     * lineage or verbs that moved on while that version stood.
+     */
     public Mono<Detail> get(Session session, String type, String wfrn, String ifNoneMatch) {
         return types.byType(session, type).flatMap(t -> {
             checkName(session, t, wfrn);
             return access.require(session, AccessCheck.action(t.service(), GET_VERB), wfrn)
-                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, ifNoneMatch))).flatMap(answer -> {
-                if (answer.notModified()) {
-                    return Mono.just(new Detail(null, answer.etag(), true));
-                }
+                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, null))).flatMap(answer -> {
                 StateResource r = answer.resource();
                 return Mono.zip(can(session, t, r), recentJobs(session, r), lineageOf(session, r)).map(tuple -> {
                     List<String> can = tuple.getT1();
@@ -223,7 +228,9 @@ public class Resources {
                     FindingView finding = FindingView.of(r, findingCan(can));
                     List<ResourceRef> builtFrom = lineage.map(l -> refs(l.builtFrom())).orElse(List.of());
                     List<ResourceRef> dependents = lineage.map(l -> refs(l.dependents())).orElse(List.of());
-                    return new Detail(ResourceView.detail(r, lastJob, finding, jobs, builtFrom, dependents, can), answer.etag(), false);
+                    ResourceView view = ResourceView.detail(r, lastJob, finding, jobs, builtFrom, dependents, can);
+                    String etag = pageETag(r.version(), view);
+                    return new Detail(view, etag, etag.equals(ifNoneMatch == null ? null : ifNoneMatch.replace("W/", "").trim()));
                 });
             });
         });
@@ -614,9 +621,11 @@ public class Resources {
                         List.of(Problem.error("bulk.unsupported", "/verb", action.verb() + " has no batch route"))));
             }
             String actionName = AccessCheck.action(t.service(), action.verb());
-            String pattern = AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type());
             boolean create = "create".equals(body.verb());
-            return access.require(session, actionName, pattern)
+            if (!create) {
+                requireRowWfrns(session, t, action, body);
+            }
+            return (create ? access.require(session, actionName, typePattern(session, t)) : requireEveryRow(session, actionName, body))
                     .then(sessions.requireFreshFor(session, actionName))
                     .then(Mono.fromRunnable(() -> {
                         if (action.destructive() && !body.confirmed()) {
@@ -791,15 +800,52 @@ public class Resources {
         });
     }
 
+    /** Every row of a batch on existing resources names one of the path's type in the session's account and region. */
+    private static void requireRowWfrns(Session session, ConsoleType t, ConsoleAction action, BatchInput body) {
+        for (int i = 0; i < body.items().size(); i++) {
+            BatchInput.Row row = body.items().get(i);
+            if (row.wfrn() == null || row.wfrn().isBlank()) {
+                throw new InvalidInputException("every row of a " + action.verb() + " batch names its resource",
+                        List.of(Problem.error("required", "/items/" + i + "/wfrn", "the resource's wfrn")));
+            }
+            checkName(session, t, row.wfrn());
+        }
+    }
+
+    /**
+     * The verb decided on every row's own wfrn, as a single command would be (a deny on some
+     * resources never matches a check on the type's {@code *}), before anything starts. One refused
+     * row refuses the whole batch: a 403 with the first refused row's denial and every refused row
+     * in {@code deniedRows}.
+     */
+    private Mono<Void> requireEveryRow(Session session, String actionName, BatchInput body) {
+        List<AccessCheck> checks = body.items().stream().map(row -> new AccessCheck(actionName, row.wfrn())).toList();
+        return access.decide(session, checks).flatMap(decisions -> {
+            List<DeniedRow> denied = new ArrayList<>();
+            Denial first = null;
+            for (int i = 0; i < decisions.size(); i++) {
+                if (!decisions.get(i).allowed()) {
+                    denied.add(new DeniedRow(i, checks.get(i).resource()));
+                    if (first == null) {
+                        first = decisions.get(i).denial();
+                    }
+                }
+            }
+            if (denied.isEmpty()) {
+                return Mono.empty();
+            }
+            Denial d = first;
+            String reason = (denied.size() == 1 ? "1 row of the batch is" : denied.size() + " rows of the batch are") + " refused, nothing was started; "
+                    + d.reason();
+            return Mono.error(new DeniedException(new Denial(d.layer(), d.action(), d.resource(), reason, d.role(), d.policyId(), d.statement(),
+                    d.scope(), d.requestable(), d.suggestedRole()), denied));
+        });
+    }
+
     private Mono<List<Row>> existingRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body) {
         List<Mono<Row>> rows = new ArrayList<>();
         for (int i = 0; i < body.items().size(); i++) {
             BatchInput.Row row = body.items().get(i);
-            if (row.wfrn() == null || row.wfrn().isBlank()) {
-                return Mono.error(new InvalidInputException("every row of a " + action.verb() + " batch names its resource",
-                        List.of(Problem.error("required", "/items/" + i + "/wfrn", "the resource's wfrn"))));
-            }
-            checkName(session, t, row.wfrn());
             rows.add(state.get(scope(session), caller(session), row.wfrn(), null).map(answer -> {
                 StateResource r = answer.resource();
                 Map<String, Object> input = new LinkedHashMap<>(row.input());
@@ -1044,9 +1090,20 @@ public class Resources {
                 List.of(Problem.error("confirm.required", "/confirm", "set confirm to true to run " + action.verb())));
     }
 
+    /** A resource page's ETag: the state version, then a digest of everything the page shows. */
+    private String pageETag(Long version, ResourceView view) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(view));
+            return "\"" + version + "." + java.util.HexFormat.of().formatHex(digest, 0, 8) + "\"";
+        } catch (java.security.NoSuchAlgorithmException | com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("the resource page's ETag could not be computed", e);
+        }
+    }
+
     private static void requireState(StateResource r, String ifMatch, String... allowed) {
         if (ifMatch != null && !ifMatch.isBlank()) {
-            String version = ifMatch.replace("\"", "").replace("W/", "").trim();
+            // a page's ETag is "<version>.<digest>"; only the version is compared
+            String version = ifMatch.replace("\"", "").replace("W/", "").trim().split("\\.", 2)[0];
             if (!version.equals(String.valueOf(r.version()))) {
                 throw new ConflictException("the resource moved on to version " + r.version(), Map.of("version", r.version()));
             }
@@ -1266,6 +1323,6 @@ public class Resources {
     }
 
     private static StateCaller caller(Session session) {
-        return new StateCaller(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles());
+        return new StateCaller(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles(), session.rolesUntil());
     }
 }

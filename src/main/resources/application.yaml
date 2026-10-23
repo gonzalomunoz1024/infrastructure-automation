@@ -45,6 +45,11 @@ console:
       jwks: ""                      # or the keys themselves, as JSON
       ca-file: ""                   # the CA the jwks-uri's TLS is checked against
       token-file: ""                # a bearer token to read jwks-uri with (the API server wants one)
+      max-token-lifetime: 1h        # the longest a service-account token may live (iat, or now, to exp)
+      single-use: true              # redeem each service-account token once (by jti, else by its hash) until it expires
+    rate-limit:                     # a token bucket per client of /internal/v1/token
+      burst: 10
+      per-minute: 30
     clients:                        # who may ask, for which services, and how each proves who it is
       console-search-indexer:
         audiences: [console-state-service, console-identity-service]

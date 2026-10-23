@@ -50,7 +50,7 @@ class ServiceTokenEndpointTest extends DemoApp {
         JsonNode body = reply.json();
         assertEquals("Bearer", body.path("token_type").asText());
         assertEquals(300, body.path("expires_in").asInt());
-        assertEquals("[\"console-state-service\"]", body.path("audience").toString());
+        assertEquals("\"console-state-service\"", body.path("audience").toString(), "one audience, as a string");
 
         SignedJWT jwt = SignedJWT.parse(body.path("access_token").asText());
         JWKSet keys = JWKSet.parse(console.get("/.well-known/jwks.json", null).body());
@@ -67,16 +67,16 @@ class ServiceTokenEndpointTest extends DemoApp {
     @Test
     void theSearchIndexerProvesItselfWithItsServiceAccountToken() throws Exception {
         String serviceAccount = Assertions.serviceAccount(CLUSTER_KEY, CLUSTER_ISSUER, "console", "console-search-indexer", Instant.now());
-        Console.Reply reply = token(form(serviceAccount));
+        Console.Reply reply = token(form(serviceAccount, "console-identity-service"));
         assertEquals(200, reply.status(), reply.body());
         JWTClaimsSet claims = SignedJWT.parse(reply.json().path("access_token").asText()).getJWTClaimsSet();
         assertEquals("console-search-indexer", claims.getStringClaim("svc"));
-        assertEquals(List.of("console-state-service", "console-identity-service"), claims.getAudience());
+        assertEquals(List.of("console-identity-service"), claims.getAudience());
     }
 
     @Test
     void refusalsAreRfc6749Bodies() {
-        MultiValueMap<String, String> password = form(Assertions.own(TEST_CLIENT_KEY, TEST_CLIENT, Instant.now()));
+        MultiValueMap<String, String> password = form(Assertions.own(TEST_CLIENT_KEY, TEST_CLIENT, Instant.now()), "console-state-service");
         password.set("grant_type", "password");
         Console.Reply grant = token(password);
         assertEquals(400, grant.status(), grant.body());
@@ -84,13 +84,19 @@ class ServiceTokenEndpointTest extends DemoApp {
         assertFalse(grant.json().path("error_description").asText().isBlank());
         assertTrue(grant.headers().getCacheControl().contains("no-store"));
 
-        Console.Reply forged = token(form(Assertions.own(DemoApp.ecKey("test-client-1"), TEST_CLIENT, Instant.now())));
+        Console.Reply forged = token(form(Assertions.own(DemoApp.ecKey("test-client-1"), TEST_CLIENT, Instant.now()), "console-state-service"));
         assertEquals(401, forged.status(), forged.body());
         assertEquals("invalid_client", forged.json().path("error").asText());
 
         Console.Reply target = token(form(Assertions.own(TEST_CLIENT_KEY, TEST_CLIENT, Instant.now()), "console-bff"));
         assertEquals(400, target.status(), target.body());
         assertEquals("invalid_target", target.json().path("error").asText());
+        Console.Reply none = token(form(Assertions.own(TEST_CLIENT_KEY, TEST_CLIENT, Instant.now())));
+        assertEquals(400, none.status(), none.body());
+        assertEquals("invalid_target", none.json().path("error").asText());
+        Console.Reply two = token(form(Assertions.own(TEST_CLIENT_KEY, TEST_CLIENT, Instant.now()), "console-state-service", "console-identity-service"));
+        assertEquals(400, two.status(), two.body());
+        assertEquals("invalid_target", two.json().path("error").asText());
 
         Console.Reply json = console.call(web.post().uri("/internal/v1/token").contentType(MediaType.APPLICATION_JSON).bodyValue("{\"grant_type\":\"client_credentials\"}"));
         assertEquals(415, json.status(), json.body());

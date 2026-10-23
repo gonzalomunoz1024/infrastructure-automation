@@ -1,5 +1,7 @@
 package com.iaf.console.bff.session.adapters.outbound;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,7 +24,11 @@ import com.iaf.console.bff.session.ports.outbound.PrincipalResolverPort;
 
 import reactor.core.publisher.Mono;
 
-/** {@code POST /v1/principals:resolve} at the identity service, as the console-internal principal. */
+/**
+ * {@code POST /v1/principals:resolve} at the identity service, as the console-internal principal:
+ * at sign-in and whenever a session's memberships are due again. Each account's
+ * {@code elevations[].until} bounds how long its roles may be used.
+ */
 @Component
 public class HttpPrincipalResolver implements PrincipalResolverPort {
 
@@ -64,9 +70,32 @@ public class HttpPrincipalResolver implements PrincipalResolverPort {
             List<String> groups = strings(a.path("groups"));
             List<String> roles = a.has("roles") ? strings(a.path("roles")) : RoleConventions.fromGroups(groups);
             accounts.add(new AccountMembership(a.path("accountId").asText(), a.path("name").asText(null), a.path("status").asText(null),
-                    a.path("defaultRegion").asText(null), groups, roles));
+                    a.path("defaultRegion").asText(null), groups, roles, earliestUntil(a.path("elevations"))));
         }
         return new ResolvedPrincipal(principal, accounts);
+    }
+
+    /**
+     * The earliest {@code until} of the roles held for a while in an account. One that cannot be
+     * read counts as ended now, so the session reads its memberships again at once rather than
+     * keeping a role whose end it does not know.
+     */
+    static Instant earliestUntil(JsonNode elevations) {
+        Instant earliest = null;
+        if (elevations != null && elevations.isArray()) {
+            for (JsonNode e : elevations) {
+                Instant until;
+                try {
+                    until = Instant.parse(e.path("until").asText(""));
+                } catch (DateTimeParseException unreadable) {
+                    until = Instant.EPOCH;
+                }
+                if (earliest == null || until.isBefore(earliest)) {
+                    earliest = until;
+                }
+            }
+        }
+        return earliest;
     }
 
     private static List<String> strings(JsonNode array) {

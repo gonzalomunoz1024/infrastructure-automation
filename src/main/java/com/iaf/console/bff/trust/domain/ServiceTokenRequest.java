@@ -7,7 +7,8 @@ import java.util.List;
 /**
  * A console service asking for a token of its own (RFC 6749 §4.4, client credentials, with a JWT
  * client assertion as RFC 7523 §2.2 has it): the grant, the assertion and its type, the client id
- * when the caller names it, and the services the token is for (none: every one registered).
+ * when the caller names it, and the audiences asked for: exactly one is granted (hub decision 35), so
+ * none or several are refused once the client is known.
  */
 public record ServiceTokenRequest(String grantType, String clientAssertionType, String clientAssertion, String clientId, List<String> audiences) {
 
