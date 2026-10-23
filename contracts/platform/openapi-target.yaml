@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Infrastructure automation platform, target API
   version: 1.0.0-target
-  summary: The platform's HTTP API as it will be once the changes P-01 to P-21 of platform-changes/README.md have shipped.
+  summary: The platform's HTTP API as it will be once the changes P-01 to P-23 of platform-changes/README.md have shipped.
   description: |
     The contract the customer console is built against. It covers every operation the console uses
     (listed in `contracts/platform/used-operations.txt`), written from `platform-changes/README.md`
@@ -156,14 +156,15 @@ paths:
       summary: Create a service account
       description: |
         The token is shown once. `preset` names a scope set: `invoker`, `assistant`, `ci`, and with P-03
-        `console` (`registry:read`, `jobs:start`, `jobs:read`, `resources:observe`, `console:act`) and
-        `console-internal` (`registry:read`, `jobs:read`, `resources:observe`, `events:read`).
+        `console` (`registry:read`, `jobs:start`, `jobs:read`, `resources:observe`, `console:act`, and
+        with P-23 `resources:rehome`) and `console-internal` (`registry:read`, `jobs:read`,
+        `resources:observe`, `events:read`).
         `consoleAccount` binds the account to one console account (admin only, `console` preset,
         `teams` exactly the account's owning team); a console account can never hold `admin`,
         `workflows:write` or `providers:write` (400).
       tags: [ Identity ]
       x-scopes: [ admin ]
-      x-platform-change: [ P-03 ]
+      x-platform-change: [ P-03, P-23 ]
       requestBody:
         required: true
         content:
@@ -464,15 +465,20 @@ paths:
     get:
       operationId: getResourceByWfrn
       summary: Get a resource by wfrn
-      description: The resource that holds the wfrn, retired or not (tombstones are the state service's job); 404 when none does or it is outside the caller's scope.
+      description: The resource that holds the wfrn, retired or not (tombstones are the state service's job); 404 when none does or it is outside the caller's scope. With P-23 an old wfrn of a record that moved to another account finds the record too, and `Content-Location` names its current wfrn.
       tags: [ Resources ]
       x-scopes: [ registry:read ]
-      x-platform-change: [ P-05, P-18 ]
+      x-platform-change: [ P-05, P-18, P-23 ]
       parameters:
         - $ref: '#/components/parameters/Wfrn'
       responses:
         '200':
           description: The resource
+          headers:
+            Content-Location:
+              description: 'P-23: the by-wfrn URL of the record''s current wfrn, when the wfrn asked for is an old one'
+              schema: { type: string }
+              x-platform-change: [ P-23 ]
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Resource' }
@@ -578,6 +584,42 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/resources/{id}:rehome:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      operationId: rehomeResource
+      summary: Move a registry record to another account
+      description: |
+        P-23: the console moved the resource to another account of the same organization (hub
+        decision 30), so the record takes the new `wfrn` and `accountId`; its region stays. The old
+        wfrn joins `previousWfrns`, `GET /api/v1/resources/by-wfrn` still finds the record by it, and
+        `resource.registered` is emitted again with `data.previousWfrn`. The same body again answers
+        200 and changes nothing. 400 when the wfrn's account segment is not `accountId`, or its type
+        or region is not the record's; 409 `resource.rehomed` when the record has already moved to
+        another wfrn, `resource.busy` while a running job holds it, because that job's context names
+        the old account. For admins, or a service account holding `resources:rehome` (the `console`
+        preset); the BFF calls it after each move.
+      tags: [ Resources ]
+      x-scopes: [ admin, resources:rehome ]
+      x-platform-change: [ P-23 ]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RehomeRequest' }
+      responses:
+        '200':
+          description: The record, under its new wfrn and account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Resource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/resources:observe:
     post:
       operationId: observeResources
@@ -5659,6 +5701,11 @@ components:
           type: string
           description: 'P-05: the retired record this one replaced when a same-owner re-registration of a retired id got a fresh record'
           x-platform-change: [ P-05 ]
+        previousWfrns:
+          type: array
+          items: { $ref: '#/components/schemas/Wfrn' }
+          description: 'P-23: the wfrns the record had before it moved to another account, oldest first'
+          x-platform-change: [ P-23 ]
     Lineage:
       type: object
       required: [ resource, builtFrom, dependents, nodes, edges ]
@@ -5784,6 +5831,13 @@ components:
         provider: { type: string }
         action: { type: string }
         at: { type: string, format: date-time }
+    RehomeRequest:
+      type: object
+      description: 'P-23: the account a record moves to, and the wfrn the console gave it there'
+      required: [ wfrn, accountId ]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
     BackfillRequest:
       type: object
       required: [ accountId, region, owner ]

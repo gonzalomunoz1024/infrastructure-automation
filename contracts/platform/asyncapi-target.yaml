@@ -352,7 +352,7 @@ components:
     resourceRegistered:
       name: resource.registered
       title: A resource was registered
-      summary: A register step wrote a resource, new or re-registered (the building then ready pattern); with P-05 the event names it by wfrn
+      summary: A register step wrote a resource, new or re-registered (the building then ready pattern); with P-05 the event names it by wfrn, and P-23 emits it again when a record moves to another account
       traits: [{ $ref: '#/components/messageTraits/event' }]
       payload: { $ref: '#/components/schemas/ResourceRegisteredEvent' }
       x-key: 'resource.registered:<resourceId>:<updatedAt epoch nanos>'
@@ -728,6 +728,10 @@ components:
           type: string
           description: The id the register step gave, when the record's id is a wfrn ULID
           x-platform-change: [P-05]
+        previousWfrn:
+          $ref: '#/components/schemas/Wfrn'
+          description: 'The wfrn the record had before it moved to another account, on the registration a re-home emits'
+          x-platform-change: [P-23]
     ResourceRetiredData:
       type: object
       description: 'resource.retired, as ResourceCommandHandler.retire builds it, with P-05''s names'
