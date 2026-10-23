@@ -339,7 +339,8 @@ abstract class IdentityServiceFlows extends WithService {
         String quotas = s.base() + "/quotas";
 
         JsonNode items = call(GET, quotas, s.owner(), null, OK).get("items");
-        assertThat(texts(items, "key")).contains("jobs-per-minute", "access-keys");
+        assertThat(texts(items, "key")).contains("jobs-per-minute", "access-keys", "resources.vm", "resources.database", "resources.image")
+                .as("resources.<type> by the platform's type names, not by service or team").doesNotContain("resources.compute", "resources.platform");
         JsonNode jobs = items.get(texts(items, "key").indexOf("jobs-per-minute"));
         assertThat(jobs.get("source").asText()).isEqualTo("platform");
         assertThat(jobs.get("limit").asInt()).isGreaterThan(0);

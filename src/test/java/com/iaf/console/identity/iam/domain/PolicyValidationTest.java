@@ -72,4 +72,12 @@ class PolicyValidationTest {
         assertThat(Actions.isValid("a:b:c")).isFalse();
         assertThat(Actions.isValid("Compute:Get")).isFalse();
     }
+
+    @Test
+    void catalogKeepsTheResourceTypesTheQuotasFollow() {
+        ActionCatalog catalog = ActionCatalog.builder().service("compute").type("vm").type("image").type(" ").service("data").type("database").build();
+        assertThat(catalog.resourceTypes()).containsExactly("database", "image", "vm");
+        assertThat(catalog.services()).contains("compute", "data").doesNotContain("vm");
+        assertThat(ActionCatalog.consoleOnly().resourceTypes()).isEmpty();
+    }
 }

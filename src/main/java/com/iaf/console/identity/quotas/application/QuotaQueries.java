@@ -29,8 +29,8 @@ import reactor.core.publisher.Mono;
 /**
  * The reads on quotas: the account's overrides over the defaults, {@code jobs-per-minute} read
  * through from the platform's bucket, {@code access-keys} counted here, {@code resources.<type>}
- * for every service the catalog knows ({@code used} is the state service's count; this service
- * serves the limit, so it answers 0 until the state service reports).
+ * for every resource type the platform has, by the type's name ({@code used} is the state
+ * service's count; this service serves the limit, so it answers 0 until the state service reports).
  */
 public final class QuotaQueries {
 
@@ -65,10 +65,8 @@ public final class QuotaQueries {
                             List<String> keysToServe = new ArrayList<>();
                             keysToServe.add(QuotaKeys.JOBS_PER_MINUTE);
                             keysToServe.add(QuotaKeys.ACCESS_KEYS);
-                            for (String service : t.getT2().services()) {
-                                if (!com.iaf.console.identity.iam.domain.ActionCatalog.CONSOLE_SERVICES.containsKey(service)) {
-                                    keysToServe.add(QuotaKeys.RESOURCES_PREFIX + service);
-                                }
+                            for (String type : t.getT2().resourceTypes()) {
+                                keysToServe.add(QuotaKeys.RESOURCES_PREFIX + type);
                             }
                             overrides.keySet().stream().filter(k -> !keysToServe.contains(k)).sorted().forEach(keysToServe::add);
                             return Flux.fromIterable(keysToServe).concatMap(key -> quota(scope, key, overrides.get(key))).collectList();

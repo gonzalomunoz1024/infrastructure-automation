@@ -88,7 +88,8 @@ contract lacks, so a new one goes to the hub first).
   rotation keeps the previous secret for ten minutes; a removed user's keys are revoked.
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the
   bucket too), `access-keys` counts usable keys (default 50), `resources.<type>` defaults to 100
-  (used counts arrive from the state service later). Users request increases (one open request
+  and is listed once per platform resource type, by the type's name (`resources.vm`,
+  `resources.database`; used counts arrive from the state service later). Users request increases (one open request
   per key, answered as a `QuotaRequest` with `currentLimit` and `requestedLimit`); the requester,
   an account admin (`quota:set`) or the internal principal withdraws one (`DELETE`, 204). The
   platform team decides with the internal `:decide` (`{decision, limit?, comment?}`): approving

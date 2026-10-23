@@ -48,7 +48,7 @@ public final class PlatformActionCatalog implements ActionCatalogPort {
                 .map(t -> {
                     ActionCatalog.Builder builder = ActionCatalog.builder();
                     for (ResourceType type : t.getT1()) {
-                        builder.service(serviceOf(type));
+                        builder.service(serviceOf(type)).type(type.name());
                     }
                     for (CatalogEntry entry : t.getT2()) {
                         String service = t.getT1().stream().filter(type -> type.name().equals(entry.noun()) || type.plural() != null
