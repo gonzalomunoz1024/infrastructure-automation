@@ -5,8 +5,9 @@ metadata:
   labels:
     {{- include "console-state-service.labels" . | nindent 4 }}
 data:
-  # the service's settings as an application-cluster.yaml, picked up through SPRING_CONFIG_ADDITIONAL_LOCATION
-  application-cluster.yaml: |
+  # the service's settings, read from SPRING_CONFIG_ADDITIONAL_LOCATION over the jar's own defaults;
+  # named application.yaml so it applies whatever the profiles (a profile-named file needs its profile active)
+  application.yaml: |
     server:
       port: {{ .Values.service.targetPort }}
     spring:

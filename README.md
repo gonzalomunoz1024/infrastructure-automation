@@ -69,7 +69,8 @@ does the same (`.github/workflows/ci.yml`, `CONSOLE_LIBS_REF`).
 
 Production runs `mongo,kafka`; the Helm chart under `deploy/helm/console-state-service` wires
 exactly that, with the three secrets it needs (MongoDB URI, master key, platform token) and a
-rendered `application-cluster.yaml`.
+rendered `application.yaml` mounted in `/config/`, which overrides the jar's defaults whatever the
+profiles.
 
 ### Configuration
 
