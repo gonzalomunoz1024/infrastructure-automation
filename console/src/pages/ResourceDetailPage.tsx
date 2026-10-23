@@ -5,7 +5,7 @@ import { useConsole, useRouteType } from '../app/console'
 import { ExplainedError } from '../app/commands'
 import { MenuButton, MenuSeparator } from '../app/MenuButton'
 import { ActionButton, ActionMenuItem } from '../app/Refusal'
-import { navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
+import { navigate, pathFor, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
@@ -13,7 +13,8 @@ import { idOfWfrn, partsOfWfrn, singularOf, wfrnOf, type ConsoleAction, type Con
 import { ALLOWED } from '../lib/permissions'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { invalidate, useQuery } from '../lib/queries'
-import { pushRecent } from '../lib/recent'
+import { FavouriteStar } from './personal/FavouriteStar'
+import { useFavourites, useRecordVisit } from './personal/usePersonal'
 import { verbsOf } from '../lib/verbs'
 import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
@@ -73,11 +74,9 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   }, [open, type.name])
 
   const reported = typeof detail?.observed?.status === 'string' && detail.observed.status ? detail.observed.status : undefined
-  useEffect(() => {
-    const label = detail?.name
-    if (!label) return
-    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, wfrn), label, hint: `${type.title} · ${reported ?? detail?.state ?? ''}` })
-  }, [detail?.name, detail?.state, reported, type, wfrn])
+  // the BFF keeps the visit for the console home (phase 7); the star makes it a favourite there
+  useRecordVisit('resource', wfrn, detail?.name)
+  const favourites = useFavourites()
 
   // the Drift tab counts the fields that drifted, as its table lists them
   const drifted = detail?.finding?.status === 'open' ? detail.finding.fields.length : 0
@@ -143,6 +142,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
           <>
             <IconButton label="Refresh" onClick={() => void view.refetch()}>
               <Icon name="refresh" size={16} className={cx(view.fetching && 'animate-spin')} />
+            {!deleted && <FavouriteStar on={favourites.isFavourite(wfrn)} name={name} onToggle={() => favourites.toggle({ wfrn, type: type.name, name })} />}
             </IconButton>
             {deleted ? (
               // nothing runs on a deleted resource: the menu stays where it was, disabled

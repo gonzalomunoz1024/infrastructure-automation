@@ -584,7 +584,7 @@ function quotaRule(data: MockData, s: RouteContext['session'], rt: ResourceType)
   const { limit, used } = quotaOf(data.directory, s.accountId, `resources.${rt.name}`, usedByTypeOf(data, s.accountId))
   const title = titleOf(rt)
   return used >= limit
-    ? { id: 'quota.resources', result: 'deny', message: `${title}: the account's quota of ${limit} is used up (${used} exist); delete one, or request an increase from the platform team` }
+    ? { id: 'quota.resources', result: 'deny', message: `${title}: the account's quota of ${limit} is used up (${used} exist); delete one, or request an increase on Service Quotas` }
     : { id: 'quota.resources', result: 'pass', message: `${title}: ${used} of ${limit} in this account` }
 }
 

@@ -87,6 +87,17 @@ The state service's views show what happened, what was and what is built from wh
   accounts the person can read) as columns of what is built from what, coloured by health, drift
   or cost, zoomed and moved through with the keyboard, with a list view holding the same
 
+Phase 7 remembers each person's places and raises quotas:
+
+- the console home's Recently visited and Favourites come from the BFF: the lists and resources
+  the person opened in the account, newest first, the resources they starred (a star on every
+  resource page and list row) and the resource types they pinned (a pin on each list), so they
+  follow the person to any browser and never show to the next person on the device
+- Service Quotas: every quota of the account with its use, its limit and the rule that raises it,
+  a request for more that a rule approves at once (the dialog says so before it is sent) or sends
+  to the platform team, the account's requests with their status, and the platform team deciding
+  them there, never their own; a create the quota refuses links straight to the request
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -872,13 +883,50 @@ type, so the feed must subscribe to every one).
     journeys replay: sized up to 8 CPUs three days ago and back down to 2 this morning. Lineage
     and the map come from the same rows, with each machine's monthly price from the cost mock.
 
+75. **Visits and favourites live at the BFF, never in the browser.** A type's list and a resource's
+    page post their visit (`POST /console/v1/recent`, the key a type key or a wfrn, the title as
+    shown); the home's Recently visited and the palette's Recent group read `GET
+    /console/v1/recent`, so a shared device shows the next person nothing. The local copy
+    (`lib/recent.ts`) is no longer written; Settings still clears what an older build left. Every
+    link is built from the key with the router's own paths (a type key's service and type, a
+    wfrn's parts), never taken from the data as a URL. The two home panels are components of their
+    own (`pages/personal`), so the home's layout can place them anywhere.
+76. **A favourite is a star; a favourite service is a pin.** A resource is starred on its page and in
+    every list row (`PUT`/`DELETE /console/v1/favourites/{wfrn}` with its type and name, 100 an
+    account, 409 `favourites.full` said in words); a type is pinned on its list into the
+    preferences' `pinnedTypes` (type keys, 50 kept). Both are toggle buttons whose name stays the
+    same (`aria-pressed` says the state), drawn in the console since Atlas has no star or pin glyph,
+    and a star in a list row keeps its click and keys from the row. The star changes at once and goes
+    back if the call fails. The mock keeps both in the directory, per person and account.
+77. **The quota rules are read in the browser exactly as the identity service reads them.** `GET
+    /console/v1/iam/quota-rules` lists them in order; the first rule covering a key (`*` any run of
+    characters) approves an ask of at most `maxFactor` times the limit and never above `maxLimit`,
+    unless a rule raised the key within its `cooldown`, which the console reads from the account's
+    approved requests (`decidedBy` `rule:<name>`). So the request dialog says before sending whether
+    the ask is approved at once or goes to the platform team, and the quota's row says which rule
+    stands behind it and until when it is cooling down. The mock's directory applies the same rules
+    (`lib/quotas.ts`, shared), with the identity service's defaults.
+78. **The platform team decides through the BFF, never the requester.** The identity service keeps
+    `:decide` to its internal principal; the BFF calls it for a member of the platform team (the
+    organization admins; in the demo, Gonzalo) on `/console/v1/iam/quota-requests/{id}:decide`, and
+    serves each request with `can` (`decide`, `withdraw`) and `refusals` holding the reason. The page
+    shows Approve and Reject only where `decide` is offered, and otherwise the reason in words
+    ("Nobody decides their own quota request"). Approving grants the ask or another limit with a
+    note; rejecting asks why. Asking stays open to every member the identity service's policies
+    allow, the managed viewer included, so a viewer reads the page, may ask, and decides nothing.
+79. **A quota refusal leads to the request.** `/service-quotas?request=<quota key>` opens the request
+    dialog, so a create whose preview the `quota.resources` rule denies links to it under the review,
+    and the access keys page's Quotas card uses the same dialog and links to Service Quotas. The
+    ask for more than the rules give at once is the one that waits, so the earlier journeys ask for
+    150 access keys, past the access keys rule's 100.
+
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift, monitoring, access, cli, notifications, policies, state),
-                  their helpers and screenshots; cli covers the device sign-in, CLI sign-ins, the
+                  tags, bulk, drift, monitoring, access, cli, notifications, policies, state,
+                  personal), their helpers and screenshots; cli covers the device sign-in, CLI sign-ins, the
                   console shell and the developer portal; policies the policy editor, simulator,
                   boundaries and guardrails
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
@@ -910,7 +958,8 @@ console/
                   catalog, validation and the JSON reader that keeps lines), state (the trail,
                   time travel, lineage and map reads, and their words), trail (the chain's
                   checks), sha256, timeTravel (replay and diff), graph (the map's layout and
-                  keyboard)
+                  keyboard), personal (recent visits, favourites and pinned types), quotas
+                  (Service Quotas, the rules and their words)
   src/mock/       the mock server (the BFF), types (the BFF's type descriptors), live (the live
                   feed per account), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
@@ -922,7 +971,9 @@ console/
                   settings, chat links and digests), policies (custom policies, roles and their
                   boundaries, guardrails and the simulator, over the directory's `decide`), state
                   (the chained and sealed trail, time travel, lineage and the map) with es256
-                  (the demo keys), and the browser installer, with the samples
+                  (the demo keys), quotas (the rules, the account's requests and the platform
+                  team's decision), personal (recent visits and favourites), and the browser
+                  installer, with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews, elevations and CLI sign-ins among them), src/pages/iam/policies/ the
                   Policies, policy editor, Policy simulator and Guardrails pages and the role
@@ -941,7 +992,10 @@ console/
                   Notifications, Notification settings, Linked chats and Weekly digests pages,
                   src/pages/state/ the Activity trail, Inventory as of a date and Resource map;
                   the resource page's Monitoring tab and its MetricChart, TimeTravel, RevertEdit
-                  and LineageView sit with its other tabs
+                  and LineageView sit with its other tabs; src/pages/personal/ the home's
+                  Recently visited and Favourites panels, the star and the pin, src/pages/quotas/
+                  the Service Quotas page, its request and decision dialogs and the create's
+                  quota note
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { Button, Card, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, Textarea, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
+import { Button, Card, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
 import { ConfirmDialog, CopyableId, DotTag, ErrorState, When } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { Link, pathFor, type PageProps } from '../../app/router'
@@ -8,6 +8,7 @@ import { useQuery } from '../../lib/queries'
 import type { ConsoleType } from '../../lib/descriptors'
 import type { AccessKey, AccessKeyCreated, IamUser, Quota, QuotaRequest } from '../../lib/types'
 import { KeyStatusTag, personLabel, useIamWrite } from './common'
+import { RequestIncreaseDialog } from '../quotas/RequestIncreaseDialog'
 
 /*
  * Access keys: what a script or an MCP client presents to the platform's API on behalf of a
@@ -130,7 +131,16 @@ export default function IamAccessKeysPage({ route }: PageProps) {
       </PageHeader>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">{keys.error ? <ErrorState error={keys.error} title="Could not load the access keys" onRetry={() => void keys.refetch()} /> : <Table<AccessKey> caption={`Access keys of ${account.name}`} columns={columns} rows={rows} rowKey={(k) => k.keyId} loading={keys.loading} defaultSort={{ key: 'createdAt', dir: 'desc' }} emptyIcon="key" emptyTitle="No access keys yet" emptyMessage="Create one to call the platform’s API or connect an MCP client. The secret is shown once." />}</div>
-        <Card title="Quotas" subtitle="What this account may hold and how much is used. The platform team raises a limit when asked." className="h-fit">
+        <Card
+          title="Quotas"
+          subtitle="What this account may hold and how much is used. A rule raises a limit at once, or the platform team decides."
+          actions={
+            <Link to={pathFor('service-quotas')} className="text-caption font-medium text-accent transition-opacity hover:opacity-70">
+              Service Quotas
+            </Link>
+          }
+          className="h-fit"
+        >
           {quotas.error ? (
             <ErrorState error={quotas.error} compact title="Could not load the quotas" onRetry={() => void quotas.refetch()} />
           ) : (
@@ -155,7 +165,7 @@ export default function IamAccessKeysPage({ route }: PageProps) {
         />
       )}
       {shown && <SecretDialog created={shown.key} rotated={shown.rotated} onClose={() => setShown(null)} />}
-      {asking && <QuotaIncreaseDialog quota={asking} title={quotaTitle(asking.key, types)} onClose={() => setAsking(null)} />}
+      {asking && <RequestIncreaseDialog quota={asking} title={quotaTitle(asking.key, types)} onClose={() => setAsking(null)} />}
       {confirm?.kind === 'revoke' && <ConfirmDialog title={`Revoke ${confirm.key.keyId}?`} tone="danger" icon="trash" confirmLabel="Revoke" onClose={() => setConfirm(null)} onConfirm={() => revoke(confirm.key)} message="Anything using this key is refused from now on. This cannot be undone; create a new key instead if it is still needed." />}
       {confirm?.kind === 'rotate' && <ConfirmDialog title={`Rotate ${confirm.key.keyId}?`} tone="warning" icon="refresh" confirmLabel="Rotate" onClose={() => setConfirm(null)} onConfirm={() => rotate(confirm.key)} message="A new secret is issued for the same key id. The old secret keeps working for a short grace period so you can switch clients over." />}
     </>
@@ -169,12 +179,6 @@ export function quotaTitle(key: string, types: readonly Pick<ConsoleType, 'name'
     return types.find((t) => t.name === name)?.title ?? `Resources of type ${name}`
   }
   return quotaLabel(key)
-}
-
-/** A higher limit than the current one: half as much again, in a round number. */
-export function suggestedLimit(limit: number): number {
-  const step = limit >= 1000 ? 100 : limit >= 100 ? 10 : 1
-  return Math.max(limit + 1, Math.ceil((limit * 1.5) / step) * step)
 }
 
 function QuotaItem({ quota: q, title, onAsk }: { quota: Quota; title: string; onAsk: (q: Quota) => void }) {
@@ -213,53 +217,6 @@ function QuotaItem({ quota: q, title, onAsk }: { quota: Quota; title: string; on
         </Button>
       )}
     </li>
-  )
-}
-
-function QuotaIncreaseDialog({ quota: q, title, onClose }: { quota: Quota; title: string; onClose: () => void }) {
-  const write = useIamWrite()
-  const [limit, setLimit] = useState(String(suggestedLimit(q.limit)))
-  const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [tried, setTried] = useState(false)
-  const asked = Number(limit)
-  const limitError = !Number.isInteger(asked) || asked <= q.limit ? `More than the current ${q.limit.toLocaleString()}, as a whole number.` : undefined
-  const reasonError = reason.trim().length < 10 ? 'Say why in 10 characters or more.' : undefined
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    setTried(true)
-    if (busy || limitError || reasonError) return
-    setBusy(true)
-    const sent = await write('Request a quota increase', () => bff.iam.quotas.requestIncrease(q.key, { limit: asked, reason: reason.trim() }), { title: 'Increase requested', message: `The platform team decides on ${asked.toLocaleString()} ${title.toLowerCase()}.` })
-    setBusy(false)
-    if (sent) onClose()
-  }
-
-  return (
-    <Modal onClose={onClose} label={`Request more ${title.toLowerCase()}`} width="max-w-lg">
-      <form onSubmit={(e) => void submit(e)} noValidate>
-        <OverlayHeader title={`Request more ${title.toLowerCase()}`} subtitle={`Now ${q.used.toLocaleString()} of ${q.limit.toLocaleString()} in use. The platform team decides; the account’s admins cannot raise it themselves.`} icon="plus" />
-        <OverlayBody>
-          <div className="space-y-5">
-            <Field label="New limit" htmlFor="quota-limit" error={tried ? limitError : undefined} required>
-              <Input id="quota-limit" data-autofocus type="number" inputMode="numeric" min={q.limit + 1} step={1} value={limit} onChange={(e) => setLimit(e.target.value)} />
-            </Field>
-            <Field label="Why" htmlFor="quota-reason" hint="The platform team reads it. 10 to 1,000 characters." error={tried ? reasonError : undefined} required>
-              <Textarea id="quota-reason" rows={3} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="The storage team moves 300 machines here next month" />
-            </Field>
-          </div>
-        </OverlayBody>
-        <OverlayFooter>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            Send request
-          </Button>
-        </OverlayFooter>
-      </form>
-    </Modal>
   )
 }
 

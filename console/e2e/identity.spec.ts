@@ -213,7 +213,8 @@ test.describe('identity and access in mock mode', () => {
     await quotas.getByRole('button', { name: 'Request an increase of access keys' }).click()
     const ask = page.getByRole('dialog', { name: 'Request more access keys' })
     await expect(ask).toBeVisible()
-    await ask.getByLabel(/^New limit/).fill('80')
+    // 150 is past what the rule approves at once (twice the limit, 100 at most), so it waits for the platform team
+    await ask.getByLabel(/^New limit/).fill('150')
     await ask.getByRole('button', { name: 'Send request' }).click()
     await expect(ask.getByText('Say why in 10 characters or more.')).toBeVisible()
     await ask.getByLabel(/^Why/).fill('The build farm gets a key per runner next week')
@@ -221,7 +222,7 @@ test.describe('identity and access in mock mode', () => {
     await ask.getByRole('button', { name: 'Send request' }).click()
     await expect(ask).toBeHidden()
     const pending = quotas.locator('[data-quota="access-keys"] [data-quota-pending]')
-    await expect(pending).toContainText('80 asked by you')
+    await expect(pending).toContainText('150 asked by you')
     await quotas.getByRole('button', { name: 'Withdraw the request for more access keys' }).click()
     await expect(quotas.getByRole('button', { name: 'Request an increase of access keys' })).toBeVisible()
     // one resources quota per resource type, named by the type

@@ -59,6 +59,7 @@ const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage')
 const ActivityTrailPage = lazy(() => import('../pages/state/ActivityTrailPage'))
 const AsOfPage = lazy(() => import('../pages/state/AsOfPage'))
 const ResourceMapPage = lazy(() => import('../pages/state/ResourceMapPage'))
+const ServiceQuotasPage = lazy(() => import('../pages/quotas/ServiceQuotasPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
 const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
@@ -119,6 +120,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   activity: ActivityTrailPage,
   'as-of': AsOfPage,
   map: ResourceMapPage,
+  'service-quotas': ServiceQuotasPage,
   settings: SettingsPage,
   device: DevicePage,
   'iam-cli': CliSessionsPage,

@@ -92,6 +92,8 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'as-of':
     case 'map':
       return [home, { label: 'Activity and history', href: pathFor('activity') }, { label: route.def?.title ?? 'Activity and history' }]
+    case 'service-quotas':
+      return [home, { label: 'Service Quotas' }]
     case 'settings':
       return [home, { label: 'Settings' }]
     case 'iam-cli':

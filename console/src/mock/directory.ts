@@ -1,4 +1,6 @@
+import type { Favourite, RecentVisit } from '../lib/personal'
 import { globMatches, sentinel, type Guardrail } from '../lib/policies'
+import { approvingRule, type QuotaRules } from '../lib/quotas'
 import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, HeldElevation, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, SavedFilter, SavedView } from '../lib/types'
 import type { AccessState } from './access'
 
@@ -169,6 +171,14 @@ export interface Directory {
   preferences?: Record<string, Preferences>
   /** access reviews and roles held for a while (./access, WP 9.11 and 9.12), made on first use */
   access?: AccessState
+  /** by `<person>/<account>`: the visits and favourites the BFF keeps (phase 7, ./personal), made on first use */
+  personal?: Record<string, PersonalRecord>
+}
+
+/** One person's recent visits and favourite resources in one account. */
+export interface PersonalRecord {
+  recent: RecentVisit[]
+  favourites: Favourite[]
 }
 
 export function buildDirectory(): Directory {
@@ -970,16 +980,51 @@ export function quotaRequestOf(dir: Directory, accountId: string, requestId: str
   return (dir.quotaRequests[accountId] ?? []).find((r) => r.requestId === requestId)
 }
 
-/** Asks the platform team for a higher limit: one open request per key. */
+/**
+ * The organization's auto-approval rules, as the identity service's defaults configure them
+ * (`console.identity.quotas.auto-approval`, served at `GET /v1/quota-rules`): read in order, the
+ * first that covers a key decides, and an ask none approves goes to the platform team.
+ */
+export const QUOTA_RULES: QuotaRules = {
+  items: [
+    { name: 'resources-double', keys: ['resources.*'], maxFactor: 2, maxLimit: 1000, cooldown: 'PT720H' },
+    { name: 'access-keys-double', keys: [ACCESS_KEYS_QUOTA], maxFactor: 2, maxLimit: 100, cooldown: 'PT720H' },
+    { name: 'jobs-half-again', keys: [JOBS_PER_MINUTE], maxFactor: 1.5, maxLimit: 600, cooldown: 'PT168H' },
+  ],
+  approver: 'platform-team',
+}
+
+/** Who decides what no rule approves (`routedTo: platform-team`): the demo's organization admins, through the BFF as the internal principal. */
+export const PLATFORM_TEAM: readonly string[] = ['gonzalo']
+
+export function isPlatformTeam(userId: string): boolean {
+  return PLATFORM_TEAM.includes(userId)
+}
+
+/** The account's requests, newest first. */
+export function quotaRequestsOf(dir: Directory, accountId: string): QuotaRequest[] {
+  return [...(dir.quotaRequests[accountId] ?? [])].sort((x, y) => y.requestedAt.localeCompare(x.requestedAt) || y.requestId.localeCompare(x.requestId))
+}
+
+/** Asks for a higher limit, one open request per key: the first rule that covers it approves it at once, else it waits for the platform team. */
 export function requestQuotaIncrease(dir: Directory, accountId: string, key: string, requestedBy: string, input: Partial<QuotaRequestInput>, current: Quota, now = Date.now()): QuotaRequest {
   if (!isQuotaKey(key)) throw new DirectoryError(404, `no quota ${key}`)
   const limit = input.limit
   if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) throw new DirectoryError(400, 'limit is an integer of at least 1')
   const reason = typeof input.reason === 'string' ? input.reason : ''
   if (reason.length < 10 || reason.length > 1000) throw new DirectoryError(400, 'reason is 10 to 1000 characters')
+  if (limit <= current.limit) throw new DirectoryError(400, 'not-an-increase', { limit: current.limit })
   const open = openQuotaRequest(dir, accountId, key)
   if (open) throw new DirectoryError(409, `an increase of ${key} is already requested`, { requestId: open.requestId })
-  const request: QuotaRequest = { requestId: `qreq_${String(++dir.counters.quotaRequests).padStart(3, '0')}`, accountId, quotaKey: key, currentLimit: current.limit, requestedLimit: limit, reason, status: 'open', requestedBy, requestedAt: new Date(now).toISOString() }
+  const at = new Date(now).toISOString()
+  const request: QuotaRequest = { requestId: `qreq_${String(++dir.counters.quotaRequests).padStart(3, '0')}`, accountId, quotaKey: key, currentLimit: current.limit, requestedLimit: limit, reason, status: 'open', requestedBy, requestedAt: at }
+  const rule = approvingRule(QUOTA_RULES, quotaRequestsOf(dir, accountId), key, current.limit, limit, now)
+  if (rule) {
+    ;(dir.quotaOverrides[accountId] ??= {})[key] = limit
+    Object.assign(request, { status: 'approved', grantedLimit: limit, decidedAt: at, decidedBy: `rule:${rule.name}` })
+  } else {
+    request.routedTo = QUOTA_RULES.approver
+  }
   dir.quotaRequests[accountId] = [request, ...(dir.quotaRequests[accountId] ?? [])]
   return request
 }
@@ -995,7 +1040,7 @@ export function withdrawQuotaRequest(dir: Directory, accountId: string, requestI
   return r
 }
 
-/** The platform team's decision (never the account's own admins): approving sets the limit to the one granted, the ask by default. */
+/** The platform team's decision (never the account's own admins, and never by the requester): approving sets the limit to the one granted, the ask by default. */
 export function decideQuotaRequest(dir: Directory, accountId: string, requestId: string, decision: 'approve' | 'reject', by: string, options: { limit?: number; comment?: string } = {}, now = Date.now()): QuotaRequest {
   const r = quotaRequestOf(dir, accountId, requestId)
   if (!r) throw new DirectoryError(404, `no quota request ${requestId}`)

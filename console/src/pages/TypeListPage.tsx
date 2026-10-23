@@ -13,7 +13,6 @@ import { LIST_QUERY_KEYS, encodeSort, listStateFromQuery, type ListState } from 
 import { denialOf, typeKey as typeKeyOf, type Decision } from '../lib/permissions'
 import { columnsOf, loadPreferences, usePreferenceWriter, usePreferences, viewsOf, withColumns } from '../lib/preferences'
 import { useQuery } from '../lib/queries'
-import { pushRecent } from '../lib/recent'
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, SORTABLE, countLabel, csvRowsOf, filterPropertiesOf, listColumnsOf, listQueryOf, nameOf, normaliseTokens, serverFiltersOf, sortOrDefault, tagKeysOfColumns, tagOfProperty, visibleColumns, type ListColumn } from '../lib/resourceList'
 import type { ConsoleResource } from '../lib/types'
 import { BulkDrawer } from './list/BulkDrawer'
@@ -22,6 +21,8 @@ import { ColumnsMenu } from './list/ColumnsMenu'
 import { ApplyTagsDialog } from './tags/ApplyTagsDialog'
 import { ViewsMenu, describeTokenWith } from './list/ViewsMenu'
 import { MissingType, Stamp } from './parts'
+import { FavouriteStar, PinButton } from './personal/FavouriteStar'
+import { useFavourites, usePinnedTypes, useRecordVisit } from './personal/usePersonal'
 
 /*
  * The list of one resource type, from the BFF (GET /console/v1/r/{type}), for a million rows: the
@@ -52,9 +53,10 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
   useEffect(() => {
     void loadPreferences(owner)
   }, [owner])
-  useEffect(() => {
-    pushRecent({ kind: 'type', href: pathFor('type', { service: type.service, type: type.name }), label: type.title, hint: `${capitalise(type.service)} · resource type` })
-  }, [type])
+  // the BFF keeps the visit for the console home (phase 7); stars and the pin are the person's favourites
+  useRecordVisit('type', key, type.title)
+  const favourites = useFavourites()
+  const pins = usePinnedTypes()
 
   /* the list's state is the page's query */
   const fromQuery = useMemo(() => listStateFromQuery(route.query, PAGE_SIZES), [route.query])
@@ -154,6 +156,7 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
         subtitle={purposeOf(type)}
         actions={
           <>
+            <PinButton on={pins.isPinned(key)} name={type.title} onToggle={() => pins.setPinned(key, !pins.isPinned(key))} />
             <IconButton
               label="Refresh the list"
               onClick={() => {
@@ -234,7 +237,7 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
         <ErrorState error={list.error} title={`Could not load the ${lower}`} onRetry={list.refetch} />
       ) : (
         <VirtualTable<ConsoleResource>
-          columns={columns}
+          columns={[...columns, favouriteColumn(type, favourites)]}
           rows={rows}
           rowKey={(r) => r.wfrn}
           rowLabel={nameOf}
@@ -291,6 +294,23 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
       )}
     </>
   )
+}
+
+/** The star at the end of every row: the row’s resource as a favourite on the console home. */
+function favouriteColumn(type: ConsoleType, favourites: ReturnType<typeof useFavourites>): VirtualColumn<ConsoleResource> {
+  return {
+    key: 'favourite',
+    // positioned, so the hidden name stays inside the table's own sideways scroll at a phone's width
+    header: (
+      <span className="relative block">
+        <span className="sr-only">Favourite</span>
+      </span>
+    ),
+    width: '2.75rem',
+    minRem: 2.75,
+    className: 'px-1',
+    render: (r) => <FavouriteStar size="sm" on={favourites.isFavourite(r.wfrn)} name={nameOf(r)} onToggle={() => favourites.toggle({ wfrn: r.wfrn, type: type.name, name: nameOf(r) })} />,
+  }
 }
 
 /** One shown column as the table draws it; only the state service's orders sort. */

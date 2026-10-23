@@ -15,6 +15,8 @@ import { cliRoutes } from './cli'
 import { notificationRoutes } from './notifications'
 import { policyRoutes } from './policies'
 import { stateRoutes } from './state'
+import { quotaRoutes } from './quotas'
+import { personalRoutes } from './personal'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -369,6 +371,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         return { status: 200, body: rotateAccessKey(dir, s.accountId, keyId, at) }
       }
     }
+
+    /* quota rules, the account's quota requests and the platform team's decision; recent visits and favourites (phase 7) */
+    const personal = quotaRoutes(data, { session: s, body, headers: req.headers, now: at }, path, params, method) ?? personalRoutes(data, { session: s, body, headers: req.headers, now: at }, path, params, method)
+    if (personal) return personal
 
     /* quotas: the account reads them, members ask for more, the platform team decides */
     if (path === '/console/v1/iam/quotas' && method === 'GET') {

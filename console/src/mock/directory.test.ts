@@ -262,18 +262,19 @@ describe('quotas', () => {
     expect(quotaOf(dir, COMPUTE, 'resources.image', { image: 20 }, NOW)).toMatchObject({ limit: 100, source: 'default' })
   })
 
-  it('asks the platform team for more, once per key; the requester withdraws, the platform team decides', () => {
+  it('asks the platform team for what no rule approves, once per key; the requester withdraws, the platform team decides', () => {
     const dir = buildDirectory()
     const current = quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)
     expect(() => requestQuotaIncrease(dir, COMPUTE, 'nope', 'dana', { limit: 80, reason: 'the build farm grows' }, current, NOW)).toThrow('no quota nope')
     expect(() => requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 0, reason: 'the build farm grows' }, current, NOW)).toThrow('limit is an integer of at least 1')
     expect(() => requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 80, reason: 'more' }, current, NOW)).toThrow('reason is 10 to 1000 characters')
-    const asked = requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 80, reason: 'the build farm grows' }, current, NOW)
-    expect(asked).toMatchObject({ requestId: 'qreq_001', quotaKey: 'access-keys', currentLimit: 50, requestedLimit: 80, status: 'open', requestedBy: 'dana' })
+    expect(() => requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 50, reason: 'the build farm grows' }, current, NOW)).toThrow('not-an-increase')
+    const asked = requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 150, reason: 'the build farm grows' }, current, NOW)
+    expect(asked).toMatchObject({ requestId: 'qreq_001', quotaKey: 'access-keys', currentLimit: 50, requestedLimit: 150, status: 'open', requestedBy: 'dana', routedTo: 'platform-team' })
     expect(quotaOf(dir, COMPUTE, 'access-keys', {}, NOW).pendingRequestId).toBe('qreq_001')
     let again: unknown
     try {
-      requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'mia', { limit: 90, reason: 'the build farm grows' }, current, NOW)
+      requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'mia', { limit: 160, reason: 'the build farm grows' }, current, NOW)
     } catch (e) {
       again = e
     }
@@ -282,10 +283,21 @@ describe('quotas', () => {
     expect(withdrawQuotaRequest(dir, COMPUTE, 'qreq_001', 'dana', NOW).status).toBe('withdrawn')
     expect(() => withdrawQuotaRequest(dir, COMPUTE, 'qreq_001', 'dana', NOW)).toThrow('the request is withdrawn')
 
-    const second = requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 80, reason: 'the build farm grows' }, current, NOW)
-    decideQuotaRequest(dir, COMPUTE, second.requestId, 'approve', 'platform-team', { limit: 70 }, NOW)
-    expect(quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)).toMatchObject({ limit: 70, source: 'override' })
+    const second = requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 150, reason: 'the build farm grows' }, current, NOW)
+    decideQuotaRequest(dir, COMPUTE, second.requestId, 'approve', 'platform-team', { limit: 120 }, NOW)
+    expect(quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)).toMatchObject({ limit: 120, source: 'override' })
     expect(quotaOf(dir, COMPUTE, 'access-keys', {}, NOW).pendingRequestId).toBeUndefined()
+  })
+
+  it('approves at once an ask a rule covers, and no rule raises the key again within its cooldown', () => {
+    const dir = buildDirectory()
+    const current = quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)
+    const asked = requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 100, reason: 'a key per runner' }, current, NOW)
+    expect(asked).toMatchObject({ status: 'approved', grantedLimit: 100, decidedBy: 'rule:access-keys-double', decidedAt: new Date(NOW).toISOString() })
+    expect(asked.routedTo).toBeUndefined()
+    expect(quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)).toMatchObject({ limit: 100, source: 'override' })
+    const later = quotaOf(dir, COMPUTE, 'access-keys', {}, NOW)
+    expect(requestQuotaIncrease(dir, COMPUTE, 'access-keys', 'dana', { limit: 101, reason: 'one more runner' }, later, NOW + 86_400_000)).toMatchObject({ status: 'open', routedTo: 'platform-team' })
   })
 })
 

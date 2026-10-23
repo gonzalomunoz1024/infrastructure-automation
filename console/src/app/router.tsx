@@ -49,6 +49,7 @@ export type RouteName =
   | 'activity'
   | 'as-of'
   | 'map'
+  | 'service-quotas'
   | 'settings'
   | 'device'
   | 'iam-cli'
@@ -117,6 +118,8 @@ export const ROUTES: RouteDef[] = [
   { name: 'activity', pattern: '/history/activity', title: 'Activity trail' },
   { name: 'as-of', pattern: '/history/as-of', title: 'Inventory as of a date' },
   { name: 'map', pattern: '/history/map', title: 'Resource map' },
+  // Service Quotas (phase 7): the account's limits, the rules that raise them, and the requests
+  { name: 'service-quotas', pattern: '/service-quotas', title: 'Service Quotas' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
   // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
   { name: 'device', pattern: '/device', title: 'Sign in the CLI' },

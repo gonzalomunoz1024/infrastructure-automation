@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { Card, EmptyState, Icon, PageHeader, SkeletonRows, Stat, plural, type IconName } from '@iaf/ui'
 import { ErrorState } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
@@ -9,7 +8,6 @@ import { bff } from '../lib/bff'
 import { findService, purposeOf, singularOf, type ConsoleType } from '../lib/descriptors'
 import { encodeTokens } from '../lib/listState'
 import { useQuery } from '../lib/queries'
-import { pushRecent } from '../lib/recent'
 import { countLabel } from '../lib/resourceList'
 import type { ResourceState } from '../lib/types'
 
@@ -23,12 +21,7 @@ import type { ResourceState } from '../lib/types'
 export default function ServicePage({ route }: PageProps) {
   const { services, loading, error, refetch } = useConsole()
   const service = findService(services, route.params.service)
-  const serviceId = service?.id
-  const serviceTitle = service?.title
 
-  useEffect(() => {
-    if (serviceId && serviceTitle) pushRecent({ kind: 'service', href: pathFor('service', { service: serviceId }), label: serviceTitle, hint: 'Service' })
-  }, [serviceId, serviceTitle])
 
   if (!service) {
     if (loading) return <SkeletonRows n={3} rowClassName="h-28" />

@@ -173,7 +173,7 @@ describe('creating a resource through the BFF', () => {
 
     // the platform team set the limit at what the account holds: the review and the create refuse
     gonzalo.data.directory.quotaOverrides['123456789012']['resources.vm'] = used
-    expect(ruleOf()).toMatchObject({ result: 'deny', message: expect.stringContaining('request an increase from the platform team') })
+    expect(ruleOf()).toMatchObject({ result: 'deny', message: expect.stringContaining('request an increase on Service Quotas') })
     const refused = gonzalo.call('POST', '/console/v1/r/vm', { input, tags: TAGS })
     expect(refused.status).toBe(409)
     expect(body<{ error: string; problems: Problem[] }>(refused)).toMatchObject({ error: 'policy.denied', problems: [expect.objectContaining({ code: 'quota.resources' })] })

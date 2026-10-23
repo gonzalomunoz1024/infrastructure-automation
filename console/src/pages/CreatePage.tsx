@@ -10,6 +10,7 @@ import { bff } from '../lib/bff'
 import { codeSamplesFor } from '../lib/code'
 import { purposeOf, singularOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
 import { explain } from '../lib/plain'
+import { QuotaRefusalNote } from './quotas/QuotaRefusalNote'
 import { useQuery } from '../lib/queries'
 import { cleanInput, useSubmissionKey } from '../lib/submission'
 import { ALLOWED } from '../lib/permissions'
@@ -299,6 +300,7 @@ function Wizard({ type, action, clone, lost }: { type: ConsoleType; action: Cons
             <PreviewCard preview={preview.data} title={`${title}${typeof input.name === 'string' ? `: ${input.name}` : ''}`} />
           ) : null}
           {policy === 'deny' && <p className="mt-3 text-sm text-critical">Policy refuses this request as it stands, so it cannot be created. Change the values above, or ask the account’s admins.</p>}
+          {policy === 'deny' && <QuotaRefusalNote preview={preview.data} type={type.name} title={type.title} />}
         </Section>
         {policy === 'needs-approval' && (
           <Field label="Reason for the approver" hint="Optional. The approvers read it with the request." htmlFor="create-reason" className="max-w-2xl">

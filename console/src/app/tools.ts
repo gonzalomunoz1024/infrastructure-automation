@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations' | 'organization' | 'developer' | 'history'
+export type ToolSectionId = 'tags' | 'operations' | 'quotas' | 'organization' | 'developer' | 'history'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -37,6 +37,7 @@ export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'organization', title: 'Organization', icon: 'grid', subtitle: 'Across every account' },
   { id: 'developer', title: 'Developer tools', icon: 'terminal', subtitle: 'The shell, the API, the CLI and SDKs' },
   { id: 'history', title: 'Activity and history', icon: 'history', subtitle: 'The trail, the past and the map' },
+  { id: 'quotas', title: 'Service Quotas', icon: 'chart', subtitle: 'The account’s limits and requests to raise them' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -53,6 +54,7 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'activity', section: 'history', label: 'Activity trail', icon: 'audit', hint: 'Every change to the account’s resources, sealed and signed', keywords: 'audit trail cloudtrail events who changed evidence verify hash chain', routes: ['activity'] },
   { route: 'as-of', section: 'history', label: 'Inventory as of a date', icon: 'calendar', hint: 'The account’s resources as they were on a day', keywords: 'time travel history past snapshot point in time', routes: ['as-of'] },
   { route: 'map', section: 'history', label: 'Resource map', icon: 'git-branch', hint: 'What is built from what, across types and accounts', keywords: 'graph dependencies lineage topology map', routes: ['map'] },
+  { route: 'service-quotas', section: 'quotas', label: 'Service Quotas', icon: 'chart', hint: 'What the account may hold, and requests to raise a limit', keywords: 'quotas limits increase raise request approve rules', routes: ['service-quotas'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

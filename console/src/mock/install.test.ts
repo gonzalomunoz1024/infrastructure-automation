@@ -15,7 +15,7 @@ describe('the directory the browser keeps', () => {
     const mia = userOf(dir, '123456789012', 'mia')!
     const request = createAccessRequest(dir, '123456789012', mia, { action: 'compute:create', reason: 'I build the team machines' })
     decideAccessRequest(dir, '123456789012', request.requestId, 'approve', 'gonzalo')
-    requestQuotaIncrease(dir, '123456789012', 'access-keys', 'mia', { limit: 60, reason: 'the build farm grows' }, quotaOf(dir, '123456789012', 'access-keys', {}))
+    requestQuotaIncrease(dir, '123456789012', 'access-keys', 'mia', { limit: 150, reason: 'the build farm grows' }, quotaOf(dir, '123456789012', 'access-keys', {}))
     saveDirectory(dir, store)
     expect(store.map.has(MOCK_DIRECTORY_KEY)).toBe(true)
 
