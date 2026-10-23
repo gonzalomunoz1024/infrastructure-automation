@@ -106,7 +106,9 @@ console:
   auth:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-drift-service, console]
+    audiences: [console-drift-service]   # a token's aud must be exactly this (hub decision 35)
+    serviceCallers: [console-bff]        # the services whose tokens may name no account
+    authorization: identity              # a person's writes are checked with the identity service too
 
 mongodb:
   # the service's own database; the URI comes from a secret (key CONSOLE_MONGO_URI)

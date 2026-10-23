@@ -75,6 +75,8 @@ data:
         jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
+        service-callers: {{ toJson .Values.console.auth.serviceCallers }}
+        authorization: {{ .Values.console.auth.authorization | quote }}
         dev-headers: false
       temporal:
         target: {{ .Values.temporal.target | quote }}
