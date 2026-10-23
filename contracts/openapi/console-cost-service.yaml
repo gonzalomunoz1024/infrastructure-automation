@@ -629,7 +629,7 @@ components:
       type: object
       required: [start, total, groups]
       properties:
-        start: { type: string, format: date, description: The day, or the first of the month }
+        start: { type: string, format: date, description: 'The day, or the first of the month' }
         total: { type: number }
         groups:
           type: object
@@ -700,7 +700,7 @@ components:
         priceList: { type: string }
         provider: { type: string }
         action: { type: string }
-        by: { type: string, description: The attribute whose value picks the price, when the price depends on one }
+        by: { type: string, description: 'The attribute whose value picks the price, when the price depends on one' }
         value: { description: The attribute's value the price was picked by }
     ResourceCost:
       type: object
