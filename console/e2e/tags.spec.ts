@@ -122,6 +122,40 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(panel).toContainText('test')
   })
 
+  test('the Tag Editor finds resources of two types and tags one of each at once', async ({ page }) => {
+    await signInAs(page, /Continue as Dana Reyes/, '/tag-editor')
+    await expect(page.getByRole('heading', { name: 'Tag Editor', level: 1 })).toBeVisible()
+    await page.getByRole('button', { name: 'Types: every type' }).click()
+    await page.getByRole('checkbox', { name: 'Images' }).click()
+    await page.getByRole('checkbox', { name: 'Volumes' }).click()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Find resources' }).click()
+    await expect(page).toHaveURL(/tag-editor\?type=image(%2C|,)volume/)
+    await page.getByRole('checkbox', { name: 'Select ubuntu-24.04-cis-l1-2026-10-01' }).click()
+    await page.getByRole('checkbox', { name: 'Select volume-demo01' }).click()
+    await expectNoSeriousA11y(page, 'Tag Editor')
+    await page.screenshot({ path: shot('tag-editor-desktop'), fullPage: true })
+
+    await page.getByRole('button', { name: 'Manage tags of 2' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Manage tags of 2 resources' })
+    await expect(dialog).toBeVisible()
+    // the required tags stay: they cannot be ticked for removal
+    await expect(dialog.getByRole('checkbox', { name: /owner/ })).toBeDisabled()
+    await dialog.getByRole('textbox', { name: 'Tag name, row 1' }).fill('team')
+    await dialog.getByRole('textbox', { name: /Value to set, row 1/ }).fill('checkout')
+    await expectNoSeriousA11y(page, 'apply tags dialog')
+    await dialog.getByRole('button', { name: 'Apply to 2 resources' }).click()
+    const done = page.getByRole('dialog', { name: 'Tags applied' })
+    await expect(done).toContainText('Tagged 2 resources')
+    await done.getByRole('button', { name: 'Done' }).click()
+
+    // both carry the tag now, whatever their type
+    await page.goto('/#/tag-editor?tag.team=checkout')
+    await expect(page.getByRole('link', { name: 'ubuntu-24.04-cis-l1-2026-10-01' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'volume-demo01' })).toBeVisible()
+    await expect(page.getByText('team=checkout').first()).toBeVisible()
+  })
+
   test('the Tags step and the Tags drawer fit a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await signInAs(page, /Continue as Dana Reyes/, '/console/compute')
@@ -134,5 +168,11 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(page.getByRole('dialog', { name: /^Manage tags/ })).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await expectNoSeriousA11y(page, 'Tags drawer at phone width')
+
+    await page.goto('/#/tag-editor')
+    await expect(page.getByRole('heading', { name: 'Tag Editor', level: 1 })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+    await expectNoSeriousA11y(page, 'Tag Editor at phone width')
+    await page.screenshot({ path: shot('tag-editor-phone'), fullPage: true })
   })
 })
