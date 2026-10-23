@@ -475,8 +475,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       if (!rt) return notFound(`Type ${typeName}`)
       const listDecision = can(`${serviceOf(rt)}:list`, `wfrn:${data.partition}:${serviceOf(rt)}:${s.region}:${s.accountId}:${rt.name}/*`)
       if (!listDecision.allowed) return refused(listDecision)
+      if (m[2]) return { status: 200, body: countsOf(rowsOf(rt.name), params) }
       const matching = filterConsoleResources(rowsOf(rt.name), params)
-      if (m[2]) return { status: 200, body: countsOf(matching) }
       return pagedBody(sortConsoleResources(matching, params.get('sort')), params)
     }
     if (path === '/console/v1/search' && method === 'GET') {

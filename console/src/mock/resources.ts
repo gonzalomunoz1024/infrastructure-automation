@@ -92,10 +92,13 @@ function haystack(r: ConsoleResource): string {
   return [r.name ?? '', r.wfrn, r.state, ...Object.values(r.tags), ...Object.values(r.attributes).map(text)].join(' ').toLowerCase()
 }
 
-/** `?q=&state=&drift=&tag.<k>=` as the BFF reads them. */
-export function filterConsoleResources(rows: readonly ConsoleResource[], params: URLSearchParams): ConsoleResource[] {
+/**
+ * `?q=&state=&drift=&tag.<k>=` as the BFF reads them. Tombstones (`deleted`) stay out unless the
+ * state asked for is `deleted`; `ignoreState` drops the state filter, for the counts by state.
+ */
+export function filterConsoleResources(rows: readonly ConsoleResource[], params: URLSearchParams, { ignoreState = false } = {}): ConsoleResource[] {
   const q = params.get('q')?.trim().toLowerCase()
-  const state = params.get('state')
+  const state = ignoreState ? null : params.get('state')
   const drift = params.get('drift')
   const tags: [string, string][] = []
   params.forEach((v, k) => {
@@ -104,6 +107,7 @@ export function filterConsoleResources(rows: readonly ConsoleResource[], params:
   const words = q ? q.split(/\s+/).filter(Boolean) : []
   return rows.filter((r) => {
     if (state && r.state !== state) return false
+    if (!state && !ignoreState && r.state === 'deleted') return false
     if (drift === 'true' && !r.drift) return false
     if (drift === 'false' && r.drift) return false
     for (const [k, v] of tags) if ((r.tags[k] ?? '') !== v) return false
@@ -163,16 +167,20 @@ export function sortConsoleResources(rows: readonly ConsoleResource[], sort: str
 /** The cap the BFF counts to before it answers "1,000+" (the plan's massive-scale rule). */
 export const COUNT_CAP = 1000
 
-/** `GET /console/v1/r/{type}:counts` over the filtered rows: each count stops at the cap. */
-export function countsOf(rows: readonly ConsoleResource[], cap = COUNT_CAP): ResourceCounts {
+/**
+ * `GET /console/v1/r/{type}:counts` as the BFF answers it, over all of a type's rows: `byState`
+ * counts every state whatever the state filter (tombstones under deleted), while `total` and
+ * `drift` apply every filter and leave tombstones out unless the state is `deleted`. Each count
+ * stops at the cap, and `cappedAt` is null while every count is exact.
+ */
+export function countsOf(rows: readonly ConsoleResource[], params: URLSearchParams = new URLSearchParams(), cap = COUNT_CAP): ResourceCounts {
   const byState = Object.fromEntries(RESOURCE_STATES.map((s) => [s, 0])) as Record<ResourceState, number>
-  let drift = 0
-  for (const r of rows) {
-    byState[r.state] += 1
-    if (r.drift) drift += 1
-  }
+  for (const r of filterConsoleResources(rows, params, { ignoreState: true })) byState[r.state] += 1
+  const matching = filterConsoleResources(rows, params)
+  const drift = matching.filter((r) => r.drift).length
   const capped = (n: number) => Math.min(n, cap)
-  return { total: capped(rows.length), byState: Object.fromEntries(RESOURCE_STATES.map((s) => [s, capped(byState[s])])) as Record<ResourceState, number>, drift: capped(drift), cappedAt: cap }
+  const reached = [matching.length, drift, ...Object.values(byState)].some((n) => n >= cap)
+  return { total: capped(matching.length), byState: Object.fromEntries(RESOURCE_STATES.map((s) => [s, capped(byState[s])])) as Record<ResourceState, number>, drift: capped(drift), cappedAt: reached ? cap : null }
 }
 
 /** Hits for `/console/v1/search`: name and wfrn first, then tags and attributes. */
@@ -211,7 +219,7 @@ export function searchConsoleResources(rows: readonly ConsoleResource[], q: stri
         }
       }
     }
-    if (score) hits.push({ wfrn: r.wfrn, type: r.type, name: r.name, state: r.state, score, highlights })
+    if (score) hits.push({ wfrn: r.wfrn, type: r.type, service: r.service, region: r.region, name: r.name, state: r.state, drift: r.drift, tags: r.tags, score, highlights, updatedAt: r.updatedAt })
   }
   return hits.sort((a, b) => b.score - a.score || (a.name ?? '').localeCompare(b.name ?? ''))
 }

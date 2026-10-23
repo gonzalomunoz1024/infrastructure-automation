@@ -446,19 +446,27 @@ describe('the BFF: resources, search, suggestions and preferences (phase 3)', ()
       after = pageOf.next
     }
     expect(all.length).toBeGreaterThan(200)
+    // the list leaves tombstones out unless asked for them
+    expect(all.some((r) => r.state === 'deleted')).toBe(false)
+    const deleted = (b.call('GET', '/console/v1/r/vm?limit=200&state=deleted').body as { items: ConsoleResource[] }).items
+    expect(deleted.length).toBeGreaterThan(0)
     const counts = b.call('GET', '/console/v1/r/vm:counts')
     expect(counts.status).toBe(200)
     const c = counts.body as ResourceCounts
     expect(c.total).toBe(all.length)
-    expect(c.cappedAt).toBe(1000)
-    expect(Object.values(c.byState).reduce((n, x) => n + (x ?? 0), 0)).toBe(all.length)
+    expect(c.cappedAt).toBeNull()
+    expect(c.byState.deleted).toBe(deleted.length)
+    expect(Object.values(c.byState).reduce((n, x) => n + (x ?? 0), 0)).toBe(all.length + deleted.length)
     expect(c.byState.active).toBe(all.filter((r) => r.state === 'active').length)
     expect(c.drift).toBe(all.filter((r) => r.drift).length)
-    // the same filters as the list
+    // total and drift take every filter; the counts by state ignore the state filter
     const active = b.call('GET', '/console/v1/r/vm:counts?state=active').body as ResourceCounts
     expect(active.total).toBe(c.byState.active)
+    expect(active.byState).toEqual(c.byState)
+    expect((b.call('GET', '/console/v1/r/vm:counts?state=deleted').body as ResourceCounts).total).toBe(deleted.length)
     expect(b.call('GET', '/console/v1/r/nope:counts').status).toBe(404)
-    // the cap: a count past it answers the cap
-    expect(countsOf(all, 3)).toMatchObject({ total: 3, cappedAt: 3 })
+    // the cap: a count past it answers the cap, and cappedAt says so
+    const rows = [...all, ...deleted]
+    expect(countsOf(rows, new URLSearchParams(), 3)).toMatchObject({ total: 3, cappedAt: 3 })
   })
 })

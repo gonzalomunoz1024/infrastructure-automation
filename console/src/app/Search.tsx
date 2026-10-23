@@ -122,7 +122,7 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       const page = await bff.search({ q: needle, limit: 8 }).catch(() => null)
       for (const hit of page?.items ?? []) {
         const parts = partsOfWfrn(hit.wfrn)
-        const t = findType(types, parts?.service ?? '', hit.type)
+        const t = findType(types, hit.service ?? parts?.service ?? '', hit.type)
         if (!t || out.some((o) => o.id === `wfrn-${hit.wfrn}`)) continue
         out.push({ id: `resource-${hit.wfrn}`, group: 'Resources', label: hit.name ?? parts?.id ?? hit.wfrn, hint: [singularOf(t.title), hit.state].filter(Boolean).join(' · '), icon: t.icon, keywords: hit.wfrn, run: () => navigate(resourcePath(t.service, t.name, hit.wfrn)) })
       }

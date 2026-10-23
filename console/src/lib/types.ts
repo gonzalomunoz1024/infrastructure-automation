@@ -324,17 +324,25 @@ export interface ResourceCounts {
 export interface SearchHit {
   wfrn: string
   type: string
+  service?: string
+  region?: string
   name?: string
   state?: ResourceState
+  drift?: boolean
+  tags?: Record<string, string>
   score: number
+  /** HTML-escaped text with the matches in <em>: split on <em>, never render it as HTML */
   highlights?: Record<string, string>
+  updatedAt?: string
 }
 
-/** One entry of `GET /console/v1/suggest`. */
+/** One entry of `GET /console/v1/suggest`; a tag's value is the term to put in the query (`tag:env=prod`). */
 export interface Suggestion {
   kind: 'resource' | 'type' | 'tag' | 'wfrn'
   value: string
   label: string
+  type?: string
+  wfrn?: string
 }
 
 /** A filter token as a saved view keeps it (the kit's FilterToken, by value). */

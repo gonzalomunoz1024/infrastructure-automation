@@ -289,8 +289,11 @@ type, so the feed must subscribe to every one).
     each with `=` and one value per property (the newest wins). A token the BFF cannot answer is
     dropped, never applied in the browser to one page, which would misstate the rest. Only name,
     created and updated sort (the state service's orders). The count is
-    `GET /console/v1/r/{type}:counts` (total, by state, drifted, `cappedAt`), "1,000+" at the cap;
-    without it the list says how many rows are on the page.
+    `GET /console/v1/r/{type}:counts`: `total` and `drift` take every filter, `byState` every
+    filter but the state, and `cappedAt` is set once a count reaches the cap ("1,000+"), null
+    while exact; without it the list says how many rows are on the page. Deleted resources
+    (tombstones) stay out of the list and the total unless the filter asks for Status = deleted,
+    which the landing's Deleted count links to.
 20. **The page's query is the list's state.** `f` (the tokens), `sort`, `size` and `view`, with
     the defaults left out and written with replace, so Back leaves the list instead of undoing a
     filter. The cursor trail and the selection are keyed by that state (`useKeyedState`), so a new
