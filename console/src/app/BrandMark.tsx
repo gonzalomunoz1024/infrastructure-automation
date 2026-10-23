@@ -19,7 +19,8 @@ export function BrandLockup({ className }: { className?: string }) {
   return (
     <Link to="/" className={cx('flex shrink-0 items-center gap-2 rounded-md text-primary transition-opacity hover:opacity-70', className)} aria-label="Console home">
       <BrandMark />
-      <span className="text-subheadline font-semibold tracking-tight">Console</span>
+      {/* a phone shows the mark alone, which leaves the header room for every control */}
+      <span className="hidden text-subheadline font-semibold tracking-tight sm:inline">Console</span>
     </Link>
   )
 }

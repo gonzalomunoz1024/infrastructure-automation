@@ -459,3 +459,39 @@ packages/
   wfrn/           the wfrn twin, SPEC.md and fixtures.json copied from the hub
 scripts/          verify-contracts.mjs
 ```
+
+## Phase 9 decisions
+
+Beyond the AWS console: the executive home (WP 9.5), cost and budgets (WP 7.3, 9.3 and 9.9's
+pages), the copilot (WP 9.1) and the failure explainer (WP 9.2). Numbered from 50, so the
+decisions of phases 4 and 5 keep 33 to 49. The shapes are the hub's: decision 27 for the BFF's
+own paths (insights, the copilot, the failure explanation), decision 25's cost service for cost,
+budgets and chargeback, and the search indexer's 1.2.0 for plain-English search and grouped
+counts.
+
+What every phase 9 page stands on: the routes and the Cost and budgets sidebar; the copilot's
+header button and its panel's state (`app/copilot/context.tsx`), which a page opens seeded, such
+as a resource's Explain; forms opened filled from a link (`lib/prefill.ts`: `?prefill=` on a
+create or an action carries base64url JSON, and the form takes only the schema's own fields and
+never a sensitive one, so a secret never rides in a URL, and nothing is sent until the person
+sends it); and the mock's cost ledger (`mock/cost.ts`), computed from the resources at the list
+prices the create review quotes, charged while a resource is active, updating or deleting, so the
+Cost Explorer, budgets and the executive home's spend agree to the cent. Accounts carry a cost
+centre (`CC-4100` Compute, `CC-4200` Data); `cost:list` is every role's, budget writes are an
+admin's and the chargeback export an admin's or an auditor's, as the cost service decides.
+
+### The executive home (50 to 54)
+
+To be written with WP 9.5.
+
+### Cost and budgets (55 to 59)
+
+To be written with WP 7.3 and 9.3.
+
+### The copilot (60 to 64)
+
+To be written with WP 9.1.
+
+### The failure explainer (65 to 69)
+
+To be written with WP 9.2.

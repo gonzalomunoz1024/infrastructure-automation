@@ -9,6 +9,7 @@ import { bff } from '../../lib/bff'
 import { codeSamplesFor, subjectFor } from '../../lib/code'
 import type { ConsoleAction, ConsoleType } from '../../lib/descriptors'
 import { explain } from '../../lib/plain'
+import { prefillFor } from '../../lib/prefill'
 import { useQuery } from '../../lib/queries'
 import { cleanInput, useSubmissionKey } from '../../lib/submission'
 import type { CommandAccepted, CommandInput } from '../../lib/types'
@@ -29,6 +30,8 @@ export interface ActionDrawerProps {
   name: string
   /** what the resource already is: inputs of the same name start from these */
   attributes: Record<string, unknown>
+  /** `?prefill=` from the link that opened the drawer (lib/prefill.ts), laid over the start */
+  prefill?: string
   onClose: () => void
   onAccepted: (accepted: CommandAccepted, action: ConsoleAction) => void
 }
@@ -49,18 +52,24 @@ export function startValue(schema: Schema, subject: string | undefined, attribut
   return out
 }
 
+function withoutSubject(input: Record<string, unknown>, subject: string | undefined): Record<string, unknown> {
+  if (!subject) return input
+  const { [subject]: _subject, ...rest } = input
+  return rest
+}
+
 function CancelButton() {
   const close = useOverlayClose()
   return <Button onClick={close}>Cancel</Button>
 }
 
-export function ActionDrawer({ type, action, wfrn, name, attributes, onClose, onAccepted }: ActionDrawerProps) {
+export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, onClose, onAccepted }: ActionDrawerProps) {
   const { decide, account, region } = useConsole()
   const subject = subjectFor(action, type)
   // the form without the subject: the page already knows which resource this runs on
   const schema = useMemo<Schema>(() => ({ ...action.input, required: (action.input.required ?? []).filter((r) => r !== subject) }), [action.input, subject])
   const omit = useMemo(() => (subject ? [subject] : []), [subject])
-  const [value, setValue] = useState<SchemaValue>(() => startValue(action.input, subject, attributes))
+  const [value, setValue] = useState<SchemaValue>(() => ({ ...startValue(action.input, subject, attributes), ...withoutSubject(prefillFor(action.input, prefill), subject) }))
   const [problems, setProblems] = useState<Problem[]>([])
   const [confirming, setConfirming] = useState(false)
   const keyFor = useSubmissionKey()

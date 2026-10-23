@@ -61,6 +61,15 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, iam, { label: 'Access requests', href: pathFor('iam-requests') }, { label: route.params.id, mono: true }]
     case 'settings':
       return [home, { label: 'Settings' }]
+    case 'insights':
+      return [home, { label: 'Executive home' }]
+    case 'cost':
+      return [home, { label: 'Cost and usage' }]
+    case 'budgets':
+    case 'chargeback':
+      return [home, { label: 'Cost and usage', href: pathFor('cost') }, { label: route.def?.title ?? 'Budgets' }]
+    case 'budget':
+      return [home, { label: 'Cost and usage', href: pathFor('cost') }, { label: 'Budgets', href: pathFor('budgets') }, { label: route.params.id, mono: true }]
     default:
       return [home, { label: 'Not found' }]
   }

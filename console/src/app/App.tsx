@@ -5,6 +5,7 @@ import { isApiError } from '../lib/api'
 import { secondsLeft, useSessionState, type Session } from '../lib/session'
 import { ConsoleProvider } from './console'
 import { AppShell } from './AppShell'
+import { CopilotRoot } from './copilot/context'
 import { BrandMark } from './BrandMark'
 import { navigate, pathFor, useRoute, type Route } from './router'
 import SignInPage from '../pages/SignInPage'
@@ -51,7 +52,9 @@ function Gate() {
   return (
     <ConsoleProvider session={state.session}>
       <AccountFromPath route={route} session={state.session} />
-      <AppShell route={route} />
+      <CopilotRoot>
+        <AppShell route={route} />
+      </CopilotRoot>
     </ConsoleProvider>
   )
 }

@@ -7,7 +7,7 @@ import { useMemo, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEve
  * off and the rest matched as usual. A wfrn in a path is one percent-encoded segment. No library.
  */
 
-export type RouteName = 'home' | 'signin' | 'service' | 'type' | 'create' | 'resource' | 'requests' | 'request' | 'iam' | 'iam-users' | 'iam-user' | 'iam-groups' | 'iam-group' | 'iam-roles' | 'iam-role' | 'iam-keys' | 'iam-requests' | 'iam-request' | 'settings' | 'not-found'
+export type RouteName = 'home' | 'signin' | 'service' | 'type' | 'create' | 'resource' | 'requests' | 'request' | 'iam' | 'iam-users' | 'iam-user' | 'iam-groups' | 'iam-group' | 'iam-roles' | 'iam-role' | 'iam-keys' | 'iam-requests' | 'iam-request' | 'settings' | 'insights' | 'cost' | 'budgets' | 'budget' | 'chargeback' | 'not-found'
 
 export interface RouteDef {
   name: RouteName
@@ -39,7 +39,18 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-requests', pattern: '/iam/access-requests', title: 'Access requests' },
   { name: 'iam-request', pattern: '/iam/access-requests/:id', title: 'Access request' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
+  // phase 9: the executive home, and cost and budgets
+  { name: 'insights', pattern: '/insights', title: 'Executive home' },
+  { name: 'cost', pattern: '/cost', title: 'Cost and usage' },
+  { name: 'budgets', pattern: '/cost/budgets', title: 'Budgets' },
+  { name: 'budget', pattern: '/cost/budgets/:id', title: 'Budget' },
+  { name: 'chargeback', pattern: '/cost/chargeback', title: 'Chargeback' },
 ]
+
+/** Cost and usage, budgets and chargeback. */
+export function isCostRoute(name: RouteName): boolean {
+  return name === 'cost' || name === 'budgets' || name === 'budget' || name === 'chargeback'
+}
 
 /** The identity and access section: the overview and every page under it. */
 export function isIamRoute(name: RouteName): boolean {

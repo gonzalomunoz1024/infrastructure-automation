@@ -7,6 +7,8 @@ import { api } from '../lib/api'
 import type { ConsoleService } from '../lib/descriptors'
 import { useQuery } from '../lib/queries'
 import { useRecent, type RecentItem } from '../lib/recent'
+import { HomeCostWidget } from './cost/HomeCostWidget'
+import { HomeInsightsWidget } from './insights/HomeInsightsWidget'
 
 /*
  * The console home: the services, the places visited lately, favourites (phase 2) and the
@@ -24,7 +26,7 @@ export default function HomePage(_props: PageProps) {
     <>
       <PageHeader title="Console home" subtitle={`${me ? `Signed in as ${me.name}. ` : ''}Everything the platform manages for ${account.name}, in ${region.title}.`} />
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+        <div className="space-y-8 lg:col-span-2">
           <Section title="Services" description="Pick a service to see its resource types.">
             {loading && services.length === 0 ? (
               <SkeletonRows n={2} rowClassName="h-28" />
@@ -42,6 +44,8 @@ export default function HomePage(_props: PageProps) {
               </ul>
             )}
           </Section>
+          <HomeCostWidget />
+          <HomeInsightsWidget />
         </div>
 
         <div className="space-y-8">

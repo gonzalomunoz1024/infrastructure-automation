@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { Button, Icon, IconButton, PageHeader, SkeletonRows, Tabs, Tag, cx, useToast } from '@iaf/ui'
 import { CopyableId, Facts, LifecycleBadge, When, WfrnText, isLifecycleClass, mutableFields } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
+import { ExplainButton } from '../app/copilot/ExplainButton'
 import { ExplainedError } from '../app/commands'
 import { MenuButton, MenuSeparator } from '../app/MenuButton'
 import { ActionButton, ActionMenuItem } from '../app/Refusal'
@@ -15,6 +16,7 @@ import { invalidate, useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
 import { verbsOf } from '../lib/verbs'
 import type { CommandAccepted } from '../lib/types'
+import { costFacts } from './cost/ResourceCost'
 import { MissingType } from './parts'
 import { ActionDrawer } from './resource/ActionDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
@@ -83,7 +85,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const go = (query: Record<string, string | undefined>) => navigate(pathFor('resource', route.params, { ...route.query, ...query }, { accountId: route.accountId }), { replace: true })
   const setTab = (next: string) => go({ tab: next === tabs[0]?.id ? undefined : next })
   const openAction = (verb: string) => go({ action: verb })
-  const closeAction = () => go({ action: undefined })
+  const closeAction = () => go({ action: undefined, prefill: undefined })
 
   const verbs = verbsOf(type)
   const operate = verbs.filter((a) => !a.destructive)
@@ -134,6 +136,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         }
         actions={
           <>
+            <ExplainButton type={type} wfrn={wfrn} name={name} deleted={deleted} />
             <IconButton label="Refresh" onClick={() => void Promise.all([record.refetch(), view.refetch()])}>
               <Icon name="refresh" size={16} className={cx((record.fetching || view.fetching) && 'animate-spin')} />
             </IconButton>
@@ -219,6 +222,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
                 },
               ]
             : []),
+          ...costFacts(type, wfrn, !!deleted),
           { label: 'Account', value: <span className="font-mono">{formatAccountId(resource?.accountId ?? wfrnContext.account)}</span> },
           { label: 'Region', value: resource?.region ?? detail?.region ?? wfrnContext.region },
           ...(detail?.providerId || resource?.providerId ? [{ label: 'Provider id', value: <CopyableId id={(detail?.providerId ?? resource?.providerId)!} /> }] : []),
@@ -230,7 +234,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         <TabContent label={tab?.label ?? ''} type={type} wfrn={wfrn} record={resource} detail={detail} viewError={view.error} />
       </div>
 
-      {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} onClose={closeAction} onAccepted={onAccepted} />}
+      {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} prefill={route.query.prefill} onClose={closeAction} onAccepted={onAccepted} />}
     </>
   )
 }

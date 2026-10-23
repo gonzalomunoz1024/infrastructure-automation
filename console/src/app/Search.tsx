@@ -82,6 +82,11 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
       { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'preferences appearance identity', run: () => navigate(pathFor('settings')) },
+      // phase 9
+      { id: 'page-insights', group: 'Pages', label: 'Executive home', icon: 'pulse', keywords: 'insights dashboard lead time hours saved adoption', run: () => navigate(pathFor('insights')) },
+      { id: 'page-cost', group: 'Pages', label: 'Cost and usage', icon: 'chart', keywords: 'cost explorer spend billing forecast', run: () => navigate(pathFor('cost')) },
+      { id: 'page-budgets', group: 'Pages', label: 'Budgets', icon: 'bell', keywords: 'cost budget alerts limit forecast', run: () => navigate(pathFor('budgets')) },
+      { id: 'page-chargeback', group: 'Pages', label: 'Chargeback', icon: 'document', keywords: 'cost centre finance export csv', run: () => navigate(pathFor('chargeback')) },
     )
 
     // settings: appearance, account, region, sign out

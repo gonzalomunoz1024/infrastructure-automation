@@ -1,6 +1,7 @@
 import { lifecycleOf, validateAgainst, type LifecycleClass, type Problem, type Schema } from '@iaf/console-kit'
 import { idOfWfrn, serviceOf, titleOf } from '../lib/descriptors'
 import type { ActivityEntry, BffJobDetail, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
+import { budgetRules } from './cost'
 import type { MockData } from './data'
 import { ADMIN_ROLE, accountOf, authorize, quotaOf, rolesOf, type Decision } from './directory'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
@@ -421,7 +422,7 @@ function quotaRule(data: MockData, s: RouteContext['session'], rt: ResourceType)
     : { id: 'quota.resources', result: 'pass', message: `${title}: ${used} of ${limit} in this account` }
 }
 
-export function previewCreate(data: MockData, s: RouteContext['session'], rt: ResourceType, entry: CatalogEntry | undefined, input: Record<string, unknown>, _now: number): ConsolePreview {
+export function previewCreate(data: MockData, s: RouteContext['session'], rt: ResourceType, entry: CatalogEntry | undefined, input: Record<string, unknown>, now: number): ConsolePreview {
   const service = serviceOf(rt)
   const provider = providerOf(service)
   const noun = nounOf(rt).toLowerCase()
@@ -446,6 +447,8 @@ export function previewCreate(data: MockData, s: RouteContext['session'], rt: Re
   if (entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) rules.push({ id: 'approval.required', result: 'needs-approval', message: `${entry.workflow} always waits for an approval` })
   const missing = refs.length < Object.values(entry?.input?.properties ?? {}).filter((p, i) => p?.['x-resource'] && typeof input[Object.keys(entry?.input?.properties ?? {})[i]] === 'string').length
   if (missing) rules.push({ id: 'references.exist', result: 'deny', message: 'A resource the input names is not in the registry' })
+  // the account's budgets: a block on creates while one is over, a warning when one is forecast over (phase 9)
+  rules.push(...budgetRules(data, s, rt, attrs, now))
   const price = priceOf(rt, attrs)
   return {
     workflow: entry?.workflow ?? `create-${rt.name}`,

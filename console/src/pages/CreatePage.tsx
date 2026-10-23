@@ -10,6 +10,7 @@ import { bff } from '../lib/bff'
 import { codeSamplesFor } from '../lib/code'
 import { purposeOf, singularOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
 import { explain } from '../lib/plain'
+import { prefillFor } from '../lib/prefill'
 import { useQuery } from '../lib/queries'
 import { cleanInput, useSubmissionKey } from '../lib/submission'
 import type { CommandInput } from '../lib/types'
@@ -30,7 +31,7 @@ export default function CreatePage({ route }: PageProps) {
   const type = useRouteType(route.params.service, route.params.type)
   if (!type) return <MissingType name={route.params.type} service={route.params.service} loading={loading} error={error} refetch={refetch} />
   if (!type.create) return <NothingCreates type={type} />
-  return <Wizard key={`${type.service}/${type.name}`} type={type} action={type.create} />
+  return <Wizard key={`${type.service}/${type.name}`} type={type} action={type.create} prefill={route.query.prefill} />
 }
 
 function NothingCreates({ type }: { type: ConsoleType }) {
@@ -65,7 +66,7 @@ function reviewValue(action: ConsoleAction, name: string, v: unknown): ReactNode
   return formatField(action.input, name, v)
 }
 
-function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) {
+function Wizard({ type, action, prefill }: { type: ConsoleType; action: ConsoleAction; prefill?: string }) {
   const { decide, account, region } = useConsole()
   const refusal = useRefusal()
   const toast = useToast()
@@ -78,7 +79,8 @@ function Wizard({ type, action }: { type: ConsoleType; action: ConsoleAction }) 
   const schema = useMemo(() => withTypeHints(action.input, type.schema), [action.input, type.schema])
   const steps = useMemo(() => stepsFor(schema, noun), [schema, noun])
   const [current, setCurrent] = useState(0)
-  const [value, setValue] = useState<SchemaValue>(() => defaultsFor(schema))
+  // the copilot's and Clone's links open the wizard filled (lib/prefill.ts); the person still checks every step
+  const [value, setValue] = useState<SchemaValue>(() => ({ ...defaultsFor(schema), ...prefillFor(schema, prefill) }))
   const [problems, setProblems] = useState<Problem[]>([])
   const [reason, setReason] = useState('')
   const heading = useRef<HTMLHeadingElement>(null)

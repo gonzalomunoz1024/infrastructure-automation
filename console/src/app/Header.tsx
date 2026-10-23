@@ -24,9 +24,12 @@ export interface HeaderProps {
   onOpenSearch: () => void
   /** shown on narrow screens when a sidebar exists */
   onOpenSidebar?: () => void
+  /** the copilot's side panel (phase 9) */
+  onOpenCopilot?: () => void
+  copilotOpen?: boolean
 }
 
-export function Header({ onOpenSearch, onOpenSidebar }: HeaderProps) {
+export function Header({ onOpenSearch, onOpenSidebar, onOpenCopilot, copilotOpen }: HeaderProps) {
   return (
     <header className="relative z-40 shrink-0 border-b border-stroke-light bg-surface/85 backdrop-blur-md">
       <div className="flex h-14 items-center gap-1.5 px-3 sm:gap-2 sm:px-4">
@@ -41,6 +44,7 @@ export function Header({ onOpenSearch, onOpenSidebar }: HeaderProps) {
           <SearchTrigger onClick={onOpenSearch} />
         </div>
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+          {onOpenCopilot && <CopilotButton onClick={onOpenCopilot} open={!!copilotOpen} />}
           <NotificationsBell />
           <HelpMenu />
           <AccountPicker />
@@ -223,6 +227,25 @@ function MenuItem({ children, onSelect, selected, disabled, hint, icon }: { chil
 
 function MenuHeading({ children }: { children: ReactNode }) {
   return <div className="px-3 pb-1 pt-2 text-caption2 font-semibold uppercase tracking-wide text-tertiary">{children}</div>
+}
+
+/** Opens the copilot's side panel (phase 9): plain English to a list, a form or an explanation. */
+function CopilotButton({ onClick, open }: { onClick: () => void; open: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-controls="copilot-panel"
+      className={cx('flex h-9 items-center gap-1.5 rounded-full px-2 text-sm transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
+    >
+      <span className="sr-only">Ask the copilot</span>
+      <Icon name="sparkles" size={17} />
+      <span aria-hidden="true" className="hidden xl:inline">
+        Copilot
+      </span>
+    </button>
+  )
 }
 
 function NotificationsBell() {
