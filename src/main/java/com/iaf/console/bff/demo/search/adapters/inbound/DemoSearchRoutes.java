@@ -22,6 +22,7 @@ import org.springframework.web.reactive.function.server.ServerResponse;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.demo.search.application.DemoSearchIndex;
+import com.iaf.console.bff.demo.search.application.DemoVocabulary;
 import com.iaf.console.bff.search.application.SearchConfiguration;
 import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.kit.errors.InvalidInputException;
@@ -32,7 +33,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * The search indexer's contract, served in process for the demo under {@code /demo-search}:
- * {@code /v1/search}, {@code /v1/suggest}, {@code /v1/counts} and {@code /v1/index/status}. The
+ * {@code /v1/search}, {@code /v1/search:interpret}, {@code /v1/suggest}, {@code /v1/counts} and
+ * {@code /v1/index/status}. The
  * caller is the BFF's internal JWT, read as the real indexer reads it: a user searches the
  * token's account (another account named is a 404), the console itself names one with
  * {@code accountId}, or, for the counts, up to 200 with {@code accountId} repeated, and sees the
@@ -46,10 +48,12 @@ public class DemoSearchRoutes {
     private static final int MAX_ACCOUNTS = 200;
 
     private final DemoSearchIndex index;
+    private final DemoVocabulary vocabulary;
     private final DemoTokens tokens;
 
-    public DemoSearchRoutes(DemoSearchIndex index, DemoTokens tokens) {
+    public DemoSearchRoutes(DemoSearchIndex index, DemoVocabulary vocabulary, DemoTokens tokens) {
         this.index = index;
+        this.vocabulary = vocabulary;
         this.tokens = tokens;
     }
 
@@ -65,6 +69,8 @@ public class DemoSearchRoutes {
             }
             return body;
         }))
+                .andRoute(GET(PREFIX + "/v1/search:interpret"), r -> answerLater(r, account -> vocabulary.of(account)
+                        .map(known -> index.interpret(account, param(r, "q"), param(r, "type"), known))))
                 .andRoute(GET(PREFIX + "/v1/suggest"), r -> answer(r, account -> {
                     Integer limit = integer(r, "limit");
                     return Map.of("items", index.suggest(account, param(r, "region"), param(r, "q"), param(r, "type"), limit == null ? 8 : limit));
@@ -123,6 +129,11 @@ public class DemoSearchRoutes {
     }
 
     private Mono<ServerResponse> answer(ServerRequest request, Function<String, Object> work) {
+        return answerLater(request, account -> Mono.fromCallable(() -> work.apply(account)));
+    }
+
+    /** A call in one account: the token's for a user (another one named is a 404), the one named for the console-internal principal. */
+    private Mono<ServerResponse> answerLater(ServerRequest request, Function<String, Mono<?>> work) {
         Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
         if (caller.isEmpty()) {
             return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
@@ -135,14 +146,13 @@ public class DemoSearchRoutes {
         if (!c.internal() && param(request, "accountId") != null && !param(request, "accountId").equals(account)) {
             return json(HttpStatus.NOT_FOUND, Map.of("error", "account " + param(request, "accountId") + " not found"));
         }
-        try {
-            return json(HttpStatus.OK, work.apply(account));
-        } catch (InvalidInputException e) {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("error", e.getMessage());
-            body.put("problems", e.problems());
-            return json(HttpStatus.BAD_REQUEST, body);
-        }
+        return Mono.defer(() -> work.apply(account)).flatMap(body -> json(HttpStatus.OK, body))
+                .onErrorResume(InvalidInputException.class, e -> {
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("error", e.getMessage());
+                    body.put("problems", e.problems());
+                    return json(HttpStatus.BAD_REQUEST, body);
+                });
     }
 
     private static DemoSearchIndex.Filters filters(ServerRequest request) {

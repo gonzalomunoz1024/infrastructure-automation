@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import com.iaf.console.bff.demo.search.domain.DemoInterpreter;
 import com.iaf.console.bff.demo.search.domain.DemoQuery;
 import com.iaf.console.bff.demo.search.domain.Typos;
 import com.iaf.console.bff.demo.state.application.DemoStateStore;
@@ -52,6 +53,9 @@ public class DemoSearchIndex {
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
     private static final int MAX_GROUPS = 100;
+    /** The longest text {@code /v1/search:interpret} reads, and the shape of the list type it may be given. */
+    private static final int MAX_INTERPRET = 256;
+    private static final Pattern TYPE = Pattern.compile("^[a-z0-9-]{1,64}$");
 
     private final DemoStateStore store;
     private final Clock clock;
@@ -243,6 +247,25 @@ public class DemoSearchIndex {
         body.put("lastEventAt", last == null ? null : last.toString());
         body.put("rebuilding", false);
         return body;
+    }
+
+    /**
+     * {@code /v1/search:interpret}: what a person typed read as a list's filter with the account's
+     * vocabulary, on the list of {@code type} when given; its total is that list's count, exactly
+     * what {@code /v1/counts} answers for the same filter.
+     */
+    public DemoInterpreter.Reading interpret(String accountId, String q, String type, DemoInterpreter.Vocabulary vocabulary) {
+        if (q == null || q.isBlank()) {
+            throw invalid("required", "/q", "q is required");
+        }
+        if (q.length() > MAX_INTERPRET) {
+            throw invalid("length", "/q", "q is at most " + MAX_INTERPRET + " characters");
+        }
+        if (type != null && !TYPE.matcher(type).matches()) {
+            throw invalid("pattern", "/type", "type is 1 to 64 lowercase letters, digits or '-'");
+        }
+        return DemoInterpreter.read(q, type, vocabulary, clock.instant(), (listed, filter) -> ((Number) counts(List.of(accountId), filter.q(),
+                new Filters(filter.region(), listed, filter.state(), filter.tags(), filter.drift()), null).get("total")).longValue());
     }
 
     /** The key a resource is counted under: its type, service, state, region, account or the value of a tag; null when it has no such tag. */
