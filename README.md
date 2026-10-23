@@ -30,7 +30,7 @@ provider at `/demo-idp` with a user picker, and an in-process stand-in of the id
 | mateo | operator | |
 | mia | viewer, in `compute-approvers` | |
 | raj | | operator, in `data-approvers` |
-| ana | | operator |
+| ana | | operator and viewer |
 | noah | no account: the sign-in answers 403 | |
 
 `GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs

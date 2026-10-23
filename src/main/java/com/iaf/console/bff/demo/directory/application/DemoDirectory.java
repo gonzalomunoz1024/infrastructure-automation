@@ -50,7 +50,7 @@ public class DemoDirectory {
         join("dana", ACCOUNT_COMPUTE, List.of("operators", "compute-approvers"), List.of(ManagedRoles.OPERATOR));
         join("mateo", ACCOUNT_COMPUTE, List.of("operators"), List.of(ManagedRoles.OPERATOR));
         join("raj", ACCOUNT_DATA, List.of("operators", "data-approvers"), List.of(ManagedRoles.OPERATOR));
-        join("ana", ACCOUNT_DATA, List.of("operators"), List.of(ManagedRoles.OPERATOR));
+        join("ana", ACCOUNT_DATA, List.of("operators", "viewers"), List.of(ManagedRoles.OPERATOR, ManagedRoles.VIEWER));
         join("mia", ACCOUNT_COMPUTE, List.of("viewers", "compute-approvers"), List.of(ManagedRoles.VIEWER));
     }
 
