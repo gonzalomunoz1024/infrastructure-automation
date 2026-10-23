@@ -20,8 +20,13 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.web.embedded.netty.NettyServerCustomizer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
@@ -34,6 +39,7 @@ import com.iaf.console.fake.PlatformFake;
 import com.iaf.console.search.SearchIndexerApplication;
 import com.iaf.console.search.index.domain.Fixtures;
 import com.iaf.console.search.support.StubStateServer;
+import com.iaf.console.search.support.ThreadDumpOnHang;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -58,6 +64,8 @@ import reactor.netty.http.server.HttpServer;
 @SpringBootTest(classes = SearchIndexerApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("demo")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+@Import(SearchJourneyTest.AccessLog.class)
+@ExtendWith(ThreadDumpOnHang.class)
 abstract class SearchJourneyTest {
 
     static final PlatformFake PLATFORM = platform();
@@ -72,6 +80,15 @@ abstract class SearchJourneyTest {
 
     /** The state service this engine's run follows. */
     protected abstract StubStateServer state();
+
+    /** Every request the server answers, in the test's output: a call that hangs shows whether it ever arrived. */
+    @TestConfiguration(proxyBeanMethods = false)
+    static class AccessLog {
+        @Bean
+        NettyServerCustomizer accessLog() {
+            return server -> server.accessLog(true);
+        }
+    }
 
     private static PlatformFake platform() {
         PlatformFake fake = PlatformFake.builder().demo(false).build();

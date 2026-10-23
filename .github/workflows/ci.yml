@@ -81,6 +81,28 @@ jobs:
           exit 1
       - name: Build and test the service
         run: ./gradlew build --no-daemon
+      - name: Show the failed tests' output
+        # the report artifact is the whole record; this puts each failure and its test class's
+        # output (the access log, a thread dump after a hang) in the job's log, where it is read first
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for path in sorted(glob.glob('build/test-results/test/*.xml')):
+              suite = ET.parse(path).getroot()
+              failed = [c for c in suite.findall('testcase') if c.find('failure') is not None or c.find('error') is not None]
+              if not failed:
+                  continue
+              print('::group::' + suite.get('name'))
+              for case in failed:
+                  problem = case.find('failure') if case.find('failure') is not None else case.find('error')
+                  print('FAILED ' + case.get('name'))
+                  print(problem.text or problem.get('message') or '')
+              for stream in ('system-out', 'system-err'):
+                  print('--- ' + stream)
+                  print(suite.findtext(stream) or '')
+              print('::endgroup::')
+          PY
       - name: Keep the test reports
         if: always()
         uses: actions/upload-artifact@v4

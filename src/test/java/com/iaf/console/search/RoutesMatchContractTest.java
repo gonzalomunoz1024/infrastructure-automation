@@ -31,8 +31,8 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
         "console.search.budget.burst=2" })
 class RoutesMatchContractTest {
 
-    /** The handlers the pinned contract does not have yet, each described in contracts/additions.md. */
-    private static final Set<String> ADDITIONS = Set.of("GET /v1/counts", "GET /internal/sources");
+    /** The handlers the pinned contract does not have yet, each described in contracts/additions.md; none since hub d9d1604. */
+    private static final Set<String> ADDITIONS = Set.of();
 
     private static final Set<String> METHODS = Set.of("get", "post", "put", "patch", "delete");
 
