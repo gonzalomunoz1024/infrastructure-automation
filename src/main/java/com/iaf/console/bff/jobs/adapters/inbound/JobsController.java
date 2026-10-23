@@ -94,12 +94,21 @@ public class JobsController {
     public record SkipBody(String step) {
     }
 
-    /** Runs a failed request again (WP 4.2): 202 with the job that now runs it, 409 {@code job.not-failed} for a job that did not fail. */
+    /**
+     * Runs a failed request again (WP 4.2): 202 with the job that now runs it, 409
+     * {@code job.not-failed} for a job that did not fail. The optional body is a fix
+     * ({@code input} merged over the job's, {@code fromStep}) for Retry with fix.
+     */
     @PostMapping(path = "/console/v1/jobs/{jobId}:retry", produces = "application/json")
-    public Mono<ResponseEntity<CommandAccepted>> retry(@PathVariable("jobId") String jobId,
+    public Mono<ResponseEntity<CommandAccepted>> retry(@PathVariable("jobId") String jobId, @RequestBody(required = false) RetryBody body,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey, ServerWebExchange exchange) {
+        Resources.RetryFix fix = body == null ? Resources.RetryFix.NONE : new Resources.RetryFix(body.input(), body.fromStep());
         return CurrentSession.required(exchange)
-                .flatMap(session -> resources.retry(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
+                .flatMap(session -> resources.retry(session, jobId, fix, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
                 .map(accepted -> ResponseEntity.accepted().body(accepted));
+    }
+
+    /** A retry's fix: the input to merge over the job's, and the step to run again from. */
+    public record RetryBody(java.util.Map<String, Object> input, String fromStep) {
     }
 }

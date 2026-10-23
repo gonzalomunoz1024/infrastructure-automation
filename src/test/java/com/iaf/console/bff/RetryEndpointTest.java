@@ -113,6 +113,36 @@ class RetryEndpointTest extends DemoApp {
     }
 
     @Test
+    void aFailedMemoryChangeIsRetriedWithAFix() throws Exception {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        String wfrn = ResourceFixtures.createVm(console, clients, gonzalo, "mem-fix-01");
+        vCenterDownOnce();
+        String failed = edit(gonzalo, wfrn, 32);
+        awaitStatus(gonzalo, failed, "needs-attention");
+        abortOnThePlatform(failed);
+        Awaitility.await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(200))
+                .until(() -> Set.of("failed", "rolled-back").contains(job(gonzalo, failed).path("status").asText()));
+        ResourceFixtures.awaitState(console, gonzalo, wfrn, "active");
+
+        Console.Reply noSuchStep = console.post("/console/v1/jobs/" + failed + ":retry", gonzalo, Map.of("fromStep", "teleport"));
+        assertEquals(400, noSuchStep.status(), noSuchStep.body());
+        assertEquals("step.unknown", noSuchStep.json().path("problems").get(0).path("code").asText(), noSuchStep.body());
+
+        Console.Reply fixed = console.send(HttpMethod.POST, "/console/v1/jobs/" + failed + ":retry", gonzalo, Map.of("input", Map.of("memoryGb", 16)),
+                Map.of("Idempotency-Key", "retry-fix-" + failed));
+        assertEquals(202, fixed.status(), fixed.body());
+        String again = fixed.json().path("jobId").asText();
+        assertNotEquals(failed, again);
+        awaitStatus(gonzalo, again, "succeeded");
+        assertEquals(16, job(gonzalo, again).path("input").path("memoryGb").asInt(), "the fix is merged over the job's input");
+        assertEquals("more cache", job(gonzalo, again).path("input").path("reason").asText(), "and the rest of the input stays");
+        awaitMemory(gonzalo, wfrn, 16);
+        JsonNode recorded = stream(activity(gonzalo, wfrn)).filter(e -> "UpdateRequested".equals(e.path("type").asText()))
+                .reduce((first, second) -> second).orElseThrow();
+        assertEquals(16, recorded.path("data").path("changes").path("memoryGb").asInt(), "the state service records the fixed change: " + recorded);
+    }
+
+    @Test
     void aFailedCreateGoesBackToPendingAndRunsAgainFromItsFailedStep() throws Exception {
         Console.Signed gonzalo = console.signIn("gonzalo");
         vCenterDownOnce("vm.create");
@@ -123,6 +153,10 @@ class RetryEndpointTest extends DemoApp {
         abortOnThePlatform(failed);
         ResourceFixtures.awaitState(console, gonzalo, wfrn, "failed");
         assertTrue(job(gonzalo, failed).path("can").toString().contains("retry"));
+
+        Console.Reply renamed = console.post("/console/v1/jobs/" + failed + ":retry", gonzalo, Map.of("input", Map.of("name", "retry-create-02")));
+        assertEquals(400, renamed.status(), renamed.body());
+        assertEquals("retry.name-fixed", renamed.json().path("problems").get(0).path("code").asText(), "a retried create keeps its name");
 
         Console.Reply retried = console.send(HttpMethod.POST, "/console/v1/jobs/" + failed + ":retry", gonzalo, null, Map.of("Idempotency-Key", "retry-" + failed));
         assertEquals(202, retried.status(), retried.body());

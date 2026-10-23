@@ -709,17 +709,60 @@ public class Resources {
      * retried update or delete as {@code :request-update} or {@code :request-delete}. Rerunning
      * first means a rerun the platform refuses records nothing and the resource keeps its failure.
      */
-    public Mono<CommandAccepted> retry(Session session, String jobId, String requestId, String idempotencyKey) {
+    public Mono<CommandAccepted> retry(Session session, String jobId, RetryFix fix, String requestId, String idempotencyKey) {
+        RetryFix given = fix == null ? RetryFix.NONE : fix;
         return jobs.detail(session, jobId).flatMap(job -> {
             if (!JobRetries.retryable(job)) {
                 return Mono.error(new JobNotFailedException(jobId, job.status() == null ? "unknown" : job.status().id()));
             }
             return retries.target(session, job).flatMap(target -> access.require(session, target.actionName(), target.resource())
                     .then(sessions.requireFreshFor(session, target.actionName()))
+                    .then(Mono.fromRunnable(() -> checkFix(job, target, given)))
                     .then(Mono.defer(() -> retrySubject(session, target, job.status() == JobStatus.NEEDS_ATTENTION)))
-                    .flatMap(subject -> retryOnPlatform(session, job, target, requestId, idempotencyKey)
-                            .flatMap(started -> retried(session, job, target, subject, started, requestId, idempotencyKey))));
+                    .flatMap(subject -> retryOnPlatform(session, job, target, given, requestId, idempotencyKey)
+                            .flatMap(started -> retried(session, job, target, given, subject, started, requestId, idempotencyKey))));
         });
+    }
+
+    /**
+     * A retry's fix (Retry with fix): {@code input} merged over the job's input, as the platform's
+     * {@code :rerun} and {@code :retry} merge it, and {@code fromStep}, the step to run again from
+     * (the failed step, or the first for a rolled-back job, when left out).
+     */
+    public record RetryFix(Map<String, Object> input, String fromStep) {
+
+        public static final RetryFix NONE = new RetryFix(null, null);
+
+        public RetryFix {
+            input = input == null ? Map.of() : Map.copyOf(input);
+            fromStep = fromStep == null || fromStep.isBlank() ? null : fromStep;
+        }
+
+        boolean empty() {
+            return input.isEmpty() && fromStep == null;
+        }
+    }
+
+    /** 400 for a fix the retry cannot take: a batch's rows, a step the job does not have, a create's new name. */
+    private static void checkFix(JobDetail job, JobRetries.Target target, RetryFix fix) {
+        if (fix.empty()) {
+            return;
+        }
+        if (target.batch()) {
+            throw new InvalidInputException("a batch runs its failed rows again as they were",
+                    List.of(Problem.error("retry.fix-unsupported", fix.input().isEmpty() ? "/fromStep" : "/input", "a batch's rows run again as they were")));
+        }
+        if (fix.fromStep() != null && (job.steps() == null || job.steps().stream().noneMatch(step -> fix.fromStep().equals(step.id())))) {
+            throw new InvalidInputException("the job has no step " + fix.fromStep(),
+                    List.of(Problem.error("step.unknown", "/fromStep", "the job has no step " + fix.fromStep())));
+        }
+        if (target.is("create") && fix.input().containsKey("name")) {
+            Object before = job.input() == null ? null : job.input().get("name");
+            if (!Objects.equals(before, fix.input().get("name"))) {
+                throw new InvalidInputException("a retried create keeps its name",
+                        List.of(Problem.error("retry.name-fixed", "/input/name", "the resource is named " + before + "; a retry keeps the name")));
+            }
+        }
     }
 
     /**
@@ -750,7 +793,8 @@ public class Resources {
         });
     }
 
-    private Mono<Started> retryOnPlatform(Session session, JobDetail job, JobRetries.Target target, String requestId, String idempotencyKey) {
+    private Mono<Started> retryOnPlatform(Session session, JobDetail job, JobRetries.Target target, RetryFix fix, String requestId,
+            String idempotencyKey) {
         RequestOptions options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
         if (target.wfrn() != null) {
             options = options.withResourceWfrn(target.wfrn());
@@ -765,12 +809,13 @@ public class Resources {
             if (target.batch()) {
                 return p.retryFailedRows(job.id(), chosen);
             }
+            Map<String, Object> input = fix.input().isEmpty() ? null : fix.input();
             if (job.status() == JobStatus.NEEDS_ATTENTION) {
-                return p.retryJob(job.id(), new RetryRequest(null, null), chosen);
+                return p.retryJob(job.id(), new RetryRequest(fix.fromStep(), input), chosen);
             }
-            String from = JobRetries.rerunFrom(job)
+            String from = fix.fromStep() != null ? fix.fromStep() : JobRetries.rerunFrom(job)
                     .orElseThrow(() -> new ConflictException("the job ran no step to run again from", Map.of("jobId", job.id())));
-            return p.rerunJob(job.id(), new RerunRequest(from, null), chosen);
+            return p.rerunJob(job.id(), new RerunRequest(from, input), chosen);
         }).map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
     }
 
@@ -779,8 +824,8 @@ public class Resources {
      * first request, a failed create's as {@code :request-retry} (failed back to pending, the trail
      * naming who retried), an update's or a delete's as theirs.
      */
-    private Mono<CommandAccepted> retried(Session session, JobDetail job, JobRetries.Target target, Optional<StateResource> subject, Started started,
-            String requestId, String idempotencyKey) {
+    private Mono<CommandAccepted> retried(Session session, JobDetail job, JobRetries.Target target, RetryFix fix, Optional<StateResource> subject,
+            Started started, String requestId, String idempotencyKey) {
         CommandAccepted answer = new CommandAccepted(target.wfrn(), started.jobId(), requestId,
                 target.action() == null ? approvalOf(started.status()) : approval(target.action(), started.status()));
         boolean resumed = started.jobId().equals(job.id());
@@ -794,7 +839,8 @@ public class Resources {
             recorded = state.requestRetry(scope(session), caller(session), target.wfrn(),
                     new StateCommands.Retry(null, session.user().userId(), started.jobId(), job.workflow()), meta);
         } else if (target.is("update")) {
-            Map<String, Object> input = job.input() == null ? Map.of() : job.input();
+            Map<String, Object> input = new LinkedHashMap<>(job.input() == null ? Map.of() : job.input());
+            input.putAll(fix.input());
             recorded = state.requestUpdate(scope(session), caller(session), target.wfrn(), new StateCommands.Update(null, session.user().userId(),
                     started.jobId(), job.workflow(), job.version(), json.valueToTree(changesOf(target.action(), input))), meta);
         } else {

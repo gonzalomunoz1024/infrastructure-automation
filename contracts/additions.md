@@ -85,6 +85,11 @@ allow and the platform offers: `cancel` (running), `retry`, `skip`, `abort`.
   (`RetryRequested` in its activity, naming the rerun as `jobId` and the failed job as
   `retryOf`). 409 `job.not-failed` with `detail.status` when there is nothing to retry; 409 when
   the resource moved on (a create whose resource is no longer failed).
+- Retry with fix: the optional body `{ input?, fromStep? }` merges `input` over the job's input
+  (as the platform's `:rerun` and `:retry` do; an update's recorded change is the merged one) and
+  runs again from `fromStep`. 400 `step.unknown` at `/fromStep` for a step the job does not have,
+  `retry.fix-unsupported` for a batch (its rows run again as they were), `retry.name-fixed` at
+  `/input/name` for a create's new name (the minted name stays).
 - `POST /console/v1/jobs/{jobId}:skip` with optional `{ step }` (the step the job waits on when
   left out) → 202 `CommandAccepted`, the same `jobId`; asks what the request's own action asks.
 - `POST /console/v1/jobs/{jobId}:abort` → 202 `CommandAccepted`; the compensations run and the
