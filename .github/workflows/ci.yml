@@ -38,10 +38,12 @@ jobs:
           ref: ${{ env.CONSOLE_LIBS_REF }}
           path: .libs
       - name: Publish console-libs to the local Maven repository
-        # the service resolves mavenLocal first; GitHub Packages serves the same coordinates once
-        # merges to console-libs publish them
+        # the convention plugins live in the included build build-logic, which the root's
+        # publishToMavenLocal does not reach, so it is named too; the service resolves mavenLocal
+        # first, and GitHub Packages serves the same coordinates once merges to console-libs
+        # publish them
         working-directory: .libs
-        run: ./gradlew publishToMavenLocal -x test --no-daemon
+        run: ./gradlew :build-logic:publishToMavenLocal publishToMavenLocal -x test --no-daemon
       - name: Build and test the service
         run: ./gradlew build --no-daemon
       - name: Keep the test reports
