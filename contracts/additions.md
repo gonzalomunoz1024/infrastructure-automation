@@ -130,7 +130,8 @@ need `X-Csrf-Token` like every other write.
 
 The quota keys are the identity service's: `jobs-per-minute` (the platform's bucket, `source:
 platform`, with `burst`), `access-keys` (`used` counts the account's active keys) and
-`resources.<service>` for every service of the catalog. Viewers, operators and admins may ask for
+`resources.<type>` for every resource type of the catalog (its `metadata.name`, as the state
+service enforces it). Viewers, operators and admins may ask for
 an increase (`quota:request-increase`); auditors only read.
 
 ## Access requests

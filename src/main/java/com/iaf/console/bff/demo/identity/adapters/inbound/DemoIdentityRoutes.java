@@ -607,20 +607,20 @@ public class DemoIdentityRoutes {
     /**
      * The identity service's keys and defaults: {@code jobs-per-minute} (the platform's bucket, 60
      * a minute with a burst of 60), {@code access-keys} (50, counted here) and
-     * {@code resources.<service>} for every service of the demo catalog (100; {@code used} is the
-     * state service's to report, so 0 here as there).
+     * {@code resources.<type>} for every resource type of the demo catalog, by its
+     * {@code metadata.name} (100; {@code used} is the state service's to report, so 0 here as there).
      */
     private static final String JOBS_PER_MINUTE = "jobs-per-minute";
     private static final String ACCESS_KEYS = "access-keys";
     private static final String RESOURCES = "resources.";
-    private static final List<String> DEMO_SERVICES = List.of("compute", "data", "platform");
+    private static final List<String> DEMO_TYPES = List.of("database", "environment", "image", "vm", "volume");
     private static final Map<String, Integer> QUOTAS = quotaDefaults();
 
     private static Map<String, Integer> quotaDefaults() {
         Map<String, Integer> defaults = new LinkedHashMap<>();
         defaults.put(JOBS_PER_MINUTE, 60);
         defaults.put(ACCESS_KEYS, 50);
-        DEMO_SERVICES.forEach(service -> defaults.put(RESOURCES + service, 100));
+        DEMO_TYPES.forEach(type -> defaults.put(RESOURCES + type, 100));
         return Map.copyOf(defaults);
     }
 
@@ -628,7 +628,7 @@ public class DemoIdentityRoutes {
         List<Map<String, Object>> items = new ArrayList<>();
         items.add(quota(accountId, JOBS_PER_MINUTE));
         items.add(quota(accountId, ACCESS_KEYS));
-        DEMO_SERVICES.forEach(service -> items.add(quota(accountId, RESOURCES + service)));
+        DEMO_TYPES.forEach(type -> items.add(quota(accountId, RESOURCES + type)));
         return json(HttpStatus.OK, page(items));
     }
 

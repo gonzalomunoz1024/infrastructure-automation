@@ -40,7 +40,8 @@ class IamProxyTest extends DemoApp {
         assertEquals(200, quotas.status(), quotas.body());
         List<String> keys = new java.util.ArrayList<>();
         quotas.json().path("items").forEach(q -> keys.add(q.path("key").asText()));
-        assertEquals(List.of("jobs-per-minute", "access-keys", "resources.compute", "resources.data", "resources.platform"), keys,
+        assertEquals(List.of("jobs-per-minute", "access-keys", "resources.database", "resources.environment", "resources.image", "resources.vm",
+                "resources.volume"), keys,
                 "the identity service's keys: " + quotas.body());
         JsonNode jobs = quotas.json().path("items").get(0);
         assertEquals("platform", jobs.path("source").asText(), "jobs per minute is the platform's bucket: " + jobs);
@@ -148,7 +149,7 @@ class IamProxyTest extends DemoApp {
     @Test
     void aQuotaIncreaseIsRequestedFollowedAndWithdrawn() {
         Console.Signed gonzalo = console.signIn("gonzalo");
-        Console.Reply opened = console.post("/console/v1/iam/quotas/resources.compute:request-increase", gonzalo,
+        Console.Reply opened = console.post("/console/v1/iam/quotas/resources.volume:request-increase", gonzalo,
                 Map.of("limit", 400, "reason", "the nightly backups need more volumes"));
         assertEquals(202, opened.status(), opened.body());
         String requestId = opened.json().path("requestId").asText();
@@ -156,10 +157,10 @@ class IamProxyTest extends DemoApp {
         assertEquals("open", opened.json().path("status").asText());
         assertEquals(400, opened.json().path("requestedLimit").asInt());
         assertEquals(100, opened.json().path("currentLimit").asInt());
-        Console.Reply second = console.post("/console/v1/iam/quotas/resources.compute:request-increase", gonzalo,
+        Console.Reply second = console.post("/console/v1/iam/quotas/resources.volume:request-increase", gonzalo,
                 Map.of("limit", 500, "reason", "the nightly backups need even more"));
         assertEquals(409, second.status(), "one open request per quota: " + second.body());
-        Console.Reply quota = console.get("/console/v1/iam/quotas/resources.compute", gonzalo);
+        Console.Reply quota = console.get("/console/v1/iam/quotas/resources.volume", gonzalo);
         assertEquals(requestId, quota.json().path("pendingRequestId").asText(), quota.body());
         Console.Reply followed = console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo);
         assertEquals(200, followed.status(), followed.body());
@@ -173,7 +174,7 @@ class IamProxyTest extends DemoApp {
         Console.Reply twice = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + requestId, gonzalo, null, Map.of());
         assertEquals(409, twice.status(), twice.body());
         assertEquals("withdrawn", console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo).json().path("status").asText());
-        assertTrue(console.get("/console/v1/iam/quotas/resources.compute", gonzalo).json().path("pendingRequestId").isMissingNode());
+        assertTrue(console.get("/console/v1/iam/quotas/resources.volume", gonzalo).json().path("pendingRequestId").isMissingNode());
     }
 
     @Test
