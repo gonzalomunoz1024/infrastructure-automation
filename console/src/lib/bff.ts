@@ -54,7 +54,7 @@ export const bff = {
   people: () => page<DemoPerson>('/demo-idp/people'),
 
   /* the types, each action with its decision for this person, account and region */
-  types: () => get<BffConsoleType[]>(b('/types')),
+  types: async () => (await page<BffConsoleType>(b('/types'))).items,
 
   /* identity and access, scoped to the session's account */
   iam: {

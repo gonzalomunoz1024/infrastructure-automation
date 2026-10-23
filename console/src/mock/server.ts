@@ -310,7 +310,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId), next: null } }
     if (path === '/console/v1/regions') return { status: 200, body: { items: [{ name: data.regionName, title: 'Global', status: 'available', environments: ['dev', 'test', 'prod'], types: data.resourceTypes.map((t) => t.name) }], next: null } }
 
-    if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, consoleTypes(s), req)
+    if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, { items: consoleTypes(s) }, req)
     let m = /^\/console\/v1\/types\/([^/]+)$/.exec(path)
     if (m) {
       const key = decodeURIComponent(m[1])
