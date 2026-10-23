@@ -9,8 +9,9 @@ import com.iaf.console.kit.paging.Cursor;
 
 /**
  * A search as the engine runs it: the free-text terms, the filters (from the query's own
- * {@code type:}, {@code state:}, {@code region:}, {@code tag:} and {@code drift:} terms and the
- * request's parameters, which only narrow further), the wfrn patterns, the sort and the page.
+ * {@code type:}, {@code state:}, {@code region:}, {@code tag:}, {@code drift:}, {@code created:}
+ * and {@code updated:} terms and the request's parameters, which only narrow further), the wfrn
+ * patterns, the sort and the page.
  */
 public record SearchQuery(
         List<String> terms,
@@ -19,6 +20,8 @@ public record SearchQuery(
         String region,
         Map<String, String> tags,
         Boolean drift,
+        TimeRange created,
+        TimeRange updated,
         List<String> wfrnPatterns,
         Sort sort,
         int limit,
@@ -28,6 +31,8 @@ public record SearchQuery(
     public SearchQuery {
         terms = terms == null ? List.of() : List.copyOf(terms);
         tags = tags == null ? Map.of() : Map.copyOf(new TreeMap<>(tags));
+        created = created == null ? TimeRange.ALL : created;
+        updated = updated == null ? TimeRange.ALL : updated;
         wfrnPatterns = wfrnPatterns == null ? List.of() : List.copyOf(wfrnPatterns);
         sort = Objects.requireNonNullElse(sort, Sort.SCORE);
         if (limit < 1) {
@@ -35,7 +40,6 @@ public record SearchQuery(
         }
     }
 
-    /** The sorts of the contract: by score (best first), by name, or newest change first. */
     /**
      * The orders a list offers: by relevance (the default), by name, by creation and by last change,
      * each ascending or descending ({@code -}). Ties go by wfrn, which every cursor carries, so a walk

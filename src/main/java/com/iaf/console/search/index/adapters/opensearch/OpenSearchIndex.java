@@ -26,6 +26,10 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.scope.AccountScope;
+import com.iaf.console.search.index.domain.AccountVocabulary;
+import com.iaf.console.search.index.domain.CountGroup;
+import com.iaf.console.search.index.domain.Fuzzy;
+import com.iaf.console.search.index.domain.GroupBy;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.Json;
 import com.iaf.console.search.index.domain.ResourceCounts;
@@ -35,6 +39,7 @@ import com.iaf.console.search.index.domain.SearchPage;
 import com.iaf.console.search.index.domain.SearchQuery;
 import com.iaf.console.search.index.domain.SuggestQuery;
 import com.iaf.console.search.index.domain.Suggestion;
+import com.iaf.console.search.index.domain.TimeRange;
 import com.iaf.console.search.index.ports.outbound.SearchIndexPort;
 
 import reactor.core.publisher.Flux;
@@ -47,9 +52,9 @@ import reactor.netty.http.client.HttpClientRequest;
  * and an alias swap, and a write never creates an index by accident ({@code require_alias}).
  * Documents are routed by account and written with the resource's version as an external version
  * (greater or equal: a stale write is a no-op, a rewrite at the same version goes through).
- * Searches filter on keyword fields, score a text query over the name (exact, prefix, words), the
- * id, the tags and the searchable fields, page with {@code search_after} on {@code (sort value, wfrn)},
- * and highlight. The mapping is {@code opensearch/console-resources.json}.
+ * Searches filter on keyword fields, score a text query over the name (exact, prefix, words, then a
+ * typo away), the id, the tags and the searchable fields, page with {@code search_after} on
+ * {@code (sort value, wfrn)}, and highlight. The mapping is {@code opensearch/console-resources.json}.
  */
 public final class OpenSearchIndex implements SearchIndexPort {
 
@@ -293,6 +298,8 @@ public final class OpenSearchIndex implements SearchIndexPort {
         if (query.drift() != null) {
             filter.addObject().putObject("term").put("drift", query.drift());
         }
+        range(filter, "createdAt", query.created());
+        range(filter, "updatedAt", query.updated());
         for (Map.Entry<String, String> tag : query.tags().entrySet()) {
             if (tag.getValue().isEmpty()) {
                 filter.addObject().putObject("prefix").put("tagsFlat", tag.getKey() + "=");
@@ -338,8 +345,16 @@ public final class OpenSearchIndex implements SearchIndexPort {
             if (lower.contains(" ")) {
                 should.addObject().putObject("match_phrase").putObject("text").put("query", lower).put("boost", 2);
             }
+            // a typo away: below every exact clause, so a word as typed always ranks first
+            fuzzy(should, "name", lower, 0.5);
+            fuzzy(should, "tagsFlat.text", lower, 0.3);
         }
         return root;
+    }
+
+    private static void fuzzy(ArrayNode should, String field, String text, double boost) {
+        should.addObject().putObject("match").putObject(field).put("query", text).put("fuzziness", Fuzzy.AUTO).put("prefix_length", Fuzzy.PREFIX)
+                .put("operator", "and").put("boost", boost);
     }
 
     /** The state asked for, else the tombstones left out unless the query asks for them. */
@@ -358,6 +373,21 @@ public final class OpenSearchIndex implements SearchIndexPort {
 
     private static void term(ArrayNode into, String field, String value) {
         into.addObject().putObject("term").put(field, value);
+    }
+
+    /** A time field within a range; a document without the time is outside every bounded range. */
+    private static void range(ArrayNode into, String field, TimeRange range) {
+        if (range.unbounded()) {
+            return;
+        }
+        ObjectNode bounds = into.addObject().putObject("range").putObject(field);
+        if (range.from() != null) {
+            bounds.put("gte", range.from().toEpochMilli());
+        }
+        if (range.to() != null) {
+            bounds.put("lt", range.to().toEpochMilli());
+        }
+        bounds.put("format", "epoch_millis");
     }
 
     private static Map<String, String> highlightsOf(JsonNode highlight) {
@@ -434,27 +464,87 @@ public final class OpenSearchIndex implements SearchIndexPort {
     }
 
     @Override
-    public Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query) {
+    public Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query, GroupBy groupBy) {
         ObjectNode body = json.createObjectNode();
         body.put("size", 0);
         body.put("track_total_hits", false);
         // every filter but the state, tombstones included: the chips
         body.set("query", queryOf(scope, query, false, false));
         ObjectNode aggs = body.putObject("aggs");
+        countAggregations(aggs, query);
+        if (groupBy.field() != null) {
+            ObjectNode groups = aggs.putObject("groups");
+            ObjectNode terms = groups.putObject("terms").put("field", groupBy.field()).put("size", GroupBy.ENGINE_GROUPS);
+            if (groupBy.kind() == GroupBy.Kind.TAG) {
+                terms.put("include", regexEscape(groupBy.tag() + "=") + ".*");
+            }
+            // the largest list first, as the answer orders them; an account's documents are on one shard, so the order is exact
+            ArrayNode order = terms.putArray("order");
+            order.addObject().put("listed", "desc");
+            order.addObject().put("_key", "asc");
+            ObjectNode each = groups.putObject("aggs");
+            countAggregations(each, query);
+            if (groupBy.kind() == GroupBy.Kind.TYPE) {
+                each.putObject("service").putObject("terms").put("field", "service").put("size", 1);
+            }
+        }
+        return post("/{alias}/_search", scope.accountId(), body).map(response -> {
+            JsonNode aggregations = response.path("aggregations");
+            ResourceCounts counts = countsOf(aggregations);
+            if (groupBy.field() == null) {
+                return counts;
+            }
+            List<CountGroup> groups = new ArrayList<>();
+            for (JsonNode b : aggregations.path("groups").path("buckets")) {
+                String key = b.path("key").asText();
+                if (groupBy.kind() == GroupBy.Kind.TAG) {
+                    key = key.substring(groupBy.tag().length() + 1);
+                }
+                ResourceCounts c = countsOf(b);
+                JsonNode service = b.path("service").path("buckets").path(0).path("key");
+                groups.add(new CountGroup(key, c.total(), c.byState(), c.drift(), service.isTextual() ? service.asText() : null));
+            }
+            return counts.withGroups(groups);
+        });
+    }
+
+    /** The chips (every state) and what the list shows (the state asked for, or the tombstones left out) with its drift. */
+    private static void countAggregations(ObjectNode aggs, SearchQuery query) {
         aggs.putObject("states").putObject("terms").put("field", "state").put("size", ResourceState.values().length);
-        // what the list shows: the state asked for, or the tombstones left out
         ObjectNode listed = aggs.putObject("listed");
         stateClause(listed.putObject("filter").putObject("bool"), query);
         listed.putObject("aggs").putObject("drift").putObject("filter").putObject("term").put("drift", true);
+    }
+
+    private static ResourceCounts countsOf(JsonNode aggregations) {
+        Map<String, Long> byState = new LinkedHashMap<>();
+        for (JsonNode b : aggregations.path("states").path("buckets")) {
+            byState.put(b.path("key").asText(), b.path("doc_count").asLong());
+        }
+        JsonNode shown = aggregations.path("listed");
+        return ResourceCounts.exact(shown.path("doc_count").asLong(), byState, shown.path("drift").path("doc_count").asLong());
+    }
+
+    @Override
+    public Mono<AccountVocabulary> vocabulary(AccountScope scope) {
+        ObjectNode body = json.createObjectNode();
+        body.put("size", 0);
+        body.put("track_total_hits", false);
+        liveScope(body.putObject("query").putObject("bool"), scope, null);
+        ObjectNode aggs = body.putObject("aggs");
+        aggs.putObject("types").putObject("terms").put("field", "type").put("size", 500);
+        aggs.putObject("regions").putObject("terms").put("field", "region").put("size", 100);
+        aggs.putObject("tags").putObject("terms").put("field", "tagsFlat").put("size", 2000);
         return post("/{alias}/_search", scope.accountId(), body).map(response -> {
-            JsonNode aggregations = response.path("aggregations");
-            Map<String, Long> byState = new LinkedHashMap<>();
-            for (JsonNode b : aggregations.path("states").path("buckets")) {
-                byState.put(b.path("key").asText(), b.path("doc_count").asLong());
-            }
-            JsonNode shown = aggregations.path("listed");
-            return ResourceCounts.exact(shown.path("doc_count").asLong(), byState, shown.path("drift").path("doc_count").asLong());
+            JsonNode a = response.path("aggregations");
+            return AccountVocabulary.of(bucketsOf(a.path("types")), bucketsOf(a.path("regions")), bucketsOf(a.path("tags")));
         });
+    }
+
+    private static Map<String, Long> bucketsOf(JsonNode terms) {
+        Map<String, Long> out = new LinkedHashMap<>();
+        terms.path("buckets").forEach(b -> out.put(b.path("key").asText(), b.path("doc_count").asLong()));
+        return out;
     }
 
     /** A literal for a Lucene regular expression: every character but letters and digits escaped. */

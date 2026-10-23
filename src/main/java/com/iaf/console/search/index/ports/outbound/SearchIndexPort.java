@@ -5,6 +5,8 @@ import java.util.List;
 
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.kit.scope.GlobalRead;
+import com.iaf.console.search.index.domain.AccountVocabulary;
+import com.iaf.console.search.index.domain.GroupBy;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.ResourceCounts;
 import com.iaf.console.search.index.domain.SearchPage;
@@ -42,7 +44,19 @@ public interface SearchIndexPort {
     Mono<List<Suggestion>> suggest(AccountScope scope, SuggestQuery query);
 
     /** How many documents of the scope's account a query lists, in all and per state (see {@link ResourceCounts}). */
-    Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query);
+    default Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query) {
+        return counts(scope, query, GroupBy.NONE);
+    }
+
+    /**
+     * The counts, and the same counts per key of a grouping (a field or a tag; {@link GroupBy#field()}
+     * not null), the largest first, at most {@link GroupBy#ENGINE_GROUPS}. Any other grouping returns
+     * no groups.
+     */
+    Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query, GroupBy groupBy);
+
+    /** The types, regions and tags of the account's live documents, for reading plain English. */
+    Mono<AccountVocabulary> vocabulary(AccountScope scope);
 
     /** How many documents the index holds, tombstones included. */
     @GlobalRead("a count of documents across every account, for the status, never their contents")

@@ -4,6 +4,9 @@
 # The engine is console.search.engine: opensearch (the default) or memory.
 server:
   port: 18085
+  netty:
+    # GET /v1/counts may name 200 accounts, about 4.7 KB of request line; Netty's default stops at 4 KB
+    max-initial-line-length: 16KB
 
 spring:
   application:

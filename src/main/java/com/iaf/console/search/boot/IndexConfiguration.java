@@ -188,10 +188,10 @@ public class IndexConfiguration {
     }
 
     @Bean
-    public SearchQueries searchQueries(SearchIndexPort index, CheckpointPort checkpoints, RebuildService rebuilds, ObjectProvider<EventSource> sources,
-            QueryBudget budget, IndexMetrics metrics, Clock clock) {
+    public SearchQueries searchQueries(SearchIndexPort index, ResourceTypesPort types, CheckpointPort checkpoints, RebuildService rebuilds,
+            ObjectProvider<EventSource> sources, QueryBudget budget, IndexMetrics metrics, Clock clock) {
         List<EventSource> list = sources.orderedStream().toList();
-        return new SearchQueries(index, checkpoints, rebuilds, list, budget, metrics, clock);
+        return new SearchQueries(index, types, checkpoints, rebuilds, list, budget, metrics, clock);
     }
 
     @Bean
