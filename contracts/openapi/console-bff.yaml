@@ -79,6 +79,15 @@ info:
     `POST /console/v1/r/{type}`, `update` is `PATCH /console/v1/r/{type}/{wfrn}`, every other verb,
     `delete` included, is `POST /console/v1/r/{type}/{wfrn}:{verb}`. Each has `:preview`, and a
     verb with `bulk` has `POST /console/v1/r/{type}:batch`.
+
+    **Beyond the AWS console (phase 9).** The executive home reads `GET /console/v1/insights` (the
+    BFF's own numbers) and spend from the cost service; the copilot asks
+    `POST /console/v1/assistant/turns` and reads the answer from its conversation, and its plain
+    English becomes the list's own filter through `GET /console/v1/search:interpret`; grouped
+    counts across the person's accounts come from `GET /console/v1/search:counts`; a failed job
+    explains itself at `GET /console/v1/jobs/{jobId}/explanation`, whose fix the console sends to
+    the phase 4 retry. The copilot never acts: it fills lists, forms and drawers for the person to
+    review, and every change still goes through its preview and IAM.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -105,6 +114,10 @@ tags:
   - name: Budgets
   - name: Scorecards
     description: 'Compliance scorecards (WP 9.6), from the drift service: IAM actions `scorecards:list` and `scorecards:remediate`'
+  - name: Insights
+    description: The executive home's numbers (phase 9)
+  - name: Assistant
+    description: The console copilot, behind the BFF's AssistantPort (phase 9)
   - name: IAM
     description: The identity service for the session's account, passed through
   - name: Access requests
@@ -1877,6 +1890,197 @@ paths:
               schema: { $ref: '#/components/schemas/Preferences' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/insights:
+    get:
+      operationId: getInsights
+      summary: The executive home's numbers for the person's estate
+      description: |
+        What the console has done for the accounts the person may read insights in (`insights:get`
+        on each; `scope=account` narrows it to the session's account): resources managed now and at
+        the start of the period, requests and how many were self-served, the lead time from request
+        to running against the baseline of today's tickets and the hours that saved, drift found and
+        fixed, and adoption week by week. The BFF computes them from the state service's records and
+        the platform's jobs. The ticket baseline is configuration (`console.insights.baseline`), a
+        one-off export of the current ticket queue; without one, `leadTime` has no baseline and
+        `hoursSaved` is absent. Spend is not here: the executive home reads it from
+        `GET /console/v1/cost?scope=organization&groupBy=costCentre` (the cost service's contract).
+      tags: [Insights]
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, enum: [7d, 30d, 90d], default: 30d }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: organization }
+      responses:
+        '200':
+          description: The numbers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Insights' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/search:interpret:
+    get:
+      operationId: interpretSearch
+      summary: Plain English read as the list's own filter
+      description: |
+        Passes through to the search indexer's `GET /v1/search:interpret` for the session's account
+        (`contracts/openapi/console-search-indexer.yaml` 1.2.0) with its answer unchanged. The
+        filter uses the list's own names, so the console turns it into a list link (its `f` and
+        `sort` query); nothing runs. Given `type`, the reading stays within that type, and another
+        type named in the text goes to `unparsed`.
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 500 }
+        - name: type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: The reading
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchInterpretation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/search:counts:
+    get:
+      operationId: countResourcesBy
+      summary: Resources counted by one grouping, in the account or across the person's accounts
+      description: |
+        Passes through to the search indexer's `GET /v1/counts` with `groupBy` and the same filters
+        as search (`contracts/openapi/console-search-indexer.yaml` 1.2.0). With
+        `scope=organization` the BFF resolves the accounts the person may list in and calls as the
+        console-internal principal with `accountId` repeated (at most 200), so a person's own token
+        never names another account. The BFF adds `asOf`, the indexer's `lastEventAt` from
+        `/v1/index/status`. At most 100 groups, largest first.
+      tags: [Search]
+      parameters:
+        - name: groupBy
+          in: query
+          required: true
+          schema: { type: string, pattern: '^(type|service|state|region|account|tag:[A-Za-z0-9._:/-]{1,128})$' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: account }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 500 }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceState' }
+        - name: drift
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: The groups
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupedCounts' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/assistant/turns:
+    post:
+      operationId: askAssistant
+      summary: Ask the copilot, or ask it to explain a resource
+      description: |
+        Starts a turn of a conversation with the console copilot, which sits behind the BFF's
+        `AssistantPort` (the firm's Devin API first; a faster model later is another adapter on the
+        same port, not a redesign). A turn takes seconds to minutes, so the answer is read from the
+        conversation, `GET /console/v1/assistant/conversations/{conversationId}`, which the console
+        polls while the turn is `thinking`.
+
+        The copilot reads only what the person may read, with the person's own session, and never
+        acts. It answers in words and in proposals: a filtered list, a pre-filled create wizard, a
+        pre-filled action, or a page. The console opens a proposal for the person to review, and
+        every change still goes through its preview and IAM. `intent: explain` explains
+        `context.wfrn`: what it is, its configuration, cost, history and dependents. A person's
+        turns are limited to 10 a minute (429 with `Retry-After`); conversations are the person's
+        own and kept for 24 hours.
+      tags: [Assistant]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantAsk' }
+      responses:
+        '202':
+          description: The turn is under way
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, turnId]
+                properties:
+                  conversationId: { type: string }
+                  turnId: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/assistant/conversations/{conversationId}:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getAssistantConversation
+      summary: A conversation with the copilot, its answers and proposals
+      description: Another person's conversation, or one older than 24 hours, answers 404.
+      tags: [Assistant]
+      responses:
+        '200':
+          description: The conversation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/jobs/{jobId}/explanation:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    get:
+      operationId: explainJobFailure
+      summary: Why a job failed, and the fix to try
+      description: |
+        For a job that failed, or that waits on a failed step (`needs-attention`): the cause in plain
+        words, the failing step, a suggested fix, whether the person may retry, and how often the
+        same failure happened in the account in the last 30 days. Rules over the platform's error
+        classes answer first (`source: rules`); the copilot answers what they cannot
+        (`source: assistant`). A fix may carry `input`, a merge over the job's input; the console
+        shows it to the person and sends it, with `fromStep`, as the body of
+        `POST /console/v1/jobs/{jobId}:retry`, the phase 4 retry, which reruns the job with the input
+        merged over the original (the platform's `:rerun`), so secrets never travel back. Asking for
+        an explanation retries nothing. Any other job answers 409 `job.not-failed`.
+      tags: [Jobs]
+      responses:
+        '200':
+          description: The explanation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobExplanation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
   /console/v1/cost:
     get:
       operationId: getCost
@@ -3372,6 +3576,279 @@ components:
               n: { type: string }
               e: { type: string }
             additionalProperties: true
+    Insights:
+      type: object
+      description: What the console did for the accounts it covers, over one period
+      required: [period, from, to, asOf, scope, accounts, managed, requests, leadTime, drift, adoption]
+      properties:
+        period: { type: string, enum: [7d, 30d, 90d] }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        asOf: { type: string, format: date-time }
+        scope: { type: string, enum: [account, organization] }
+        accounts:
+          type: array
+          description: The accounts the numbers cover
+          items:
+            type: object
+            required: [accountId, name]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              name: { type: string }
+              owningTeam: { type: string }
+              costCentre: { type: string }
+        managed:
+          type: object
+          required: [resources, atStart]
+          properties:
+            resources: { type: integer, description: 'Live resources now; tombstones left out' }
+            atStart: { type: integer, description: Live resources at the start of the period }
+            byService:
+              type: array
+              description: Largest first
+              items:
+                type: object
+                required: [service, resources]
+                properties:
+                  service: { type: string }
+                  title: { type: string }
+                  resources: { type: integer }
+        requests:
+          type: object
+          required: [total, selfServed, failed]
+          properties:
+            total: { type: integer, description: 'Console requests started in the period: creates, verbs, updates and deletes' }
+            selfServed: { type: integer, description: 'Requests that ended `succeeded` with no person stepping in: no failed step retried, skipped or aborted by hand' }
+            failed: { type: integer }
+        leadTime:
+          type: object
+          description: From the request to the resource running, over the period's self-served requests, against today's tickets
+          required: [p50Ms, p90Ms]
+          properties:
+            p50Ms: { type: integer }
+            p90Ms: { type: integer }
+            baselineP50Ms: { type: integer, description: 'The median lead time of today''s tickets for the same kinds of request' }
+            baselineSource: { type: string, description: 'Where the baseline comes from, such as "ticket export, September 2026"' }
+        hoursSaved: { type: number, description: 'Over the self-served requests, the baseline less the lead time, never below 0 for one request, in hours; absent without a baseline' }
+        drift:
+          type: object
+          required: [found, fixed, open]
+          properties:
+            found: { type: integer, description: Findings opened in the period }
+            fixed: { type: integer, description: 'Findings closed in the period: reverted, accepted, or the resource changed back' }
+            open: { type: integer, description: Findings open now }
+            meanTimeToFixMs: { type: integer }
+        adoption:
+          type: array
+          description: Week by week, oldest first, each week starting on a Monday (UTC)
+          items:
+            type: object
+            required: [weekStart, activeUsers, requests, selfServed]
+            properties:
+              weekStart: { type: string, format: date }
+              activeUsers: { type: integer, description: People who started at least one request }
+              requests: { type: integer }
+              selfServed: { type: integer }
+    SearchFilter:
+      type: object
+      description: 'The list''s own filter names; `q` holds only what they cannot say: free text, wfrn patterns and created:/updated: terms'
+      properties:
+        q: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        drift: { type: boolean }
+        region: { $ref: '#/components/schemas/RegionName' }
+        tags:
+          type: object
+          description: 'Tag key to value; an empty value means "has the tag", which the list sends as `tag.<key>=`'
+          additionalProperties: { type: string }
+    SearchInterpretation:
+      type: object
+      description: The search indexer's reading of plain English (console-search-indexer.yaml 1.2.0)
+      required: [filter, explanation, confidence, q, total]
+      properties:
+        type: { type: string, description: 'The resource type the text names, when it names one' }
+        filter: { $ref: '#/components/schemas/SearchFilter' }
+        sort: { type: string, enum: [name, -name, created, -created, updated, -updated] }
+        explanation: { type: string, description: One sentence saying what was understood }
+        confidence: { type: string, enum: [high, medium, low] }
+        unparsed:
+          type: array
+          description: Words the reading left out
+          items: { type: string }
+        q: { type: string, description: The whole reading as one search query }
+        total: { type: integer, description: How many resources it lists now }
+    CountGroup:
+      type: object
+      required: [key, total]
+      properties:
+        key: { type: string }
+        total: { type: integer }
+        byState:
+          type: object
+          additionalProperties: { type: integer }
+        drift: { type: integer, description: Resources of the group that drifted }
+        service: { type: string, description: 'The service of a type group (groupBy=type)' }
+    GroupedCounts:
+      type: object
+      required: [total, groups]
+      properties:
+        total: { type: integer }
+        byState:
+          type: object
+          additionalProperties: { type: integer }
+        drift: { type: integer }
+        cappedAt: { type: integer, description: 'Set when a count stopped at a cap; the console shows "1,000+"' }
+        groups:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CountGroup' }
+        asOf: { type: string, format: date-time }
+    AssistantAsk:
+      type: object
+      required: [intent]
+      properties:
+        conversationId: { type: string, description: The conversation to continue; a new one when left out }
+        intent: { type: string, enum: [ask, explain] }
+        message: { type: string, minLength: 1, maxLength: 2000, description: 'The question; needed for `ask`' }
+        context:
+          type: object
+          description: 'Where the person is, so "these" and "this one" mean something; `explain` needs `wfrn`'
+          properties:
+            path: { type: string, description: 'The console route, such as /console/compute/vm' }
+            service: { type: string }
+            type: { type: string }
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            filter: { $ref: '#/components/schemas/SearchFilter' }
+    AssistantConversation:
+      type: object
+      required: [conversationId, status, turns]
+      properties:
+        conversationId: { type: string }
+        status: { type: string, enum: [thinking, ready, failed], description: '`thinking` while the last turn is under way' }
+        startedAt: { type: string, format: date-time }
+        turns:
+          type: array
+          description: Oldest first
+          items: { $ref: '#/components/schemas/AssistantTurn' }
+    AssistantTurn:
+      type: object
+      required: [turnId, role, at]
+      properties:
+        turnId: { type: string }
+        role: { type: string, enum: [person, assistant] }
+        at: { type: string, format: date-time }
+        status: { type: string, enum: [thinking, answered, failed], description: An assistant turn's progress }
+        text: { type: string, description: 'Plain text in short paragraphs, no markup' }
+        proposals:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/AssistantProposal' }
+        explanation: { $ref: '#/components/schemas/ResourceExplanation' }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, description: 'assistant.unavailable, assistant.timeout, assistant.refused' }
+            message: { type: string }
+    AssistantProposal:
+      type: object
+      description: 'Something the console opens for the person to review; the copilot never runs it'
+      required: [kind, label]
+      properties:
+        kind: { type: string, enum: [filter, create, action, open] }
+        label: { type: string, description: 'What opening it does, such as "List the 12 stopped VMs in prod"' }
+        service: { type: string }
+        type: { type: string }
+        filter: { $ref: '#/components/schemas/SearchFilter' }
+        sort: { type: string }
+        input: { type: object, additionalProperties: true, description: 'create and action: the inputs the copilot could fill; the form shows the rest' }
+        missing:
+          type: array
+          description: Required inputs the copilot could not fill
+          items: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        verb: { type: string, description: 'action: the verb to open' }
+        path: { type: string, description: 'open: a console route' }
+    ResourceExplanation:
+      type: object
+      required: [wfrn, summary]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        summary: { type: string, description: Two or three sentences on what it is and how it is doing }
+        sections:
+          type: array
+          items:
+            type: object
+            required: [title, text]
+            properties:
+              title: { type: string }
+              text: { type: string }
+        facts:
+          type: object
+          properties:
+            monthlyCost: { type: number }
+            currency: { type: string }
+            createdAt: { type: string, format: date-time }
+            createdBy: { type: string }
+            lastChangeAt: { type: string, format: date-time }
+            lastChangeBy: { type: string }
+            dependents: { type: integer }
+            drift: { type: boolean }
+    JobExplanation:
+      type: object
+      required: [jobId, status, cause, source]
+      properties:
+        jobId: { type: string }
+        status: { type: string, enum: [failed, needs-attention] }
+        cause:
+          type: object
+          required: [title]
+          properties:
+            class: { type: string, description: "The platform's error class" }
+            title: { type: string, description: 'What went wrong, in plain words' }
+            detail: { type: string }
+        failedStep:
+          type: object
+          required: [id]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            attempt: { type: integer }
+            message: { type: string }
+        fix:
+          type: object
+          required: [summary, confidence]
+          properties:
+            summary: { type: string, description: 'The fix to try, in one or two sentences' }
+            input: { type: object, additionalProperties: true, description: "A merge over the job's input; the retry's body" }
+            fromStep: { type: string }
+            confidence: { type: string, enum: [high, medium, low] }
+        retry:
+          type: object
+          required: [allowed]
+          properties:
+            allowed: { type: boolean }
+            denied: { $ref: '#/components/schemas/Denial' }
+        similar:
+          type: object
+          required: [count]
+          properties:
+            count: { type: integer, description: 'Jobs of the same workflow that failed with the same class in the account, 30 days' }
+            lastFixed:
+              type: object
+              properties:
+                jobId: { type: string }
+                by: { type: string }
+                at: { type: string, format: date-time }
+        source: { type: string, enum: [rules, assistant] }
+        links:
+          type: array
+          items:
+            type: object
+            required: [title, url]
+            properties:
+              title: { type: string }
+              url: { type: string }
     Currency:
       type: string
       pattern: '^[A-Z]{3}$'
