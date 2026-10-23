@@ -16,6 +16,7 @@ class ManagedRolesTest {
         assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "compute:get"));
         assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "compute:list"));
         assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "compute:preview"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "compute:observe"), "a resource's metrics are a read, as the identity service's viewer policy has it");
         assertTrue(ManagedRoles.allows(ManagedRoles.VIEWER, "jobs:list"));
         assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "compute:create"));
         assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "jobs:cancel"));
@@ -83,5 +84,30 @@ class ManagedRolesTest {
         assertEquals("compute:create", AccessCheck.action("compute", "create"));
         assertEquals("wfrn:wf:compute:global:123456789012:vm/*", AccessCheck.typePattern("wf", "compute", "global", "123456789012", "vm"));
         assertEquals("wfrn:wf:jobs:global:123456789012:*", AccessCheck.servicePattern("wf", "jobs", "global", "123456789012"));
+    }
+
+    @Test
+    void everyoneReadsCostAdminsAndAuditorsExportAndOnlyAdminsChangeBudgets() {
+        for (String role : ManagedRoles.ALL) {
+            assertTrue(ManagedRoles.allows(role, "cost:list"), role);
+            assertTrue(ManagedRoles.allows(role, "budgets:get"), role);
+            assertTrue(ManagedRoles.allows(role, "budgets:list"), role);
+            assertTrue(ManagedRoles.allows(role, "scorecards:list"), role);
+        }
+        assertTrue(ManagedRoles.allows(ManagedRoles.ADMIN, "cost:export"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.AUDITOR, "cost:export"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "cost:export"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "cost:export"));
+        for (String verb : new String[] {"create", "update", "delete"}) {
+            assertTrue(ManagedRoles.allows(ManagedRoles.ADMIN, "budgets:" + verb));
+            assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "budgets:" + verb), verb);
+            assertFalse(ManagedRoles.allows(ManagedRoles.AUDITOR, "budgets:" + verb), verb);
+            assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "budgets:" + verb), verb);
+            assertEquals(ManagedRoles.ADMIN, ManagedRoles.suggestedFor("budgets:" + verb));
+        }
+        assertEquals(ManagedRoles.AUDITOR, ManagedRoles.suggestedFor("cost:export"));
+        assertEquals("AllowCostExport", ManagedRoles.statementFor(ManagedRoles.AUDITOR, "cost:export"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.OPERATOR, "scorecards:remediate"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "scorecards:remediate"));
     }
 }

@@ -30,6 +30,8 @@ config:
   identityUrl: "http://console-identity-service"
   stateUrl: "http://console-state-service"
   searchUrl: "http://console-search-indexer"
+  costUrl: "http://console-cost-service"
+  driftUrl: "http://console-drift-service"
   platformBaseUrl: "http://platform"
   webOrigins: "https://console.example.com"
   kafkaBootstrapServers: "kafka:9092"
@@ -47,8 +49,8 @@ config:
       console-search-indexer:
         audiences: [console-state-service, console-identity-service]
         serviceAccount: ""   # <namespace>:<name>; empty: <the release's namespace>:console-search-indexer
-      console-drift-service:
-        audiences: [console-state-service, console-identity-service]
+      console-drift-service:   # also the cost service, which it asks for monthly costs
+        audiences: [console-state-service, console-identity-service, console-cost-service]
         serviceAccount: ""
       console-cost-service:
         audiences: [console-state-service, console-identity-service]

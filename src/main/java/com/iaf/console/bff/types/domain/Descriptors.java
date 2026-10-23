@@ -43,6 +43,15 @@ public final class Descriptors {
     }
 
     public static ConsoleType describe(ResourceType type, List<CatalogEntry> catalog) {
+        return describe(type, catalog, false);
+    }
+
+    /**
+     * The descriptor, with {@code observe.metrics} true when the type has a metrics read (P-09:
+     * an {@code observe.metrics} block naming an action) or when {@code metricsAnyway} says the
+     * console's drift service answers metrics for it regardless (the demo's stand-in makes them up).
+     */
+    public static ConsoleType describe(ResourceType type, List<CatalogEntry> catalog, boolean metricsAnyway) {
         Objects.requireNonNull(type, "type");
         String service = serviceOf(type);
         String plural = type.plural() == null || type.plural().isBlank() ? type.name() + "s" : type.plural();
@@ -54,8 +63,9 @@ public final class Descriptors {
                 console != null && console.detail() != null && console.detail().tabs() != null && !console.detail().tabs().isEmpty()
                         ? List.copyOf(console.detail().tabs()) : DEFAULT_TABS);
         Map<String, String> lifecycle = lifecycle(type, console);
-        ConsoleType.Observe observe = type.observe() == null ? new ConsoleType.Observe(false, null, false, false)
-                : new ConsoleType.Observe(true, type.observe().interval(), type.observe().metrics() != null, type.observe().discover() != null);
+        boolean metrics = metricsAnyway || hasMetricsRead(type);
+        ConsoleType.Observe observe = type.observe() == null ? new ConsoleType.Observe(false, null, metrics, false)
+                : new ConsoleType.Observe(true, type.observe().interval(), metrics, type.observe().discover() != null);
         List<ConsoleAction> actions = new ArrayList<>();
         for (CatalogEntry entry : catalog == null ? List.<CatalogEntry>of() : catalog) {
             if (entry.noun() != null && entry.noun().equals(type.name()) && entry.verb() != null) {
@@ -63,9 +73,15 @@ public final class Descriptors {
             }
         }
         actions.sort((a, b) -> rank(a.verb()) != rank(b.verb()) ? Integer.compare(rank(a.verb()), rank(b.verb())) : a.verb().compareTo(b.verb()));
-        String etag = etag(type, actions);
+        String etag = metricsAnyway ? sha256(etag(type, actions) + "|metrics") : etag(type, actions);
         return new ConsoleType(service + "/" + type.name(), type.name(), service, plural, title, icon, type.description(), type.schema(), type.states(),
                 list, detail, lifecycle, observe, actions, etag);
+    }
+
+    /** Whether the platform type has a metrics read (P-09): an {@code observe.metrics} block that names its action. */
+    public static boolean hasMetricsRead(ResourceType type) {
+        return type.observe() != null && type.observe().metrics() != null && type.observe().metrics().action() != null
+                && !type.observe().metrics().action().isBlank();
     }
 
     /** The console service of a type: {@code metadata.service}, else the owner team without its {@code team-} prefix. */

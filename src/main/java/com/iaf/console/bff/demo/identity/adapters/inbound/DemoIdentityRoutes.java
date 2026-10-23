@@ -492,9 +492,11 @@ public class DemoIdentityRoutes {
         if (ManagedRoles.OPERATOR.equals(role)) {
             statements.add(statement("DenyDestructive", "deny", List.of("*:delete", "*:destroy", "*:purge", "*:terminate")));
             statements.add(statement("DenyIamWrites", "deny", List.of("iam:create", "iam:update", "iam:delete", "iam:rotate", "iam:decide")));
+            statements.add(statement("DenyCostAdmin", "deny", List.of("cost:export", "budgets:create", "budgets:update", "budgets:delete")));
         }
         if (ManagedRoles.AUDITOR.equals(role)) {
             statements.add(statement("AllowAudit", "allow", List.of("audit:*", "jobs:list", "jobs:get")));
+            statements.add(statement("AllowCostExport", "allow", List.of("cost:export")));
         }
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("policyId", "managed/" + role);

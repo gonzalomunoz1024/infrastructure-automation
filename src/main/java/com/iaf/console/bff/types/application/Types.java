@@ -116,7 +116,7 @@ public class Types {
                         if (!inRegion.isEmpty() && !inRegion.contains(rt.name())) {
                             continue;
                         }
-                        types.add(Descriptors.describe(rt, catalog));
+                        types.add(Descriptors.describe(rt, catalog, properties.demoMetrics().contains(rt.name())));
                     }
                     types.sort((a, b) -> a.key().compareTo(b.key()));
                     StringBuilder hash = new StringBuilder();

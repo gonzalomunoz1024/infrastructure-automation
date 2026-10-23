@@ -27,18 +27,30 @@ info:
     `account-admin` and `auditor` (shown as Viewer, Operator, Admin and Auditor), their policies,
     and four groups that hold them: `viewers`, `members` (operator; the account's owning identity
     provider team joins it at sign-in), `owners` (account-admin) and `auditors`. Managed roles keep
-    their names and policies; `owners` keeps the account-admin role and at least one member. The
+    their names and policies; `owners` keeps the account-admin role and at least one member. Every
+    managed role reads cost and budgets (`cost:get`, `cost:list`, `budgets:get`, `budgets:list`,
+    decision 25); exporting the chargeback (`cost:export`) is `account-admin`'s and `auditor`'s,
+    and `budgets:create`, `budgets:update` and `budgets:delete` are `account-admin`'s alone. Every
+    managed role but `auditor` may ask for an elevation (`elevation:create`); reading the account's
+    elevations is `account-admin`'s and `auditor`'s, deciding and revoking them `account-admin`'s.
+    Blueprints and their stacks (decision 33, the service `blueprints`): every managed role reads
+    them (`blueprints:get`, `blueprints:list`); `operator` and `account-admin` launch and resume
+    stacks (`blueprints:launch`, `blueprints:resume`); tearing one down (`blueprints:teardown`) is
+    `account-admin`'s, as deleting is. A
+    release that changes a managed policy reaches the accounts made before it: at start the service
+    replaces each managed policy of an account that is not closed which differs from the release's,
+    in place, with a `PolicyChanged` of action `updated` by `svc:console-identity-service`. The
     internal JWT the BFF signs carries the person's `groups` and `roles` (the membership this
     service serves), so every service decides admin-only things on `roles` containing
     `account-admin`, never on a group name.
 
     **Names and ids.** The console's own IAM records are wfrns too, in the `iam` service with an
     empty region (they live in no region) and kebab-case kinds: `user`, `group`, `role`, `policy`,
-    `access-key`, `quota`, `access-request`, as in
+    `access-key`, `quota`, `access-request`, `access-review`, `elevation`, as in
     `wfrn:wf:iam::123456789012:access-request/areq_01jbx9r2m4k9d3c8f5r6t1w0yd`; policies name them
     with patterns such as `wfrn:wf:iam::123456789012:access-request/*`. Ids are a prefix and a
     ULID: `user_`, `grp_`, `role_`, `pol_`, `ck_` (access keys), `qreq_` (quota requests), `areq_`
-    (access requests). A group's `roles` are served as role ids (input takes ids or names) and its
+    (access requests), `arev_` (access reviews), `elev_` (elevations). A group's `roles` are served as role ids (input takes ids or names) and its
     `members` as user ids; a user's `groups` are group names.
 
     **Versions.** Accounts, policies, roles, groups and users carry a `version` that grows by one
@@ -69,6 +81,12 @@ tags:
   - name: Quotas
   - name: Access requests
     description: A person asks for an action a denial marked requestable; an account admin decides
+  - name: Guardrails
+    description: 'The organization''s guardrails over every account''s roles, like AWS service control policies; written by the internal principal for an organization admin'
+  - name: Access reviews
+    description: Campaigns in which an account's admins keep or revoke who holds which group; what is left undecided expires at the due date
+  - name: Elevations
+    description: 'A role held for a while: a person asks with a reason and a rule or an account admin approves (just-in-time elevation), or an organization admin gives support or emergency access (break-glass); either ends at `until`'
   - name: Authorization
   - name: Internal
     description: For the console's own services (the `svc` claim) and OPA; a user's JWT answers 404
@@ -192,6 +210,7 @@ paths:
               properties:
                 name: { type: string, maxLength: 64 }
                 owningTeam: { type: string, description: The platform team that owns the account's resources }
+                costCentre: { type: string, maxLength: 64, description: 'The finance cost centre the account is charged to; trimmed, and a blank one is none' }
                 ownerEmail: { type: string, format: email }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
       responses:
@@ -220,7 +239,8 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       operationId: updateAccount
-      summary: Change an account's name, status or default region
+      summary: Change an account's name, status, default region or cost centre
+      description: 'A user needs `account:update` on the account (the account-admin role has it), so a suspended or closed account changes only by the internal principal. Only the internal principal changes `status`, and never to `closed` (that is `POST /v1/accounts/{accountId}:close`, a 400 here); a closed account''s status no longer changes (409). `suspended` is reversible.'
       tags: [Accounts]
       parameters:
         - $ref: '#/components/parameters/IfMatch'
@@ -235,6 +255,7 @@ paths:
                 name: { type: string, maxLength: 64 }
                 status: { $ref: '#/components/schemas/AccountStatus' }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
+                costCentre: { type: string, maxLength: 64, description: 'Absent keeps it; an empty string clears it' }
       responses:
         '200':
           description: The account
@@ -773,6 +794,19 @@ paths:
               schema: { $ref: '#/components/schemas/AccessKeyCreated' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/quota-rules:
+    get:
+      operationId: getQuotaRules
+      summary: The rules that approve a quota increase at once, and who decides the rest
+      description: 'The organization''s auto-approval rules, in the order they are read, for anyone signed in, so the console can say what is approved on the spot. A rule covers the keys its patterns name (`*` is any run of characters) and approves an ask of at most `maxFactor` times the current limit and never above `maxLimit`, once per `cooldown` for an account''s key (any rule''s approval of the key starts it). An ask no rule covers goes to `approver`.'
+      tags: [Quotas]
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRules' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/accounts/{accountId}/quotas:
     parameters:
       - $ref: '#/components/parameters/AccountIdPath'
@@ -844,7 +878,7 @@ paths:
     post:
       operationId: requestQuotaIncrease
       summary: Ask for a higher limit
-      description: 'Opens a request the platform team decides (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask); one open request per quota key, a second answers 409. An approval arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
+      description: 'An ask above the current limit (one at or below it is a 400, code `not-an-increase`). The first of the organization''s auto-approval rules (`GET /v1/quota-rules`) that covers it approves it at once: the limit is set as an internal `PUT` sets it and the request comes back `approved`, `decidedBy` `rule:<name>`. Any other is routed to the approver (`routedTo`, the platform team) and stays open until they decide it (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask). One open request per quota key; a second answers 409. Every outcome arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
       tags: [Quotas]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -860,7 +894,7 @@ paths:
                 reason: { type: string, minLength: 10, maxLength: 1000 }
       responses:
         '202':
-          description: 'The request was opened; `GET /v1/accounts/{accountId}/quota-requests/{requestId}` follows it'
+          description: 'The request, `approved` by a rule or `open` and routed to the approver; `GET /v1/accounts/{accountId}/quota-requests/{requestId}` follows it'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/QuotaRequest' }
@@ -1021,6 +1055,155 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/policy-simulations:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    post:
+      operationId: simulatePolicies
+      summary: 'Ask what a person, a role or a set of groups may do, and what decides it'
+      description: >-
+        The policy simulator. Answers each check exactly as `POST /v1/authorize` would for the
+        principal, over the account's current data with the unsaved `policies` laid over it (and,
+        for a role, the draft `boundary` in place of its own); nothing is written. Simulating a
+        person or a role needs `iam:get`, a set of groups `iam:list`.
+      tags: [Authorization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicySimulationRequest' }
+      responses:
+        '200':
+          description: One result per check, in order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicySimulation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/guardrails:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listAccountGuardrails
+      summary: The organization's guardrails that apply to the account
+      description: Needs `iam:list`; in id order, the order the evaluator reads them in
+      tags: [Guardrails]
+      responses:
+        '200':
+          description: Every guardrail that applies
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Guardrail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/guardrails:
+    get:
+      operationId: listGuardrails
+      summary: List the organization's guardrails
+      description: The internal principal only (the BFF, for an organization admin); anyone else gets a 404
+      tags: [Guardrails]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page, in id order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Guardrail' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createGuardrail
+      summary: Create a guardrail
+      description: >-
+        The internal principal only. Every account it targets gets a GuardrailChanged and a new
+        authorization version, so cached decisions there are dropped.
+      tags: [Guardrails]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuardrailInput' }
+      responses:
+        '201':
+          description: The guardrail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guardrail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/guardrails/{guardrailId}:
+    parameters:
+      - name: guardrailId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getGuardrail
+      summary: Read a guardrail
+      description: The internal principal only
+      tags: [Guardrails]
+      responses:
+        '200':
+          description: The guardrail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guardrail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateGuardrail
+      summary: Change a guardrail
+      description: >-
+        The internal principal only; a field left out stays as it is. The accounts it applied to and
+        no longer does get a GuardrailChanged `deleted`.
+      tags: [Guardrails]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuardrailInput' }
+      responses:
+        '200':
+          description: The guardrail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guardrail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteGuardrail
+      summary: Delete a guardrail
+      description: The internal principal only
+      tags: [Guardrails]
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/accounts/{accountId}/platform-credentials:
     parameters:
       - $ref: '#/components/parameters/AccountIdPath'
@@ -1078,6 +1261,434 @@ paths:
           description: The caller's bundle is current
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listAccessReviews
+      summary: An account's access review campaigns
+      description: 'The campaign started last first. Needs `access-review:list` on `wfrn:wf:iam::{accountId}:access-review/*` (access reviews are wfrns of kind `access-review`, ids `arev_` and a ULID, their items `arevi_`), which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions: access-review:*`), so admins, auditors and the internal principal read the reviews.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessReview' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: startAccessReview
+      summary: Start an access review campaign
+      description: 'Account admins (`access-review:create`). The campaign takes who holds which group now: one item per person and group of the account''s active memberships (suspended people are left out), with the role names the group carries. Admins keep or revoke each item until the campaign is due, `dueInDays` after it starts; when every item is decided it is `closed`, and at the due date it closes with each pending item `expired`: the group is taken off the person as a revoke would, decided by `system:access-review`, except the account''s last active owner, whose owners item is kept with a comment. A campaign with nothing to review is closed at once. One open campaign per account: a second answers 409 naming the open one (`detail.reviewId`); a suspended or closed account answers 409. An `AccessReviewChanged` event (subject `access-review`, action `created`) follows. Besides the campaigns people start, a sweep every 15 minutes starts a `scheduled` one, by `system:access-review`, on every active account with none open whose last campaign started 90 days ago or more (with none yet, that was created 90 days ago or more).'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessReviewInput' }
+      responses:
+        '201':
+          description: The campaign, open (closed when there was nothing to review)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The account has an open campaign, named in `detail.reviewId`, or the account is not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReviewConflict' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    get:
+      operationId: getAccessReview
+      summary: One access review campaign
+      description: 'Needs `access-review:get` on the campaign (`wfrn:wf:iam::{accountId}:access-review/{reviewId}`).'
+      tags: [Access reviews]
+      responses:
+        '200':
+          description: The campaign and its counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}/items:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    get:
+      operationId: listAccessReviewItems
+      summary: A campaign's items
+      description: 'In the order they were made, of one decision when `decision` is given. Reading the items is reading the campaign: `access-review:get` on it.'
+      tags: [Access reviews]
+      parameters:
+        - name: decision
+          in: query
+          schema: { $ref: '#/components/schemas/AccessReviewDecision' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessReviewItem' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}/items/{itemId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+      - name: itemId
+        in: path
+        required: true
+        description: 'One of its items (`arevi_…`)'
+        schema: { type: string }
+    post:
+      operationId: decideAccessReviewItem
+      summary: Keep or revoke one person's group
+      description: 'Account admins (`access-review:decide` on the campaign). `keep` leaves the access as it is; `revoke` takes the group off the person''s membership, with the `UserChanged` event any change of their groups publishes, and is recorded without a change when they no longer hold the group. Revoking the account''s last active owner''s owners group answers 409. A decided item is final, and a campaign no longer open or past its due date takes no decision (409; the sweep expires what is still pending). Nobody decides an item about themselves: the person reviewed gets 403, `denied.reason` `nobody reviews their own access`. Each decision publishes an `AccessReviewChanged` (action `updated`) with the campaign''s counts and the item decided; the last one closes the campaign.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessReviewDecisionInput' }
+      responses:
+        '200':
+          description: The item, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReviewItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The caller is the person the item reviews, or may not decide
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}:cancel:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    post:
+      operationId: cancelAccessReview
+      summary: Cancel an open campaign
+      description: 'Account admins (`access-review:cancel` on the campaign). The campaign is `cancelled`; its pending items stay pending and never expire. A campaign already closed or cancelled, or past its due date, answers 409. An `AccessReviewChanged` (action `updated`) follows.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The campaign, cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/elevation-rules:
+    get:
+      operationId: getElevationRules
+      summary: How long an elevation lasts, the rules that approve one at once, and the break-glass limit
+      description: 'For anyone signed in, so the console can say what is approved on the spot. An ask lasts `defaultMinutes` unless it names `durationMinutes` (at most `maxMinutes`). The first rule, in order, whose `roles` hold the role asked for, whose `requesterRoles` hold a role the requester has through a group of the account, and whose `maxMinutes` covers the duration approves it at once (decided by `rule:<name>`); an ask no rule approves waits for a person who may decide it (`elevation:decide`) and expires after `pendingFor` undecided. Break-glass access lasts at most `breakGlassMaxMinutes`.'
+      tags: [Elevations]
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ElevationRules' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/accounts/{accountId}/elevations:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listElevations
+      summary: An account's elevations and break-glass access
+      description: 'The newest first. A person always sees their own. Seeing the account''s needs `elevation:list` on `wfrn:wf:iam::{accountId}:elevation/*` (elevations are wfrns of kind `elevation`, ids `elev_` and a ULID), which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions`); anyone else sees their own only.'
+      tags: [Elevations]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ElevationStatus' }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [elevation, break-glass] }
+        - name: userId
+          in: query
+          description: The person it is for; whoever may list the account's
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Elevation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: requestElevation
+      summary: Ask to hold a role of the account for a while
+      description: 'A person asks with a reason (`elevation:create`, which every managed role but `auditor` grants). `role` is a role name of the account (`admin` reads as `account-admin`); 400 when it is unknown or the person holds it through a group already. One open ask or elevation per person and role: another answers 409 with the open one. A rule may approve it at once (`GET /v1/elevation-rules`): it is then `active` from now until `until`. Otherwise it is `pending`, with its `approvers` (who may decide it, never the requester), and expires undecided after `pendingFor`. An `ElevationChanged` event (subject `elevation`, action `created`) follows. While active the role decides for the person as a role from a group does, inside the organization''s guardrails and the role''s boundary, with `elevated` true on the decision, and `POST /v1/principals:resolve` lists it in the account''s `roles` and `elevations`. At `until` it stops deciding at once; a sweep every minute then stores it `expired`, with an `ElevationChanged` of action `expired`.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationInput' }
+      responses:
+        '201':
+          description: The elevation, active when a rule approved it, else pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The account's policies refuse `elevation:create`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same person has this role asked for or held already
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    get:
+      operationId: getElevation
+      summary: One elevation
+      description: 'The person it is for, or `elevation:get` on `wfrn:wf:iam::{accountId}:elevation/{elevationId}`.'
+      tags: [Elevations]
+      responses:
+        '200':
+          description: The elevation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Another person's, and the account's policies refuse `elevation:get`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    post:
+      operationId: decideElevation
+      summary: Approve or reject an ask for an elevation
+      description: 'Needs `elevation:decide` (the managed `account-admin` policy). Nobody decides their own: the requester is refused with a 403 whose `denied.reason` says so. Approving starts it now, `active` until now plus its `durationMinutes`; rejecting stores it `rejected`. Only a `pending` ask is decided: anything else (expired included) answers 409. An `ElevationChanged` of action `approved` or `rejected` follows.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationDecision' }
+      responses:
+        '200':
+          description: The elevation, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The requester deciding their own, or the account's policies refuse `elevation:decide`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/elevations/{elevationId}:revoke:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/ElevationId'
+    post:
+      operationId: revokeElevation
+      summary: End an ask or an elevation now
+      description: 'Ends a `pending` ask (`cancelled`) or an `active` elevation or break-glass access (`revoked`) now. The person it is for may always end their own; anyone else needs `elevation:revoke` (the managed `account-admin` policy), and the internal principal may. One already ended answers 409. An `ElevationChanged` of action `cancelled` or `revoked` follows. Removing the person from the account ends their elevations there, and closing the account ends all of them, the same way, by `svc:console-identity-service`.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ElevationRevoke' }
+      responses:
+        '200':
+          description: The elevation, ended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Another person's, and the account's policies refuse `elevation:revoke`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/break-glass:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    post:
+      operationId: openBreakGlass
+      summary: Give a person support or emergency access to an account for a while
+      description: 'Internal principal only (a user''s JWT answers 404): the call an organization admin makes through the console. Gives `userId` (any console user, a member of the account or not) `role` (`account-admin` by default) for `durationMinutes` (at most 240, 60 by default), `active` from now, with a `reason` and the user who approved it (`approvedBy`, never the person themselves: 400). It is an elevation of kind `break-glass`: it decides as one does, inside the organization''s guardrails, is listed with the account''s elevations and in the person''s `POST /v1/principals:resolve` (an account they are no member of appears with no groups), publishes `ElevationChanged` (action `created`) on the account''s own trail, and ends at `until` or by `:revoke`; removing a member from the account leaves it. 404 for an unknown user; 400 for an unknown role or approver; 409 when the person is suspended or the account is not active, and 409 with the open one as the body when the same access (person, role, kind) is open.'
+      tags: [Elevations]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BreakGlassInput' }
+      responses:
+        '201':
+          description: The break-glass access, active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same access is open (the body is the open one), or the person is suspended or the account not active
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Elevation'
+                  - $ref: '#/components/schemas/Error'
+  /v1/accounts/{accountId}:close:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    post:
+      operationId: closeAccount
+      summary: Close an account
+      description: |
+        Internal principal only (a user's JWT answers 404). Closing is terminal: the account is
+        stored with status `closed`, `closedAt` and `closeReason`, and from then on every call in it
+        is refused (`account closed`) and sign-in leaves it out. Every usable access key of the
+        account is revoked (`AccessKeyChanged revoked`), every pending access request expires
+        (`AccessRequestChanged expired`), every open quota request is withdrawn (`QuotaChanged`),
+        the open access review is cancelled (`AccessReviewChanged updated`) and every open elevation
+        ends (`ElevationChanged cancelled` or `revoked`), then `AccountChanged closed` carries the
+        closed account. Closing a closed account is a 409.
+        The account's platform service account is left as it is, and its resources stay where they
+        are.
+      tags: [Accounts]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloseAccount' }
+      responses:
+        '202':
+          description: The closed account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /internal/v1/group-sync:run:
+    post:
+      operationId: runGroupSync
+      summary: Run the identity provider group sync now
+      description: |
+        For the console's own services (a user's JWT answers 404). The sync also runs nightly
+        (02:00 UTC by default). For every active account, the groups that map identity provider
+        groups (`Group.idpGroups`) are compared with the directory's members, matched by email:
+        a person gains the mapped groups their provider groups give them (unless an admin or a
+        review excluded them) and loses the ones they held only through a provider group they
+        left; groups an admin gave stay. People without a membership in the account get none here.
+        The owners group of an account's last active owner is never removed: the removal is
+        skipped and reported. An account whose owning team the directory lacks is marked
+        `owningTeamMissing`. Every membership change publishes `UserChanged`, every mark
+        `AccountChanged`.
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the run did, account by account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupSyncReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     consoleJwt:
@@ -1102,6 +1713,12 @@ components:
       required: true
       description: 'An access request (`areq_…`) or a quota request (`qreq_…`)'
       schema: { type: string }
+    ElevationId:
+      name: elevationId
+      in: path
+      required: true
+      description: 'An elevation (`elev_…`)'
+      schema: { type: string }
     QuotaKey:
       name: quotaKey
       in: path
@@ -1122,7 +1739,7 @@ components:
       name: Idempotency-Key
       in: header
       required: false
-      description: The same key with the same body answers the first result for 24 hours; with another body it is 409
+      description: "The same key with the same body answers the first result for 24 hours; with another body it is 409. An answer that carries a secret (an access key's `secretPart`, sent with `Cache-Control: no-store`) is never stored: its retry is a 409 saying the request was carried out, and the secret stays shown once"
       schema: { type: string, maxLength: 255 }
     IfMatch:
       name: If-Match
@@ -1187,12 +1804,17 @@ components:
         statement: { type: string, description: 'The statement''s sid' }
         requestable: { type: boolean, description: Whether the person may open an access request for it }
         suggestedRole: { type: string, description: The managed role that would allow it }
+        scope:
+          type: string
+          enum: [policy, boundary, guardrail]
+          description: 'Which part of console IAM refused it: a statement of a role''s policy, the permission boundary of the role that would have allowed it (`policyId` is the boundary), or one of the organization''s guardrails. Requesting a role does not help past a boundary or a guardrail, so those are never requestable'
+        guardrailId: { type: string, description: The guardrail whose deny statement refused it }
     PlatformCredentials:
       type: object
       required: [accountId, platformServiceAccountId, source]
       properties:
         accountId: { $ref: '#/components/schemas/AccountId' }
-        platformServiceAccountId: { type: string, description: The platform service account (P-03, preset console) }
+        platformServiceAccountId: { type: string, description: "The platform service account (P-03, preset console)" }
         source: { type: string, enum: [local, vault], description: Where the token is }
         token: { type: string, description: 'The bearer token; with source local only' }
         vaultPath: { type: string, description: 'The Vault secret; with source vault only: console/accounts/{accountId}/platform-service-account' }
@@ -1218,11 +1840,15 @@ components:
         name: { type: string }
         status: { $ref: '#/components/schemas/AccountStatus' }
         owningTeam: { type: string }
+        costCentre: { type: string, maxLength: 64, description: 'The finance cost centre the account is charged to (decision 2): chargeback rows and the executive home''s spend by team group by it; absent until an admin sets it, when the cost service falls back to owningTeam' }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
         platformServiceAccountId: { type: string, description: 'The platform service account bound to this account (P-03); its token is never in this record: GET /v1/accounts/{accountId}/platform-credentials tells the console''s own services where it is' }
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: When the account was closed; with status closed only }
+        closeReason: { type: string, maxLength: 2000, description: Why it was closed; with status closed only }
+        owningTeamMissing: { type: boolean, readOnly: true, description: 'True while the nightly group sync finds no identity provider group named owningTeam; absent otherwise' }
     AccountMembership:
       type: object
       required: [accountId, name, groups, roles]
@@ -1235,9 +1861,13 @@ components:
           items: { type: string }
         roles:
           type: array
-          description: 'The managed role names the person holds there: viewer, operator, account-admin, auditor'
+          description: 'The managed role names the person holds there, through a group or for a while (an active elevation or break-glass access): viewer, operator, account-admin, auditor'
           items: { type: string }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        elevations:
+          type: array
+          description: 'The roles the person holds there for a while, each until its `until`, when it stops deciding whatever a token says, so a token the BFF signs should not outlive the earliest. An account the person is no member of appears with no groups when break-glass access is open in it. Absent when none'
+          items: { $ref: '#/components/schemas/HeldElevation' }
     User:
       type: object
       required: [userId, email, status, version]
@@ -1255,6 +1885,16 @@ components:
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         lastSignInAt: { type: string, format: date-time }
+        idpGroups:
+          type: array
+          readOnly: true
+          description: 'The groups among `groups` the person holds through their identity provider groups (`Group.idpGroups`): sign-in and the nightly group sync add and remove them as the provider''s groups change. Every other group is an admin''s, and no sync removes it.'
+          items: { type: string }
+        excludedGroups:
+          type: array
+          readOnly: true
+          description: 'Groups that map identity provider groups and that an admin or an access review took from the person: sign-in and the group sync leave them out until an admin adds them back'
+          items: { type: string }
     GroupInput:
       type: object
       properties:
@@ -1289,6 +1929,9 @@ components:
         policies:
           type: array
           items: { type: string }
+        boundary:
+          type: string
+          description: 'The role''s permission boundary: a policy of the account (id or name; served as the id). An allow of the role counts only where the boundary allows too and none of its denies match. On a change, absent keeps it and an empty string removes it. The account-admin role takes none (409). A policy that bounds a role cannot be deleted (409)'
     Role:
       allOf:
         - $ref: '#/components/schemas/RoleInput'
@@ -1341,6 +1984,96 @@ components:
             version: { type: integer }
             builtIn: { type: boolean }
             updatedAt: { type: string, format: date-time }
+    GuardrailInput:
+      type: object
+      description: 'An organization guardrail, like an AWS service control policy. On a change, a field left out stays as it is'
+      properties:
+        name: { type: string, pattern: '^[a-z0-9-]{2,64}$', description: Unique in the organization }
+        description: { type: string }
+        statements:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: 'Policy statements over any account''s wfrns. A matching deny refuses whatever a role allows; when any guardrail of an account has allow statements, an action none of them allows is refused'
+          items: { $ref: '#/components/schemas/Statement' }
+        accounts:
+          type: array
+          minItems: 1
+          description: '`["*"]` for every account, now and later, or account ids that exist'
+          items: { type: string, pattern: '^(\*|[0-9]{12})$' }
+    Guardrail:
+      allOf:
+        - $ref: '#/components/schemas/GuardrailInput'
+        - type: object
+          required: [guardrailId, name, statements, accounts, version]
+          properties:
+            guardrailId: { type: string, description: '`gr_` and a ULID' }
+            version: { type: integer }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    PolicySimulationRequest:
+      type: object
+      required: [principal, checks]
+      properties:
+        principal:
+          type: object
+          description: Exactly one of the three
+          properties:
+            userId: { type: string, description: A person of the account }
+            role: { type: string, description: 'A role, by id or name' }
+            groups:
+              type: array
+              description: 'Groups, by id or name'
+              items: { type: string }
+        policies:
+          type: array
+          maxItems: 10
+          description: Unsaved policy documents the principal would also hold
+          items:
+            type: object
+            required: [statements]
+            properties:
+              name: { type: string }
+              statements:
+                type: array
+                items: { $ref: '#/components/schemas/Statement' }
+        boundary:
+          type: object
+          description: 'For a role only: a draft permission boundary used in place of its own'
+          required: [statements]
+          properties:
+            name: { type: string }
+            statements:
+              type: array
+              items: { $ref: '#/components/schemas/Statement' }
+        checks:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [action, resource]
+            properties:
+              action: { type: string, description: '`<service>:<verb>`' }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern" }
+              context:
+                type: object
+                additionalProperties: true
+    PolicySimulation:
+      type: object
+      required: [results, version]
+      properties:
+        results:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Decision'
+              - type: object
+                required: [action, resource]
+                properties:
+                  action: { type: string }
+                  resource: { type: string }
+        version: { type: integer, description: 'The account''s authorization version the results were decided at' }
     AccessKey:
       type: object
       required: [keyId, userId, status, createdAt]
@@ -1379,7 +2112,7 @@ components:
       required: [action, reason]
       properties:
         action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
-        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        resource: { type: string, description: "The wfrn or pattern, as the denial named it" }
         role: { type: string, description: The managed role asked for; the denial's suggestedRole by default }
         reason: { type: string, maxLength: 2000 }
     AccessDecision:
@@ -1436,8 +2169,28 @@ components:
         requestedBy: { type: string }
         requestedAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time }
-        decidedBy: { type: string }
+        decidedBy: { type: string, description: 'Who decided: a user, a service (`svc:<name>`), or the auto-approval rule (`rule:<name>`) that approved it at once' }
         comment: { type: string }
+        routedTo: { type: string, description: 'Who decides a request no rule approved: `platform-team`, through `:decide`' }
+    QuotaRules:
+      type: object
+      required: [items, approver]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [name, keys, maxFactor, maxLimit]
+            properties:
+              name: { type: string }
+              keys:
+                type: array
+                description: 'Quota key patterns: `resources.*`, `jobs-per-minute`, `access-keys`'
+                items: { type: string }
+              maxFactor: { type: number, minimum: 1, description: 'The highest ask it approves, as a multiple of the current limit' }
+              maxLimit: { type: integer, minimum: 1, description: The highest limit it approves at all }
+              cooldown: { type: string, description: 'An ISO 8601 duration (`PT720H`): after a rule approves an account''s key, no rule approves that key again until it passes; absent for none' }
+        approver: { type: string, description: 'Who decides an ask no rule approves: `platform-team`' }
     AuthorizeRequest:
       type: object
       required: [principal, checks]
@@ -1461,7 +2214,7 @@ components:
             required: [action, resource]
             properties:
               action: { type: string, description: '`<service>:<verb>`' }
-              resource: { type: string, description: A wfrn, or a wfrn pattern for list checks }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern for list checks" }
               context:
                 type: object
                 additionalProperties: true
@@ -1471,15 +2224,240 @@ components:
       properties:
         decisions:
           type: array
+          items: { $ref: '#/components/schemas/Decision' }
+        version: { type: integer, description: 'The account''s authorization version the decisions were made with' }
+    Decision:
+      type: object
+      description: >-
+        One check's answer. The order of evaluation: the account and the person's state; the
+        organization's guardrails that apply to the account (a matching deny refuses, and when any
+        of them allows something, an action none of them allows is refused); then the statements of
+        the person's roles (through their groups, and the roles they hold for a while): a matching
+        deny refuses, else the first matching allow whose role's permission boundary allows it too,
+        else the boundary that refused one, else a default deny naming the managed role that would
+        allow it.
+      required: [allowed]
+      properties:
+        allowed: { type: boolean }
+        reason: { type: string }
+        role: { type: string, description: The role the deciding statement came from }
+        policyId: { type: string, description: 'The policy whose statement decided; on a boundary refusal, the boundary' }
+        statement: { type: string, description: 'The statement''s sid' }
+        requestable: { type: boolean, description: 'When denied: whether the person may open an access request' }
+        suggestedRole: { type: string, description: 'When denied: the managed role that would allow it' }
+        scope: { type: string, enum: [policy, boundary, guardrail], description: 'What decided: a role''s policy, a role''s permission boundary, or a guardrail' }
+        guardrailId: { type: string, description: The guardrail whose deny statement decided }
+        elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group. The roles from groups are tried first, so it marks only what the time-boxed role alone allows' }
+    AccessReviewInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200, description: '`Access review <date>` by default' }
+        dueInDays: { type: integer, minimum: 1, maximum: 90, default: 14, description: How many days the campaign stays open }
+    AccessReviewCounts:
+      type: object
+      required: [total, kept, revoked, expired, pending]
+      properties:
+        total: { type: integer, minimum: 0 }
+        kept: { type: integer, minimum: 0 }
+        revoked: { type: integer, minimum: 0 }
+        expired: { type: integer, minimum: 0 }
+        pending: { type: integer, minimum: 0 }
+    AccessReview:
+      type: object
+      required: [reviewId, name, status, trigger, startedBy, startedAt, dueAt, counts, version]
+      properties:
+        reviewId: { type: string, description: '`arev_` and a ULID' }
+        name: { type: string }
+        status: { type: string, enum: [open, closed, cancelled], description: '`closed` once every item is decided or the due date passed' }
+        trigger: { type: string, enum: [manual, scheduled], description: '`scheduled` for the quarterly campaigns the sweep starts' }
+        startedBy: { type: string, description: 'Who started it; `system:access-review` for a scheduled campaign' }
+        startedAt: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: When it closed or was cancelled }
+        counts: { $ref: '#/components/schemas/AccessReviewCounts' }
+        version: { type: integer, minimum: 1, description: 'Grows by one per change; the `AccessReviewChanged` events carry it' }
+    AccessReviewDecision:
+      type: string
+      description: '`expired` is an item still pending at the due date'
+      enum: [pending, keep, revoke, expired]
+    AccessReviewItem:
+      type: object
+      required: [itemId, reviewId, userId, groupId, groupName, roles, decision]
+      properties:
+        itemId: { type: string, description: '`arevi_` and a ULID' }
+        reviewId: { type: string }
+        userId: { type: string }
+        email: { type: string }
+        name: { type: string }
+        groupId: { type: string }
+        groupName: { type: string }
+        roles:
+          type: array
+          description: The names of the roles the group carried when the campaign started
+          items: { type: string }
+        decision: { $ref: '#/components/schemas/AccessReviewDecision' }
+        decidedBy: { type: string, description: 'Who decided; `system:access-review` for what the due date decided' }
+        decidedAt: { type: string, format: date-time }
+        comment: { type: string }
+    AccessReviewDecisionInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [keep, revoke] }
+        comment: { type: string, maxLength: 2000 }
+    AccessReviewConflict:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail:
+          type: object
+          description: With an open campaign only
+          required: [reviewId]
+          properties:
+            reviewId: { type: string, description: The open campaign }
+        correlationId: { type: string }
+    ElevationStatus:
+      type: string
+      description: '`pending` waits for a person; `active` decides until `until`; `expired` is an active one past `until`, or a pending one past `pendingFor`, as served before the sweep stores it'
+      enum: [pending, active, rejected, cancelled, revoked, expired]
+    ElevationInput:
+      type: object
+      required: [role, reason]
+      properties:
+        role: { type: string, description: 'A role name of the account; `admin` reads as `account-admin`' }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+        durationMinutes: { type: integer, minimum: 5, maximum: 480, description: 'How long it lasts once approved: `defaultMinutes` by default, at most `maxMinutes` (`GET /v1/elevation-rules`)' }
+    ElevationDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    ElevationRevoke:
+      type: object
+      properties:
+        comment: { type: string, maxLength: 2000 }
+    BreakGlassInput:
+      type: object
+      required: [userId, reason, approvedBy]
+      properties:
+        userId: { type: string, description: The console user given access }
+        role: { type: string, description: 'A role name of the account; `account-admin` by default' }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+        durationMinutes: { type: integer, minimum: 5, maximum: 240, default: 60 }
+        approvedBy: { type: string, description: 'The console user who approved it (a user id), never `userId`' }
+        ticket: { type: string, maxLength: 200, description: 'The incident or support ticket, for the trail' }
+    Elevation:
+      type: object
+      required: [elevationId, accountId, kind, user, role, reason, durationMinutes, status, requestedAt, requestedBy]
+      properties:
+        elevationId: { type: string, description: '`elev_` and a ULID' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        kind: { type: string, enum: [elevation, break-glass] }
+        user:
+          type: object
+          required: [userId]
+          description: The person it is for
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        ticket: { type: string }
+        durationMinutes: { type: integer }
+        status: { $ref: '#/components/schemas/ElevationStatus' }
+        requestedAt: { type: string, format: date-time }
+        requestedBy: { type: string, description: 'The person, or `svc:<name>` for break-glass access' }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string, description: 'Who approved or rejected it: a user, the rule that approved it at once (`rule:<name>`), or the approver of break-glass access' }
+        comment: { type: string, description: The decision's comment }
+        startsAt: { type: string, format: date-time, description: When it began to decide }
+        until: { type: string, format: date-time, description: When it stops deciding }
+        endedAt: { type: string, format: date-time, description: When it was cancelled or revoked }
+        endedBy: { type: string, description: 'Who ended it: a user, a service, or `svc:console-identity-service` when the person left the account or the account closed' }
+        endComment: { type: string }
+        approvers:
+          type: array
+          description: 'While pending: who may decide it (at most 100), never the requester'
+          items: { type: string }
+    HeldElevation:
+      type: object
+      required: [elevationId, role, kind, until]
+      properties:
+        elevationId: { type: string }
+        role: { type: string }
+        kind: { type: string, enum: [elevation, break-glass] }
+        until: { type: string, format: date-time }
+    ElevationRules:
+      type: object
+      required: [defaultMinutes, maxMinutes, pendingFor, breakGlassMaxMinutes, items]
+      properties:
+        defaultMinutes: { type: integer, description: How long an ask lasts when it names no duration }
+        maxMinutes: { type: integer, description: The longest an ask may last }
+        pendingFor: { type: string, description: 'An ISO 8601 duration (`PT24H`): how long an ask waits for a person before it expires' }
+        breakGlassMaxMinutes: { type: integer, description: The longest break-glass access may last }
+        items:
+          type: array
           items:
             type: object
-            required: [allowed]
+            required: [name, roles, requesterRoles, maxMinutes]
             properties:
-              allowed: { type: boolean }
-              reason: { type: string }
-              role: { type: string, description: The role the deciding statement came from }
-              policyId: { type: string, description: The policy whose statement decided }
-              statement: { type: string, description: 'The statement''s sid' }
-              requestable: { type: boolean, description: 'When denied: whether the person may open an access request' }
-              suggestedRole: { type: string, description: 'When denied: the managed role that would allow it' }
-        version: { type: integer, description: 'The account''s authorization version the decisions were made with' }
+              name: { type: string }
+              roles:
+                type: array
+                description: The role names it approves
+                items: { type: string }
+              requesterRoles:
+                type: array
+                description: The requester holds one of these role names through a group of the account
+                items: { type: string }
+              maxMinutes: { type: integer, description: The longest ask it approves }
+    CloseAccount:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 2000, description: 'Why the account closes; kept as the account''s closeReason' }
+    GroupSyncReport:
+      type: object
+      required: [startedAt, finishedAt, accounts]
+      properties:
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        accounts:
+          type: array
+          description: Every active account the run visited
+          items: { $ref: '#/components/schemas/GroupSyncAccount' }
+    GroupSyncAccount:
+      type: object
+      required: [accountId, owningTeam, added, removed, skipped, missingIdpGroups]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        owningTeam: { type: string }
+        owningTeamMissing: { type: boolean, description: 'Whether the directory lacks the owning team; absent when the run could not finish the account' }
+        added:
+          type: array
+          description: Groups the run gave people through their identity provider groups
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        removed:
+          type: array
+          description: Groups the run took from people whose identity provider groups no longer give them
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        skipped:
+          type: array
+          description: Removals the run left undone, with the reason (the account's last active owner keeps the owners group)
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        missingIdpGroups:
+          type: array
+          description: Identity provider groups the account's groups map that the directory does not have
+          items: { type: string }
+        error: { type: string, description: 'Why the run could not finish the account, which it left as it was' }
+    GroupSyncChange:
+      type: object
+      required: [userId, email, group]
+      properties:
+        userId: { type: string }
+        email: { type: string, format: email }
+        group: { type: string, description: The group's name }
+        reason: { type: string, description: 'Why a removal was skipped' }

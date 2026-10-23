@@ -5,8 +5,9 @@ info:
   version: 1.0.0
   description: |
     The events the console's own services exchange: the state service's resource stream
-    (`state.resources`), the drift service's findings (`drift.findings`) and the identity service's
-    changes (`identity.changes`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    (`state.resources`), the drift service's findings (`drift.findings`) and compliance scores
+    (`drift.scorecards`), the identity service's changes (`identity.changes`), and the cost service's
+    budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
     **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
@@ -33,8 +34,10 @@ info:
 
     **Keys are deterministic** and consumers de-duplicate on them, never on `id`:
     `<type>:<wfrn>:<version>` on `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on
-    `drift.findings` and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
-    subject id is the account, policy, role, group, user, key or quota id). A producer that retries
+    `drift.findings`, `<type>:<accountId>:<budgetId>:<version>` on `cost.events` (a threshold crossed is
+    `<type>:<accountId>:<budgetId>:<period>-<threshold>`, a chargeback month `<type>:<accountId>:<month>:<version>`)
+    and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
+    subject id is the account, policy, role, group, user, key, quota, access request, guardrail or access review id). A producer that retries
     publishes the same key; a re-emitted event gets a new `id` and the same `key`.
 
     **Partitions.** `state.resources` and `drift.findings` are partitioned by `wfrn`, so one
@@ -116,6 +119,24 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: wfrn
     x-retention: 30d
+  driftScorecards:
+    address: drift.scorecards
+    title: Compliance scorecards
+    description: 'A resource''s rule evaluations changed, or an account''s daily score was recorded (WP 9.6). Partitioned by accountId, so one account''s changes are in order; kept 30 days. Keys: `EvaluationChanged:<wfrn>:<version>` and `ScoreSnapshotted:<accountId>:<day>`.'
+    messages:
+      evaluationChanged: { $ref: '#/components/messages/evaluationChanged' }
+      scoreSnapshotted: { $ref: '#/components/messages/scoreSnapshotted' }
+    bindings:
+      kafka:
+        topic: drift.scorecards
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 30d
   identityChanges:
     address: identity.changes
     title: Identity changes
@@ -129,6 +150,9 @@ channels:
       accessKeyChanged: { $ref: '#/components/messages/accessKeyChanged' }
       quotaChanged: { $ref: '#/components/messages/quotaChanged' }
       accessRequestChanged: { $ref: '#/components/messages/accessRequestChanged' }
+      guardrailChanged: { $ref: '#/components/messages/guardrailChanged' }
+      accessReviewChanged: { $ref: '#/components/messages/accessReviewChanged' }
+      elevationChanged: { $ref: '#/components/messages/elevationChanged' }
     bindings:
       kafka:
         topic: identity.changes
@@ -140,6 +164,25 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: accountId
     x-retention: 90d, compacted by key
+  costEvents:
+    address: cost.events
+    title: Cost and budgets
+    description: Budgets created, changed and deleted, thresholds crossed and months published to finance, by the cost service (decision 25). Partitioned by accountId, kept 90 days.
+    messages:
+      budgetChanged: { $ref: '#/components/messages/budgetChanged' }
+      budgetThresholdCrossed: { $ref: '#/components/messages/budgetThresholdCrossed' }
+      chargebackPublished: { $ref: '#/components/messages/chargebackPublished' }
+    bindings:
+      kafka:
+        topic: cost.events
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 7776000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 90d
 operations:
   publishResourceState:
     action: send
@@ -157,6 +200,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/driftFindings' }
     summary: The state service (drift flag), the BFF and the indexer follow findings
+  publishScorecards:
+    action: send
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The drift service publishes evaluation changes and daily scores
+  followScorecards:
+    action: receive
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The BFF (live updates, notifications) and the weekly digest follow compliance
   publishIdentityChanges:
     action: send
     channel: { $ref: '#/channels/identityChanges' }
@@ -165,6 +216,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/identityChanges' }
     summary: Every service refreshes its authorization cache from here
+  publishCostEvents:
+    action: send
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The cost service publishes budget changes, alerts and chargeback months
+  followCostEvents:
+    action: receive
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The BFF (budget.alert on the live stream) and notifications (WP 7.5) follow budget alerts
 components:
   messageTraits:
     consoleEvent:
@@ -390,10 +449,44 @@ components:
                   findingId: { type: string }
                   resolution: { $ref: '#/components/schemas/Resolution' }
                   by: { type: string }
-                  jobId: { type: string, description: The revert job, for a reverted finding }
+                  jobId: { type: string, description: "The revert job, for a reverted finding" }
+    evaluationChanged:
+      name: EvaluationChanged
+      title: A resource's rule evaluations changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: EvaluationChanged }
+              aggregate: { const: evaluation }
+              aggregateId: { $ref: '#/components/schemas/Wfrn' }
+              context:
+                type: object
+                required: [accountId, region, wfrn]
+              data: { $ref: '#/components/schemas/EvaluationChangedData' }
+    scoreSnapshotted:
+      name: ScoreSnapshotted
+      title: An account's daily compliance score was recorded
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: ScoreSnapshotted }
+              aggregate: { const: scorecard }
+              aggregateId: { $ref: '#/components/schemas/AccountId' }
+              context:
+                type: object
+                required: [accountId]
+              data: { $ref: '#/components/schemas/ScoreSnapshottedData' }
     accountChanged:
       name: AccountChanged
-      title: An account was created, changed or suspended
+      title: An account was created, changed, suspended or closed
       traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
       payload:
         allOf:
@@ -506,6 +599,117 @@ components:
             properties:
               type: { const: AccessRequestChanged }
               aggregate: { const: access-request }
+    guardrailChanged:
+      name: GuardrailChanged
+      title: An organization guardrail began, changed or stopped applying to the account
+      summary: 'One event per account the guardrail touches (`context.accountId`); `deleted` where it no longer applies. The account''s authorization version moves with it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: GuardrailChanged }
+              aggregate: { const: guardrail }
+    accessReviewChanged:
+      name: AccessReviewChanged
+      title: An access review campaign was started, decided, closed, cancelled or expired
+      summary: 'The snapshot is the campaign with its counts, plus `item` (the item decided) on a decision. Actions: `created` when it starts, `updated` on each decision, when the last decision closes it and when it is cancelled, `expired` when its due date closes it. A revoke, or an access the due date expires, also publishes the person''s UserChanged'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: AccessReviewChanged }
+              aggregate: { const: access-review }
+    elevationChanged:
+      name: ElevationChanged
+      title: An elevation or break-glass access was asked for, decided, ended or expired
+      summary: 'The snapshot is the elevation. Actions: `created` (pending, or active when a rule approved it at once or it is break-glass access), `approved`, `rejected`, `cancelled` (withdrawn while pending), `revoked` (ended early) and `expired`. The account''s authorization version moves with it; the BFF tells the person and the approvers and refreshes the person''s session, and the account''s trail shows it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: ElevationChanged }
+              aggregate: { const: elevation }
+    budgetChanged:
+      name: BudgetChanged
+      title: A budget was created, changed or deleted
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetChanged }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, action]
+                properties:
+                  budgetId: { type: string }
+                  action: { type: string, enum: [created, updated, deleted] }
+                  name: { type: string }
+                  amount: { type: number }
+                  currency: { type: string }
+                  thresholds: { type: array, items: { type: integer } }
+                  blockCreates: { type: boolean }
+                  tag:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      value: { type: string }
+    budgetThresholdCrossed:
+      name: BudgetThresholdCrossed
+      title: A budget's spend crossed one of its thresholds this month
+      summary: At most once per budget, month and threshold; `key` is `BudgetThresholdCrossed:<accountId>:<budgetId>:<period>-<threshold>`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetThresholdCrossed }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, name, period, threshold, percent, spent, amount, currency]
+                properties:
+                  budgetId: { type: string }
+                  name: { type: string }
+                  period: { type: string, description: YYYY-MM }
+                  threshold: { type: integer }
+                  percent: { type: number }
+                  spent: { type: number }
+                  amount: { type: number }
+                  forecast: { type: number }
+                  currency: { type: string }
+                  blockCreates: { type: boolean, description: 'At 100 and over: creates in the scope are now refused' }
+    chargebackPublished:
+      name: ChargebackPublished
+      title: An account's month was closed and its chargeback published to finance
+      summary: One per account and month; `key` is `ChargebackPublished:<accountId>:<month>:1`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: ChargebackPublished }
+              aggregate: { const: chargeback }
+              data:
+                type: object
+                required: [version, month, total, currency, sha256]
+                properties:
+                  month: { type: string }
+                  total: { type: number }
+                  currency: { type: string }
+                  sha256: { type: string, description: "The sha256 of the account's rows as CSV" }
+                  rows: { type: integer }
+                  costCentre: { type: string }
   schemas:
     Wfrn:
       type: string
@@ -537,7 +741,7 @@ components:
         seq: { type: integer, minimum: 1, description: "The publisher's outbox sequence, one total order per service" }
         type: { type: string }
         at: { type: string, format: date-time }
-        aggregate: { type: string, description: 'What the event is about: resource, finding, or an identity subject kind' }
+        aggregate: { type: string, description: 'What the event is about: resource, finding, evaluation, scorecard, or an identity subject kind' }
         aggregateId: { type: string, description: 'The wfrn, the finding id, or the identity subject id' }
         actor: { type: string, description: The console user or service that caused it }
         onBehalfOf: { $ref: '#/components/schemas/OnBehalfOf' }
@@ -582,8 +786,8 @@ components:
               properties:
                 version: { type: integer, minimum: 1, description: "The resource's state version after this event" }
                 state: { $ref: '#/components/schemas/ResourceState', description: "The resource's state after this event" }
-                resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
-                jobId: { type: string, description: The platform job, when one is involved }
+                resourceType: { type: string, description: "The type segment of the wfrn, repeated for consumers that filter by type" }
+                jobId: { type: string, description: "The platform job, when one is involved" }
     FindingEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
@@ -606,21 +810,65 @@ components:
                   type: array
                   items: { $ref: '#/components/schemas/DriftField' }
                 observedAt: { type: string, format: date-time }
+    CostEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [context, data]
+          properties:
+            aggregate: { type: string, enum: [budget, chargeback] }
+            aggregateId: { type: string, description: 'The budget id, or `<accountId>:<month>` for a chargeback month' }
+            context:
+              type: object
+              required: [accountId]
     IdentityEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
         - type: object
           required: [data]
           properties:
-            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request], description: The subject kind }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request, guardrail, access-review, elevation], description: The subject kind }
             aggregateId: { type: string, description: The subject id (the accountId for an account) }
             data:
               type: object
               required: [version, action]
               properties:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
-                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired] }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired, closed, cancelled] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
+    EvaluationChangedData:
+      type: object
+      required: [version, type, passed, failed, changes]
+      properties:
+        version: { type: integer, minimum: 1, description: "The resource's evaluation version after this event" }
+        type: { type: string, description: The resource type }
+        passed: { type: integer }
+        failed: { type: integer }
+        changes:
+          type: array
+          description: The rules whose status changed; `none` where the rule did not apply before or does not apply now
+          items:
+            type: object
+            required: [pack, ruleId, severity, from, to]
+            properties:
+              pack: { type: string }
+              ruleId: { type: string }
+              severity: { type: string, enum: [info, warning, critical] }
+              from: { type: string, enum: [pass, fail, error, none] }
+              to: { type: string, enum: [pass, fail, error, none] }
+              message: { type: string }
+    ScoreSnapshottedData:
+      type: object
+      required: [version, day, score, packs]
+      properties:
+        version: { type: integer, minimum: 1, description: 'The day as days since 1970-01-01, which only grows' }
+        day: { type: string, format: date }
+        score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+        previousScore: { type: [integer, 'null'], description: "The last snapshot's score, when there is one" }
+        packs:
+          type: object
+          additionalProperties: { type: [integer, 'null'] }
+        failed: { type: integer }
     DriftField:
       type: object
       required: [path]
@@ -712,8 +960,8 @@ components:
       required: [workflow]
       properties:
         retryOf: { type: string, description: The failed job the retry follows }
-        workflow: { type: string, description: The workflow the retry runs, the create workflow unless the request named another }
-        jobId: { type: string, description: The rerun job, when it was started before the retry was recorded }
+        workflow: { type: string, description: 'The workflow the retry runs, the create workflow unless the request named another' }
+        jobId: { type: string, description: 'The rerun job, when it was started before the retry was recorded' }
     DeletedData:
       type: object
       required: [tombstoneUntil]
