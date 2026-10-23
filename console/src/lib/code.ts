@@ -46,6 +46,7 @@ function commandFlags(body: CommandInput): string[] {
   const flags = cliFlags(body.input)
   if (body.reason) flags.push(...cliFlags({ reason: body.reason }))
   for (const [k, v] of Object.entries(body.labels ?? {})) flags.push(...cliFlags({ label: `${k}=${v}` }))
+  for (const [k, v] of Object.entries(body.tags ?? {})) flags.push(...cliFlags({ tag: `${k}=${v}` }))
   if (body.confirm) flags.push('--confirm')
   return flags
 }
@@ -75,6 +76,7 @@ export function workflowRunYaml(req: Exclude<CodeRequest, { kind: 'record' }>): 
       subject: req.kind === 'create' ? undefined : req.wfrn,
       reason: req.body.reason || undefined,
       labels: req.body.labels && Object.keys(req.body.labels).length ? req.body.labels : undefined,
+      tags: req.body.tags && Object.keys(req.body.tags).length ? req.body.tags : undefined,
     },
     spec: {
       input: req.body.input,

@@ -17,6 +17,27 @@ Phase 4 changes resources in place, safely:
   provider reports, a preview, the request as code, and a stale version caught before it lands
 - before a delete, what depends on the resource, in words and nearest first, and a delete refused
   while anything does
+- the request page on the BFF's job: a step that failed pauses the request, which offers the ways
+  on its policies allow (retry the step, retry with changes and the step to run from, skip it,
+  abort), with what went wrong in words; its approvals are decided there in one call, and a
+  request that ended badly runs again as a new one
+- bulk actions on a list's selection, as one request in waves: the workflow's own waves, two
+  waves or all at once, how many at a time and the share of failures that stops it; the drawer
+  shows the waves it makes of these rows, names the rows that cannot run and leaves them out in
+  one click, and the request page follows every wave and row
+
+Phase 4 adds tags and resource groups, across every type of the account and region:
+
+- the create wizard's Tags step: every tag the account requires, pre-filled from its default (the
+  environment follows the create's own field), and the person's own tags; Create waits, and says
+  why, while a required tag is blank
+- the Tags drawer on a resource's page: every tag as a name and a value, the required ones kept
+- the Tag Editor: the resources of the types chosen that carry the tags named, in one table, and a
+  dialog that sets and removes tags on up to 100 of them, saying which did not take it and why
+- resource groups: a saved tag query and the resources it matches, created, changed against the
+  version read, and deleted by typing the group's name
+- create similar: the wizard filled from a resource, in its account or handed to another
+- required tags: what each tag takes, its default and where that comes from
 
 Phase 3b makes the console change resources, with the request in view at every step:
 
@@ -82,9 +103,8 @@ Phase 0 built the shell and the read-only pages:
 - a development-only platform feed over server-sent events
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
-What the console does not do yet is still shown, and says which phase brings it: tags,
-cloning, bulk actions and retrying a failed request in phase 4, drift's revert, accept and ignore
-in phase 5.
+What the console does not do yet is still shown, and says which phase brings it: drift's revert,
+accept and ignore in phase 5.
 
 ## Workspaces
 
@@ -439,6 +459,35 @@ type, so the feed must subscribe to every one).
     than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
     review's quota rule and the Quotas card count `resources.<type>` with one function
     (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+33. **A request is read from the BFF's job alone, and steered by its `can`.** The request page
+    reads `GET /console/v1/jobs/{jobId}` and nothing from the platform: the job's `can` decides
+    each choice it shows (cancel, retry, skip, abort), its `attention` names the paused step and
+    the ways on the platform offers, its `approvals` are decided in one call
+    (`approvals:decide`, what was left said with why), and a bulk run's `batch` lists its waves
+    and rows. A paused job retried goes on in place; an ended one runs again as a new request,
+    which the page opens. Retry with changes sends only the fields changed (the BFF merges them
+    over the job's input) and the step only when it differs from where the retry starts anyway; a
+    create keeps its name, and a bulk run takes no changes. Each pause gets its own
+    Idempotency-Key, so a second retry of a step is not the first one replayed. What went wrong
+    is one card (`FailureCard`), so a fuller explanation can take its place.
+34. **A bulk run is one request in waves, judged row by row before it is sent.** The list's
+    selection runs any verb with a batch route (create aside). The rollout is the workflow's own
+    unless the person changes it: kept, the request names none and the BFF applies its own;
+    changed, it is sent whole, its waves always ending at 100%, so the waves the drawer shows
+    ("3, then 10, then 37 rows") are the ones that run. `:batch:preview` judges every row: the
+    ones that cannot run as they are are named with why and left out in one click; what depends
+    on the rows is shown for a delete or a destructive verb only. An input every row answers from
+    its own attributes (a VM's environment) stays each row's, never flattened to one value; a
+    workflow with a reason of its own takes it in its form. A destructive verb asks for the verb
+    and the count typed out (`delete 12`).
+35. **The mock steers jobs by the BFF's own rules.** `console/src/mock/jobs.ts` follows the BFF's
+    `Jobs.can` and `JobRetries`: cancel is open to any job still running (paused ones too) under
+    `jobs:cancel`, a retry asks the target workflow's own action, failed, rolled-back and paused
+    jobs run again but a cancelled one does not, and a batch reruns only its failed rows. A step
+    fails on cue: a create named with `fail` fails its first run, and any other verb whose
+    `reason` contains `fail` fails until a retry's change removes it. A wave whose prod rows wait
+    is approved by a person (one decision a wave) or, after 6 seconds, by the platform's own
+    approver; a rerun keeps the job it retries in the mock's own state (`retryOf`).
 36. **A delete shows what depends on the resource first, and is refused while anything does.** The
     preview of a delete or a destructive verb carries its blast radius (what was built from it, up
     to three steps away; `byAccount` counts what lives in other accounts and never names it), and
@@ -456,12 +505,45 @@ type, so the feed must subscribe to every one).
     the edits onto it; a type with mutable fields but no update workflow says "Editing is not
     offered by this provider".
 
+38. **A create names every required tag itself.** The account's tag policy
+    (`GET /console/v1/tag-policy`) lists the tags each new resource must carry, with a list of
+    values or a pattern, and a default from the account, the organization, or the create's own
+    field (`input.<field>`). The wizard asks for each on a Tags step before the review and sends
+    `tags` on the preview and the create; the BFF never adds one a request left out, so the
+    console does not either. A value a tag may not take keeps the step; a blank one reaches the
+    review, which says what is missing, and Create stays disabled until it is set (the preview
+    says the same as a deny rule). A tag that copies a field follows it until the person sets the
+    tag. `lib/tags.ts` holds the BFF's rules word for word, so the forms and the mock agree.
+39. **The required tags stay on a resource; the Tag Editor searches by type and tags.** The Tags
+    drawer replaces a resource's tags with one PUT, so a required tag it carries keeps its row
+    (no Remove button, and the reason in words), its value checked as it is typed; a resource
+    older than the policy is offered the missing ones, never made to take them. A new tag's name
+    is 1 to 32 lowercase letters, digits or hyphens, as the state service takes it. The Tag
+    Editor's query (`type`, `tag.<name>`) lives in the address; the BFF searches no free text
+    there, so a name filter narrows the loaded page and says so. Its dialog changes up to 100
+    resources with one `tags:apply`, each its own change, cannot tick a required tag for
+    removal, and ends on how many took the change and why each other did not.
+40. **Resource groups are greyed by role, edited by version, deleted by name.** A viewer reads, an
+    operator also creates and changes, only an admin deletes (`resource-groups:<verb>`), and the
+    pages grey a write for the others before any call, as decision 16 does for identity; the
+    BFF's Denial replaces it on a 403. An edit sends `If-Match` with the version it read; a 409
+    says the group moved on and reads it again. The delete asks for the group's name at
+    `?action=delete`, so a fresh sign-in comes back to the dialog. As the identity service does,
+    the mock lets console IAM alone decide them: the platform's role for an account never does.
+41. **Create similar opens the wizard from the BFF's draft.** `?from=<wfrn>` fetches the clone
+    draft (its fields, the name as `<name>-copy`, its tags, notes on secrets, names and
+    references) and opens the wizard filled from it under a note linking to the source. Another
+    account comes from the draft's `targets`, locked where the person may not create the type:
+    the draft for it is fetched in this session, kept in sessionStorage under a one-time token,
+    and read once by that account's wizard (`#/account/<id>/.../create?draft=<token>`), which
+    switches the session to it first.
+
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes), their
-                  helpers and screenshots
+  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
+                  tags, bulk), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -472,14 +554,21 @@ console/
                   descriptors, accounts, regions, recent, store, resourceList (the list's
                   filters, sorts, columns and counts), listState (the list in the query),
                   preferences (saved views and columns), keyed, csv, code (view as code), plain
-                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll
+                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll, tags
+                  (the tag policy, Tag Editor, resource group and clone client, and their rules)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
-                  (resources) and the writes on a clock (commands), and the browser installer,
-                  with the samples
+                  (resources) and the writes on a clock (commands), the tag policy, Tag Editor,
+                  resource groups and clone drafts (tags), and the browser installer, with the
+                  samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
-                  src/pages/list/ the list's saved views menu and column chooser,
-                  src/pages/create/ the wizard's steps, src/pages/resource/ the resource page's
-                  tabs, request banner, action drawer, edit drawer and blast radius
+                  src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
+                  src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
+                  src/pages/resource/ the resource page's tabs, request banner, action drawer,
+                  edit drawer, blast radius and Tags drawer, src/pages/request/ the request
+                  page's parts (the paused step, what went wrong, approvals, a bulk run's waves
+                  and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
+                  dialog, the tag rows and the Required tags page, src/pages/groups/ the
+                  resource groups
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

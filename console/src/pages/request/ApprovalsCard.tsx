@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Button, Card, Field, Tag, Textarea, plural, type Tone } from '@iaf/ui'
-import { ConfirmDialog, When, WfrnText } from '@iaf/console-kit'
+import { Button, Card, Field, Textarea, plural } from '@iaf/ui'
+import { ConfirmDialog, StatusBadge, When, WfrnText } from '@iaf/console-kit'
 import type { BffApproval, BffJobDetail } from '../../lib/types'
 import { deciderOf } from './parts'
 
@@ -11,7 +11,9 @@ import { deciderOf } from './parts'
  * the ones left say why. A rejection asks first, since it ends the request, or stops the run.
  */
 
-const TONE: Record<string, Tone> = { pending: 'warning', approved: 'healthy', rejected: 'critical', expired: 'neutral' }
+// an approval's status as the status word whose tone it shares (StatusBadge keeps its label at AA)
+const AS_STATUS: Record<string, string> = { pending: 'waiting', approved: 'succeeded', rejected: 'failed', expired: 'cancelled' }
+const WORDS: Record<string, string> = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', expired: 'Expired' }
 
 export interface ApprovalsCardProps {
   job: BffJobDetail
@@ -81,9 +83,7 @@ export function ApprovalsCard({ job, busy, onDecide }: ApprovalsCardProps) {
 function ApprovalRow({ approval: a }: { approval: BffApproval }) {
   return (
     <li className="flex flex-wrap items-start gap-x-3 gap-y-1 py-2.5 first:pt-0 last:pb-0">
-      <Tag size="sm" tone={TONE[a.status] ?? 'neutral'}>
-        {a.status}
-      </Tag>
+      <StatusBadge size="sm" status={AS_STATUS[a.status] ?? a.status} label={WORDS[a.status] ?? a.status} />
       <div className="min-w-0 flex-1">
         <p className="text-primary">
           {a.status === 'pending' ? `Waits for ${a.group ?? 'an approver'}` : a.decidedBy ? `${a.status === 'approved' ? 'Approved' : a.status === 'rejected' ? 'Rejected' : 'Decided'} by ${deciderOf(a.decidedBy)}` : a.status}

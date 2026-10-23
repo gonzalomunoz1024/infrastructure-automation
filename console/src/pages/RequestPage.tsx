@@ -55,7 +55,8 @@ export default function RequestPage({ route }: PageProps) {
   const paused = job.status === 'needs-attention'
   const batch = job.kind === 'batch' || !!job.batch
   const title = job.title ?? job.workflow
-  const elapsed = job.durationMs !== undefined ? duration(job.durationMs) : open && job.startedAt ? duration(now - Date.parse(job.startedAt)) : duration(null)
+  // an open request's time runs on from its start; an ended one's is what the BFF measured
+  const elapsed = open && job.startedAt ? duration(Math.max(0, now - Date.parse(job.startedAt))) : job.durationMs !== undefined ? duration(job.durationMs) : job.startedAt && job.endedAt ? duration(Date.parse(job.endedAt) - Date.parse(job.startedAt)) : duration(null)
   const wfrnPath = pathOfWfrn(job.wfrn, types)
   // each pause is its own decision: the key changes with it, so a second retry is not the first one replayed
   const pause = job.attention?.since ?? job.endedAt ?? ''
@@ -117,6 +118,11 @@ export default function RequestPage({ route }: PageProps) {
           </>
         }
       />
+
+      {/* the page follows the request: a change of status is said, not only shown */}
+      <p role="status" aria-live="polite" className="sr-only" data-job-status={job.status}>
+        {`${title} is ${job.status.replace(/-/g, ' ')}`}
+      </p>
 
       <Facts
         columns={4}

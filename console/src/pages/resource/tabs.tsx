@@ -3,9 +3,9 @@ import { Button, EmptyState, Icon, JsonView, SkeletonRows } from '@iaf/ui'
 import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { ExplainedError } from '../../app/commands'
-import { LaterButton, PHASES } from '../../app/Phase'
+import { LaterButton } from '../../app/Phase'
 import { ActionButton, useRefusal } from '../../app/Refusal'
-import { Link, pathFor, useRoute } from '../../app/router'
+import { Link, navigate, pathFor, useRoute } from '../../app/router'
 import { api, isApiError } from '../../lib/api'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor } from '../../lib/code'
@@ -448,21 +448,25 @@ function PlatformActivity({ resource, wfrn }: { resource: Resource; wfrn: string
 
 /* ---------------------------------------------------------------------------- Tags */
 
-function TagsTab({ detail, viewError }: TabProps) {
+function TagsTab({ type, detail, viewError }: TabProps) {
+  const { decide } = useConsole()
+  const route = useRoute()
   if (!detail) return <ViewMissing viewError={viewError} what="Load the tags of this resource" />
   const tags = Object.entries(detail.tags ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  // the page opens the Tags drawer on `?action=tags`, as its Actions menu does
+  const manage = () => navigate(pathFor('resource', route.params, { ...route.query, action: 'tags' }, { accountId: route.accountId }), { replace: true })
   return (
     <Section
       title="Tags"
       description="Key and value pairs that travel with the resource and its events, for finding, grouping and paying for things together."
       actions={
-        <LaterButton phase={4} size="sm" icon="tag">
+        <ActionButton decision={decide(type, 'update')} what="Manage tags" verb="tag" size="sm" icon="tag" onClick={manage}>
           Manage tags
-        </LaterButton>
+        </ActionButton>
       }
     >
       {tags.length === 0 ? (
-        <EmptyState compact icon="tag" title="No tags yet" message={`Adding and editing tags arrives with ${PHASES[4]}.`} />
+        <EmptyState compact icon="tag" title="No tags yet" message="Add tags with Manage tags: a name and a value each, for finding, grouping and paying for things together." />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-stroke-light">
           <table className="w-full text-left text-sm">

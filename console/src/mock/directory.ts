@@ -378,8 +378,8 @@ export function suggestedRoleFor(dir: Directory, accountId: string, action: stri
   return MANAGED_ORDER.find((r) => evaluateRoles(dir, accountId, [r], action, resource).effect === 'allow')
 }
 
-/** The services the console answers for itself (identity, and phase 9's cost, budgets and insights): the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'cost', 'budgets', 'insights'])
+/** The services the console answers for itself (identity, resource groups, and phase 9's cost, budgets and insights): the platform's role for the account never decides them. */
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'cost', 'budgets', 'insights'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {

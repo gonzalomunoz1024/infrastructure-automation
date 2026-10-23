@@ -45,9 +45,9 @@ export interface ActionDrawerProps {
   onAccepted: (accepted: CommandAccepted, action: ConsoleAction) => void
 }
 
-/** The form's first values: the workflow's defaults, then what the resource already holds for the same inputs. */
-export function startValue(schema: Schema, subject: string | undefined, attributes: Record<string, unknown>): SchemaValue {
-  const out = defaultsFor(schema)
+/** The inputs the resource already answers: an attribute of the same name, of the input's type and among its choices. */
+export function answeredInputs(schema: Schema, subject: string | undefined, attributes: Record<string, unknown>): SchemaValue {
+  const out: SchemaValue = {}
   for (const [name, prop] of Object.entries(schema.properties ?? {})) {
     if (name === subject || prop['x-resource']) continue
     const v = attributes[name]
@@ -57,6 +57,12 @@ export function startValue(schema: Schema, subject: string | undefined, attribut
     const fits = (t === 'string' && typeof v === 'string') || ((t === 'integer' || t === 'number') && typeof v === 'number') || (t === 'boolean' && typeof v === 'boolean')
     if (fits) out[name] = v
   }
+  return out
+}
+
+/** The form's first values: the workflow's defaults, then what the resource already holds for the same inputs. */
+export function startValue(schema: Schema, subject: string | undefined, attributes: Record<string, unknown>): SchemaValue {
+  const out = { ...defaultsFor(schema), ...answeredInputs(schema, subject, attributes) }
   if (subject) delete out[subject]
   return out
 }

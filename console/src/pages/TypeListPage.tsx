@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, EmptyState, Icon, IconButton, PageHeader, cx, plural, useToast } from '@iaf/ui'
 import { CursorPager, DotTag, ErrorState, LifecycleBadge, PropertyFilterBar, VirtualTable, WfrnText, formatField, type VirtualColumn, type VirtualSort } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
-import { ActionButton, useRefusal } from '../app/Refusal'
+import { MenuButton } from '../app/MenuButton'
+import { ActionButton, ActionMenuItem, useRefusal } from '../app/Refusal'
 import { navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
 import { bff } from '../lib/bff'
 import { csvFileName, downloadCsv, toCsv } from '../lib/csv'
-import { capitalise, purposeOf, singularOf, type ConsoleType } from '../lib/descriptors'
+import { capitalise, purposeOf, singularOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
 import { useKeyedPaging, useKeyedState } from '../lib/keyed'
 import { LIST_QUERY_KEYS, encodeSort, listStateFromQuery, type ListState } from '../lib/listState'
 import { denialOf, typeKey as typeKeyOf, type Decision } from '../lib/permissions'
@@ -15,7 +16,10 @@ import { useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, SORTABLE, countLabel, csvRowsOf, filterPropertiesOf, listColumnsOf, listQueryOf, nameOf, normaliseTokens, serverFiltersOf, sortOrDefault, tagKeysOfColumns, tagOfProperty, visibleColumns, type ListColumn } from '../lib/resourceList'
 import type { ConsoleResource } from '../lib/types'
+import { BulkDrawer } from './list/BulkDrawer'
+import { bulkVerbsOf } from './list/bulk'
 import { ColumnsMenu } from './list/ColumnsMenu'
+import { ApplyTagsDialog } from './tags/ApplyTagsDialog'
 import { ViewsMenu, describeTokenWith } from './list/ViewsMenu'
 import { MissingType, Stamp } from './parts'
 
@@ -31,12 +35,12 @@ export default function TypeListPage({ route }: PageProps) {
   const { loading, error, refetch, decide, account, region } = useConsole()
   const type = useRouteType(route.params.service, route.params.type)
   if (!type) return <MissingType name={route.params.type} service={route.params.service} loading={loading} error={error} refetch={refetch} />
-  return <TypeList key={`${type.service}/${type.name}/${account.id}/${region.name}`} type={type} route={route} create={decide(type, 'create')} />
+  return <TypeList key={`${type.service}/${type.name}/${account.id}/${region.name}`} type={type} route={route} create={decide(type, 'create')} decide={(verb) => decide(type, verb)} />
 }
 
 const noSelection = (): Set<string> => new Set()
 
-function TypeList({ type, route, create }: { type: ConsoleType; route: Route; create: Decision }) {
+function TypeList({ type, route, create, decide }: { type: ConsoleType; route: Route; create: Decision; decide: (verb: string) => Decision }) {
   const { session, account, region } = useConsole()
   const toast = useToast()
   const refusal = useRefusal()
@@ -109,6 +113,10 @@ function TypeList({ type, route, create }: { type: ConsoleType; route: Route; cr
     toast.success('Exported as CSV', `${plural(subset.length, noun)}, with the ${shown.length} columns on screen.`)
   }
   const selectedRows = rows.filter((r) => selected.has(r.wfrn))
+  // one verb on the selection, as one request in waves (WP 4.2)
+  const bulkVerbs = useMemo(() => bulkVerbsOf(type), [type])
+  const [bulk, setBulk] = useState<{ action: ConsoleAction; rows: ConsoleResource[] } | null>(null)
+  const [tagging, setTagging] = useState<ConsoleResource[] | null>(null)
 
   const empty = tokens.length ? (
     <EmptyState
@@ -185,6 +193,23 @@ function TypeList({ type, route, create }: { type: ConsoleType; route: Route; cr
           <span className="font-medium" aria-live="polite">
             {plural(selectedRows.length, noun)} selected
           </span>
+          {bulkVerbs.length > 0 && (
+            <MenuButton
+              label={`Actions for ${plural(selectedRows.length, noun)}`}
+              width="w-80"
+              className="[&>button]:h-auto [&>button]:py-1.5 [&>button]:text-caption"
+              content={bulkVerbs.map((a) => (
+                <ActionMenuItem key={a.workflow} decision={decide(a.verb)} what={`${a.title} on the selected ${lower}`} verb={a.verb} icon={a.destructive ? 'trash' : 'play'} danger={a.destructive} description={a.batch ? `Up to ${a.batch.max} in one request, in waves` : 'In one request, in waves'} onSelect={() => setBulk({ action: a, rows: selectedRows })}>
+                  {a.title}
+                </ActionMenuItem>
+              ))}
+            >
+              Actions
+            </MenuButton>
+          )}
+          <ActionButton decision={decide('update')} what={`Tag the selected ${lower}`} verb="tag" size="sm" icon="tag" onClick={() => setTagging(selectedRows)}>
+            Manage tags
+          </ActionButton>
           <Button size="sm" icon="download" onClick={() => exportRows(selectedRows)}>
             Export selected
           </Button>
@@ -238,6 +263,30 @@ function TypeList({ type, route, create }: { type: ConsoleType; route: Route; cr
               noun={noun}
             />
           }
+        />
+      )}
+
+      {tagging && (
+        <ApplyTagsDialog
+          resources={tagging.map((r) => ({ wfrn: r.wfrn, type: type.name, name: r.name, tags: r.tags }))}
+          onClose={() => setTagging(null)}
+          onApplied={(result) => {
+            if (!result.failed.length) setSelected(noSelection)
+          }}
+        />
+      )}
+      {bulk && (
+        <BulkDrawer
+          type={type}
+          action={bulk.action}
+          rows={bulk.rows}
+          onClose={() => setBulk(null)}
+          onAccepted={(accepted) => {
+            setBulk(null)
+            setSelected(noSelection)
+            toast.success('Request sent', `${plural(accepted.rows, 'row')} run in waves. The request shows each one.`)
+            navigate(pathFor('request', { id: accepted.jobId }))
+          }}
         />
       )}
     </>

@@ -31,6 +31,17 @@ describe('the wizard’s steps', () => {
     const tagged = stepsFor(SCHEMA, 'virtual machine', { tags: true })
     expect(tagged.slice(-2).map((s) => s.id)).toEqual(['tags', 'review'])
     expect(tagged[tagged.length - 2]).toMatchObject({ optional: true, description: 'Optional' })
+    // the account's required tags make the step one the create cannot skip, and say how many
+    const required = stepsFor(SCHEMA, 'virtual machine', { tags: true, requiredTags: 4 })
+    expect(required[required.length - 2]).toMatchObject({ id: 'tags', description: '4 required' })
+    expect(required[required.length - 2].optional).toBeUndefined()
+  })
+
+  it('sends a problem on the create’s tags to the Tags step, and one on an input field to that field’s step', () => {
+    const tagged = stepsFor(SCHEMA, 'virtual machine', { tags: true, requiredTags: 4 })
+    expect(stepOfProblems(tagged, [{ level: 'error', code: 'tags.required', field: '/tags/cost-centre', message: 'Cost centre is required' }])).toBe(tagged.findIndex((s) => s.id === 'tags'))
+    expect(stepOfProblems(tagged, [{ level: 'error', code: 'pattern', field: '/input/subnet', message: 'bad' }])).toBe(1)
+    expect(stepOfProblems(steps, [{ level: 'error', code: 'tags.required', field: '/tags/owner', message: 'Owner is required' }])).toBe(-1)
   })
 
   it('keeps one details step when the workflow asks for nothing', () => {

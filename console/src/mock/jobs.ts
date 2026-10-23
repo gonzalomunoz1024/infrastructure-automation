@@ -132,7 +132,7 @@ export function stepsOf(job: JobSummary, extra?: ConsoleJobExtra): JobStep[] {
   const apply: JobStep['status'] =
     status === 'waiting-approval' || status === 'queued' ? 'pending' : rejected || status === 'cancelled' || skipped.includes('apply') ? 'skipped' : failed || status === 'needs-attention' || status === 'rolled-back' ? 'failed' : status === 'running' ? 'running' : 'succeeded'
   const applyId = failed && !FIXED_STEPS.has(failedStep) ? failedStep : 'apply'
-  const message = `${failedStep} failed: ${job.errorClass === 'not_found' ? 'the provider does not know what it was given' : (job.errorClass ?? 'the provider refused the change')}`
+  const message = STEP_ERROR_WORDS[job.errorClass ?? ''] ?? 'The provider refused the change.'
   steps.push(
     step(applyId, applyId === 'apply' ? 'Apply the change' : `Run ${applyId}`, 'provider', apply, 30_000, {
       attempt: extra?.attempts ?? 1,
@@ -284,6 +284,12 @@ export function bffJobOf(data: MockData, s: Session, job: JobSummary): BffJobDet
 /* ----------------------------------------------------------------------------
    Steering a job: retry, skip, abort, cancel, a rerun, approvals
    ------------------------------------------------------------------------- */
+
+/** What a failed step's provider said, as the samples' error classes read in words. */
+const STEP_ERROR_WORDS: Record<string, string> = {
+  not_found: 'The provider does not know what it was given: an id in the input names nothing it has.',
+  provider: 'The provider did not answer within its 60 seconds, so the change was not made.',
+}
 
 function accepted(job: JobSummary, extra: ConsoleJobExtra | undefined): CommandAccepted {
   return { wfrn: job.wfrn ?? extra?.wfrn ?? '', jobId: job.id, requestId: job.consoleRequestId ?? extra?.consoleRequestId ?? job.id }
