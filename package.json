@@ -1,0 +1,35 @@
+{
+  "name": "console-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The customer console: an AWS-console-like UI for the firm's internal teams, drawn in Atlas",
+  "workspaces": [
+    "packages/ui",
+    "packages/wfrn",
+    "packages/console-kit",
+    "console"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace console",
+    "dev:mock": "npm run dev:mock --workspace console",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "e2e": "npm run e2e --workspace console",
+    "contracts:verify": "node scripts/verify-contracts.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "playwright-core": "1.56.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "typescript-eslint": "^8.71.2"
+  }
+}

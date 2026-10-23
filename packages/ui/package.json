@@ -1,0 +1,26 @@
+{
+  "name": "@iaf/ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Atlas design system kit: tokens, components, hooks and helpers for the platform shell. Vendored verbatim from the platform at c9529d5; replaced by the published package of platform change P-14 when it ships.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./index.css": "./src/index.css"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}

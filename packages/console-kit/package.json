@@ -1,0 +1,35 @@
+{
+  "name": "@iaf/console-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The console's composite components: SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList forked from the platform at c9529d5 behind a ConsoleKitProvider, plus VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar and CursorPager",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@iaf/ui": "*",
+    "@iaf/wfrn": "*",
+    "@tanstack/react-virtual": "^3.14.22"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "jsdom": "^30.1.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

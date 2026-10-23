@@ -1,0 +1,15 @@
+# gitleaks: the default rules, plus the reviewed exceptions below. A single finding reviewed as a
+# false positive goes in .gitleaksignore by its fingerprint instead.
+[extend]
+useDefault = true
+
+# The wfrn fixtures and the platform's recorded samples hold long lowercase identifiers (ULIDs,
+# ids, vault references by name) and never a credential. Only the generic rule is silenced, and
+# only for these files.
+[[allowlists]]
+description = "contract fixtures and recorded platform samples"
+targetRules = ["generic-api-key"]
+paths = [
+  '''packages/wfrn/fixtures\.json$''',
+  '''console/src/mock/samples/.*\.json$''',
+]

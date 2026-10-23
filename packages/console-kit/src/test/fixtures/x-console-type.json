@@ -1,0 +1,35 @@
+{
+  "$comment": "A resource type whose schema uses every x-console keyword of platform change P-06, for the console-kit tests.",
+  "name": "vm",
+  "plural": "vms",
+  "owner": "team-compute",
+  "service": "compute",
+  "states": ["building", "ready", "deprecated", "retired", "failed"],
+  "console": {
+    "title": "Virtual machines",
+    "icon": "server",
+    "list": { "columns": ["name", "status", "cpu", "memoryGb"], "defaultSort": "name" },
+    "lifecycle": { "building": "pending", "ready": "active", "deprecated": "active", "retired": "deleted", "failed": "failed" }
+  },
+  "schema": {
+    "type": "object",
+    "required": ["name", "image"],
+    "properties": {
+      "name": { "type": "string", "title": "Name", "description": "The host name", "x-console": { "column": true, "searchable": true, "help": "https://wiki.example.test/vm#name" } },
+      "image": { "type": "string", "title": "Image", "x-console": { "widget": "picker", "pickerType": "image", "group": "Boot" } },
+      "userData": { "type": "string", "title": "User data", "x-console": { "widget": "code", "group": "Boot" } },
+      "cpu": { "type": "integer", "title": "CPU", "minimum": 1, "maximum": 64, "default": 2, "x-console": { "widget": "slider", "group": "Sizing", "mutable": true, "column": true } },
+      "memoryGb": { "type": "number", "title": "Memory", "x-console": { "format": "gibibytes", "group": "Sizing", "mutable": true, "column": true } },
+      "diskBytes": { "type": "integer", "title": "Disk", "x-console": { "format": "bytes", "group": "Sizing" } },
+      "cpuBurst": { "type": "number", "title": "CPU burst", "x-console": { "format": "percent" } },
+      "monthlyCost": { "type": "number", "title": "Monthly cost", "x-console": { "format": "cost", "currency": "EUR" } },
+      "expiresAt": { "type": "string", "title": "Expires", "x-console": { "format": "date" } },
+      "backupWindow": { "type": "string", "title": "Backup window", "x-console": { "format": "duration" } },
+      "parent": { "type": "string", "title": "Parent", "x-console": { "format": "wfrn" } },
+      "bootArgs": { "type": "string", "title": "Boot arguments", "x-console": { "format": "code" } },
+      "labels": { "type": "object", "title": "Labels", "x-console": { "widget": "key-value", "mutable": true } },
+      "passphrase": { "type": "string", "title": "Passphrase", "x-console": { "sensitive": true } },
+      "nickname": { "type": "string", "title": "Nickname", "x-console": { "format": "hologram", "widget": "crystal-ball" } }
+    }
+  }
+}

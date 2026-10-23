@@ -1,0 +1,260 @@
+{
+  "$comment": "The shared wfrn test cases. See SPEC.md beside this file. Every implementation runs every entry; a change here is a change to the spec.",
+  "version": 1,
+  "valid": [
+    {
+      "name": "a vm in the global region",
+      "input": "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "parts": { "partition": "wf", "service": "compute", "region": "global", "account": "123456789012", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ya" }
+    },
+    {
+      "name": "a database with a different service and account",
+      "input": "wfrn:wf:data:global:210987654321:database/database-01jbx7q2m4k9d3c8f5r6t1w0yb",
+      "parts": { "partition": "wf", "service": "data", "region": "global", "account": "210987654321", "type": "database", "id": "database-01jbx7q2m4k9d3c8f5r6t1w0yb" }
+    },
+    {
+      "name": "a nested id with slashes",
+      "input": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/logs/2026",
+      "parts": { "partition": "wf", "service": "storage", "region": "global", "account": "123456789012", "type": "bucket", "id": "bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/logs/2026" }
+    },
+    {
+      "name": "an account-level role has no region",
+      "input": "wfrn:wf:iam::123456789012:role/admin",
+      "parts": { "partition": "wf", "service": "iam", "region": "", "account": "123456789012", "type": "role", "id": "admin" }
+    },
+    {
+      "name": "an organization-level account has no region and no account",
+      "input": "wfrn:wf:organizations:::account/123456789012",
+      "parts": { "partition": "wf", "service": "organizations", "region": "", "account": "", "type": "account", "id": "123456789012" }
+    },
+    {
+      "name": "a second region looks the same as global",
+      "input": "wfrn:wf:compute:eu-west-1:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yd",
+      "parts": { "partition": "wf", "service": "compute", "region": "eu-west-1", "account": "123456789012", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0yd" }
+    },
+    {
+      "name": "another partition",
+      "input": "wfrn:wf-gov:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ye",
+      "parts": { "partition": "wf-gov", "service": "compute", "region": "global", "account": "123456789012", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ye" }
+    },
+    {
+      "name": "an id that is not minted (imported with the provider's own name)",
+      "input": "wfrn:wf:network:global:123456789012:address/10-0-0-1",
+      "parts": { "partition": "wf", "service": "network", "region": "global", "account": "123456789012", "type": "address", "id": "10-0-0-1" }
+    },
+    {
+      "name": "a one-character type and digits in the service",
+      "input": "wfrn:wf:s3:global:123456789012:b/b-01jbx7q2m4k9d3c8f5r6t1w0yf",
+      "parts": { "partition": "wf", "service": "s3", "region": "global", "account": "123456789012", "type": "b", "id": "b-01jbx7q2m4k9d3c8f5r6t1w0yf" }
+    },
+    {
+      "name": "a tag resource group with a hyphenated type",
+      "input": "wfrn:wf:resource-groups:global:123456789012:resource-group/resource-group-01jbx7q2m4k9d3c8f5r6t1w0yg",
+      "parts": { "partition": "wf", "service": "resource-groups", "region": "global", "account": "123456789012", "type": "resource-group", "id": "resource-group-01jbx7q2m4k9d3c8f5r6t1w0yg" }
+    }
+  ],
+  "invalid": [
+    { "name": "empty string", "input": "", "code": "wfrn.prefix" },
+    { "name": "an ARN", "input": "arn:aws:ec2:us-east-1:123456789012:instance/i-0abc", "code": "wfrn.prefix" },
+    { "name": "prefix only", "input": "wfrn:", "code": "wfrn.segments" },
+    { "name": "too few segments", "input": "wfrn:wf:compute:global:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.segments" },
+    { "name": "no slash between type and id", "input": "wfrn:wf:compute:global:123456789012:vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.segments" },
+    { "name": "uppercase in the id", "input": "wfrn:wf:compute:global:123456789012:vm/vm-01JBX7Q2M4K9D3C8F5R6T1W0YA", "code": "wfrn.case" },
+    { "name": "uppercase in the prefix", "input": "WFRN:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.case" },
+    { "name": "a wildcard in a stored name", "input": "wfrn:wf:compute:global:123456789012:vm/*", "code": "wfrn.wildcard" },
+    { "name": "a question mark in a stored name", "input": "wfrn:wf:compute:global:123456789012:vm/vm-?", "code": "wfrn.wildcard" },
+    { "name": "empty partition", "input": "wfrn::compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.partition" },
+    { "name": "partition with an underscore", "input": "wfrn:wf_1:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.partition" },
+    { "name": "partition too long", "input": "wfrn:abcdefghijklmnopqrstuvwxyz0123456:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.partition" },
+    { "name": "empty service", "input": "wfrn:wf::global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.service" },
+    { "name": "service of one character", "input": "wfrn:wf:c:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.service" },
+    { "name": "service with a dot", "input": "wfrn:wf:com.pute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.service" },
+    { "name": "region of one character", "input": "wfrn:wf:compute:g:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.region" },
+    { "name": "region with a space", "input": "wfrn:wf:compute:eu west:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.region" },
+    { "name": "account of eleven digits", "input": "wfrn:wf:compute:global:12345678901:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.account" },
+    { "name": "account of thirteen digits", "input": "wfrn:wf:compute:global:1234567890123:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.account" },
+    { "name": "account with letters", "input": "wfrn:wf:compute:global:12345678901a:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.account" },
+    { "name": "empty type", "input": "wfrn:wf:compute:global:123456789012:/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.type" },
+    { "name": "type with an underscore", "input": "wfrn:wf:compute:global:123456789012:virtual_machine/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.type" },
+    { "name": "empty id", "input": "wfrn:wf:compute:global:123456789012:vm/", "code": "wfrn.id" },
+    { "name": "id with an empty path segment", "input": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc//logs", "code": "wfrn.id" },
+    { "name": "id ending in a slash", "input": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/", "code": "wfrn.id" },
+    { "name": "id with a colon", "input": "wfrn:wf:compute:global:123456789012:vm/vm:01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.id" },
+    { "name": "id with a dot", "input": "wfrn:wf:compute:global:123456789012:vm/web.01", "code": "wfrn.id" },
+    { "name": "id segment too long", "input": "wfrn:wf:compute:global:123456789012:vm/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "code": "wfrn.id" },
+    { "name": "leading space", "input": " wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "code": "wfrn.prefix" },
+    { "name": "trailing newline", "input": "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya\n", "code": "wfrn.id" },
+    { "name": "over 1,024 characters", "input": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "code": "wfrn.length" }
+  ],
+  "format": [
+    {
+      "name": "a vm",
+      "parts": { "partition": "wf", "service": "compute", "region": "global", "account": "123456789012", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ya" },
+      "expected": "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya"
+    },
+    {
+      "name": "empty region and account are written as empty segments",
+      "parts": { "partition": "wf", "service": "organizations", "region": "", "account": "", "type": "account", "id": "123456789012" },
+      "expected": "wfrn:wf:organizations:::account/123456789012"
+    },
+    {
+      "name": "format refuses an uppercase service",
+      "parts": { "partition": "wf", "service": "Compute", "region": "global", "account": "123456789012", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ya" },
+      "error": "wfrn.case"
+    },
+    {
+      "name": "format refuses a wildcard id",
+      "parts": { "partition": "wf", "service": "compute", "region": "global", "account": "123456789012", "type": "vm", "id": "*" },
+      "error": "wfrn.wildcard"
+    },
+    {
+      "name": "format refuses a bad account",
+      "parts": { "partition": "wf", "service": "compute", "region": "global", "account": "12345", "type": "vm", "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ya" },
+      "error": "wfrn.account"
+    },
+    {
+      "name": "format refuses an empty id",
+      "parts": { "partition": "wf", "service": "compute", "region": "global", "account": "123456789012", "type": "vm", "id": "" },
+      "error": "wfrn.id"
+    }
+  ],
+  "patterns": [
+    {
+      "name": "every vm of one account in any region",
+      "pattern": "wfrn:wf:compute:*:123456789012:vm/*",
+      "matches": [
+        "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+        "wfrn:wf:compute:eu-west-1:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yd"
+      ],
+      "misses": [
+        "wfrn:wf:compute:global:210987654321:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+        "wfrn:wf:data:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+        "wfrn:wf:compute:global:123456789012:volume/volume-01jbx7q2m4k9d3c8f5r6t1w0ya"
+      ]
+    },
+    {
+      "name": "everything in the partition",
+      "pattern": "wfrn:wf:*",
+      "matches": [
+        "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+        "wfrn:wf:iam::123456789012:role/admin",
+        "wfrn:wf:organizations:::account/123456789012"
+      ],
+      "misses": [
+        "wfrn:wf-gov:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ye"
+      ]
+    },
+    {
+      "name": "everything of one account in one region, any type",
+      "pattern": "wfrn:wf:*:global:123456789012:*",
+      "matches": [
+        "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+        "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/logs/2026"
+      ],
+      "misses": [
+        "wfrn:wf:compute:eu-west-1:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yd",
+        "wfrn:wf:iam::123456789012:role/admin"
+      ]
+    },
+    {
+      "name": "an exact name is its own pattern",
+      "pattern": "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "matches": ["wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya"],
+      "misses": ["wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yb"]
+    },
+    {
+      "name": "a question mark matches exactly one character",
+      "pattern": "wfrn:wf:compute:global:123456789012:vm/web-0?",
+      "matches": ["wfrn:wf:compute:global:123456789012:vm/web-01", "wfrn:wf:compute:global:123456789012:vm/web-0a"],
+      "misses": ["wfrn:wf:compute:global:123456789012:vm/web-0", "wfrn:wf:compute:global:123456789012:vm/web-010"]
+    },
+    {
+      "name": "a star inside an id crosses slashes",
+      "pattern": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/*",
+      "matches": [
+        "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/logs",
+        "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/logs/2026"
+      ],
+      "misses": [
+        "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc",
+        "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yd/logs"
+      ]
+    },
+    {
+      "name": "an empty region in a pattern matches only an empty region",
+      "pattern": "wfrn:wf:iam::123456789012:role/*",
+      "matches": ["wfrn:wf:iam::123456789012:role/admin"],
+      "misses": ["wfrn:wf:iam:global:123456789012:role/admin"]
+    },
+    {
+      "name": "a star matches the empty string",
+      "pattern": "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya*",
+      "matches": ["wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya", "wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya/disk-0"],
+      "misses": ["wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0y"]
+    },
+    {
+      "name": "no case folding in patterns",
+      "pattern": "wfrn:wf:compute:global:123456789012:vm/*",
+      "matches": ["wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya"],
+      "misses": ["wfrn:wf:compute:global:123456789012:vm/VM-01JBX7Q2M4K9D3C8F5R6T1W0YA"]
+    }
+  ],
+  "invalidPatterns": [
+    { "name": "a pattern must still be a wfrn", "pattern": "arn:aws:*", "code": "wfrn.prefix" },
+    { "name": "a pattern with an uppercase letter", "pattern": "wfrn:wf:Compute:*", "code": "wfrn.case" },
+    { "name": "a pattern with a bad account", "pattern": "wfrn:wf:compute:global:12345:vm/*", "code": "wfrn.account" },
+    { "name": "a pattern with a regular-expression character", "pattern": "wfrn:wf:compute:global:123456789012:vm/vm-.*", "code": "wfrn.id" },
+    { "name": "a pattern over 1,024 characters", "pattern": "wfrn:wf:storage:global:123456789012:bucket/bucket-01jbx7q2m4k9d3c8f5r6t1w0yc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*", "code": "wfrn.length" }
+  ],
+  "mintedIds": [
+    {
+      "name": "a vm id",
+      "type": "vm",
+      "ulid": "01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "parsed": { "type": "vm", "ulid": "01jbx7q2m4k9d3c8f5r6t1w0ya" }
+    },
+    {
+      "name": "a hyphenated type keeps its hyphen",
+      "type": "resource-group",
+      "ulid": "01jbx7q2m4k9d3c8f5r6t1w0yg",
+      "id": "resource-group-01jbx7q2m4k9d3c8f5r6t1w0yg",
+      "parsed": { "type": "resource-group", "ulid": "01jbx7q2m4k9d3c8f5r6t1w0yg" }
+    },
+    {
+      "name": "an id without a ulid is not minted",
+      "type": "vm",
+      "ulid": null,
+      "id": "vm-1042",
+      "error": "wfrn.id"
+    },
+    {
+      "name": "an uppercase ulid is refused",
+      "type": "vm",
+      "ulid": "01JBX7Q2M4K9D3C8F5R6T1W0YA",
+      "id": "vm-01JBX7Q2M4K9D3C8F5R6T1W0YA",
+      "error": "wfrn.case"
+    },
+    {
+      "name": "a ulid with a letter outside the alphabet is refused",
+      "type": "vm",
+      "ulid": "01jbx7q2m4k9d3c8f5r6t1w0il",
+      "id": "vm-01jbx7q2m4k9d3c8f5r6t1w0il",
+      "error": "wfrn.id"
+    },
+    {
+      "name": "a ulid whose first character is over 7 is refused (overflows 128 bits)",
+      "type": "vm",
+      "ulid": "81jbx7q2m4k9d3c8f5r6t1w0ya",
+      "id": "vm-81jbx7q2m4k9d3c8f5r6t1w0ya",
+      "error": "wfrn.id"
+    },
+    {
+      "name": "the prefix must be the type",
+      "type": "vm",
+      "ulid": "01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "id": "volume-01jbx7q2m4k9d3c8f5r6t1w0ya",
+      "error": "wfrn.id"
+    }
+  ]
+}

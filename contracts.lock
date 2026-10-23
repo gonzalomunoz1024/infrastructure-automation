@@ -1,0 +1,19 @@
+{
+  "$comment": "The commit of the console-root hub this workspace copied its contracts from, and the sha256 of each copy. `npm run contracts:verify` checks the copies still match; a new pin is a new commit here.",
+  "hub": "console-root",
+  "commit": "a3e0a7951e6e80cd59909df04f3a8e361a47331b",
+  "files": {
+    "packages/wfrn/fixtures.json": {
+      "source": "contracts/wfrn/fixtures.json",
+      "sha256": "55115d10638a19f4beafe3c2560dae5b856239b63cb4665c986aad759181220d"
+    },
+    "packages/wfrn/SPEC.md": {
+      "source": "contracts/wfrn/SPEC.md",
+      "sha256": "a948a77142289a1f72c926c16977f36a093d394db24c26d1f8cce3cced00914e"
+    },
+    "contracts/platform/asyncapi-target.yaml": {
+      "source": "contracts/platform/asyncapi-target.yaml",
+      "sha256": "e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23"
+    }
+  }
+}
