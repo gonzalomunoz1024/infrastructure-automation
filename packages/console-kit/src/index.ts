@@ -59,3 +59,6 @@ export {
 export { CursorPager, useCursorPaging, nextCursorFromLink, PAGE_SIZES, type CursorPagerProps, type CursorPaging } from './CursorPager'
 export { CodeView, toYaml, shellQuote, curlCommand, cliFlags, cliCommand, type CodeSample, type CodeViewProps, type CurlRequest } from './CodeView'
 export { ConfirmDialog, type ConfirmDialogProps } from './ConfirmDialog'
+export { SERIES_SLOTS, SERIES_PALETTE, SERIES_CSS, seriesColor, type SeriesSlot } from './palette'
+export { SeriesStyles, SeriesSwatch } from './SeriesSwatch'
+export { StackedBarChart, stackSegments, segmentPath, barTotal, barDescription, type StackedBarChartProps, type StackedBar, type StackedSeries, type StackedSegment } from './StackedBarChart'
