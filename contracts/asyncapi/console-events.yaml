@@ -9,17 +9,33 @@ info:
     changes (`identity.changes`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
-    **Envelope.** Every message is a `ConsoleEvent`: `type`, `wfrn` (or `accountId` on
-    `identity.changes`), `accountId`, `region`, `version`, `key`, `at` and `data`, plus `actor`,
-    `jobId`, `requestId` and `traceparent` when known. `version` is the subject's version after the
-    event (a resource's state version, a finding's version, an account's, policy's or role's
-    version): consumers apply an event only when its `version` is the one they hold plus one, and
-    ask the owning service for the current state otherwise.
+    **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
+    (`contracts/platform/asyncapi-target.yaml`), the one shape the service kit's `EventEnvelope`,
+    outbox and Kafka publisher write and every consumer already reads for the platform's feed:
+    `specVersion`, `dataVersion`, `id`, `key`, `seq`, `type`, `at`, `aggregate`, `aggregateId`,
+    `actor`, `onBehalfOf`, `context` (`accountId`, `region`, `wfrn`, `consoleRequestId`),
+    `traceparent` and `data`. `aggregate` and `aggregateId` name the subject: `resource` and the
+    wfrn on `state.resources`, `finding` and the finding id on `drift.findings`, the subject kind
+    (`account`, `user`, `group`, `role`, `policy`, `accessKey`, `quota`) and its id on
+    `identity.changes`. `context.accountId` is the account every event belongs to; `context.wfrn`
+    is the resource on `state.resources` and `drift.findings`; `context.region` is absent on
+    `identity.changes` (identity is region-less). The console's own fields ride in `data`: every
+    event carries `data.version`, the subject's version after the event (a resource's state
+    version, a finding's version, an account's, policy's, role's, group's or user's version):
+    consumers apply an event only when its `version` is the one they hold plus one, and ask the
+    owning service for the current state otherwise. `id` is random (`evt_` and a ULID) and serves
+    tracing only; `seq` is the publisher's outbox sequence.
 
-    **Keys are deterministic** and consumers de-duplicate on them: `<type>:<wfrn>:<version>` on
-    `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on `drift.findings` and
-    `<type>:<accountId>:<subject>:<version>` on `identity.changes` (the subject is the account,
-    policy, role, group, user, key or quota id). A producer that retries publishes the same key.
+    **Type names stay PascalCase** (`ResourceRequested`, `UserChanged`), unlike the platform's
+    dotted names (`job.started`, `resource.registered`), so a consumer that merges both feeds (the
+    BFF's live stream) tells them apart at a glance and the platform's `resource.*` types never
+    collide with the console's.
+
+    **Keys are deterministic** and consumers de-duplicate on them, never on `id`:
+    `<type>:<wfrn>:<version>` on `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on
+    `drift.findings` and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
+    subject id is the account, policy, role, group, user, key or quota id). A producer that retries
+    publishes the same key; a re-emitted event gets a new `id` and the same `key`.
 
     **Partitions.** `state.resources` and `drift.findings` are partitioned by `wfrn`, so one
     resource's events are in order; `identity.changes` by `accountId`, so one account's changes
@@ -34,7 +50,8 @@ info:
     `DriftResolved` and `Tagged` change the resource's observed truth, drift flag and tags without
     changing its state.
 
-    **wfrns** travel in the message body, never in the key alone, and are the partition key verbatim.
+    **wfrns** travel in the envelope (`context.wfrn`, and `aggregateId` on `state.resources`),
+    never in the Kafka key alone, and are the partition key verbatim.
   contact:
     name: Customer console hub (console-root)
   x-status: draft
@@ -151,7 +168,7 @@ components:
         kafka:
           key:
             type: string
-            description: The wfrn, or the accountId on identity.changes
+            description: 'The partition key: context.wfrn, or context.accountId on identity.changes'
           bindingVersion: 0.5.0
   messages:
     resourceRequested:
@@ -169,16 +186,24 @@ components:
       examples:
         - name: A VM is requested
           payload:
-            type: ResourceRequested
-            wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
-            accountId: '123456789012'
-            region: global
-            version: 1
+            specVersion: '1.0'
+            dataVersion: 1
+            id: evt_01jbx9r2m4k9d3c8f5r6t1w0yb
             key: 'ResourceRequested:wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya:1'
+            seq: 4711
+            type: ResourceRequested
             at: '2026-10-23T02:10:40.871Z'
+            aggregate: resource
+            aggregateId: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
             actor: dana
-            requestId: req_01jbx9example
+            context:
+              accountId: '123456789012'
+              region: global
+              wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-01jbx7q2m4k9d3c8f5r6t1w0ya'
+              consoleRequestId: req_01jbx9example
             data:
+              version: 1
+              state: pending
               resourceType: vm
               name: web-03
               workflow: create-vm
@@ -356,7 +381,7 @@ components:
           - type: object
             properties:
               type: { const: AccountChanged }
-              subject: { const: account }
+              aggregate: { const: account }
     userChanged:
       name: UserChanged
       title: A user was added, changed or removed
@@ -367,7 +392,32 @@ components:
           - type: object
             properties:
               type: { const: UserChanged }
-              subject: { const: user }
+              aggregate: { const: user }
+      examples:
+        - name: A user is added to an account
+          payload:
+            specVersion: '1.0'
+            dataVersion: 1
+            id: evt_01jbx9r2m4k9d3c8f5r6t1w0yc
+            key: 'UserChanged:123456789012:user_01jbx9r2m4k9d3c8f5r6t1w0yd:1'
+            seq: 88
+            type: UserChanged
+            at: '2026-10-23T02:12:03.004Z'
+            aggregate: user
+            aggregateId: user_01jbx9r2m4k9d3c8f5r6t1w0yd
+            actor: dana
+            context:
+              accountId: '123456789012'
+            data:
+              version: 1
+              action: created
+              snapshot:
+                userId: user_01jbx9r2m4k9d3c8f5r6t1w0yd
+                email: raj@example.com
+                name: Raj Patel
+                status: active
+                groups: [compute-operators]
+                version: 1
     groupChanged:
       name: GroupChanged
       title: A group or its membership changed
@@ -378,7 +428,7 @@ components:
           - type: object
             properties:
               type: { const: GroupChanged }
-              subject: { const: group }
+              aggregate: { const: group }
     roleChanged:
       name: RoleChanged
       title: A role or its policies changed
@@ -389,7 +439,7 @@ components:
           - type: object
             properties:
               type: { const: RoleChanged }
-              subject: { const: role }
+              aggregate: { const: role }
     policyChanged:
       name: PolicyChanged
       title: A policy document changed
@@ -400,7 +450,7 @@ components:
           - type: object
             properties:
               type: { const: PolicyChanged }
-              subject: { const: policy }
+              aggregate: { const: policy }
     accessKeyChanged:
       name: AccessKeyChanged
       title: An access key was created, rotated or revoked
@@ -412,7 +462,7 @@ components:
           - type: object
             properties:
               type: { const: AccessKeyChanged }
-              subject: { const: accessKey }
+              aggregate: { const: accessKey }
     quotaChanged:
       name: QuotaChanged
       title: A quota was set or an increase was decided
@@ -423,7 +473,7 @@ components:
           - type: object
             properties:
               type: { const: QuotaChanged }
-              subject: { const: quota }
+              aggregate: { const: quota }
   schemas:
     Wfrn:
       type: string
@@ -445,40 +495,79 @@ components:
       enum: [reverted, accepted, ignored, vanished]
     ConsoleEvent:
       type: object
-      description: What every message carries
-      required: [type, accountId, region, version, key, at, data]
+      description: "The platform's P-01 envelope, as the service kit's EventEnvelope writes it; the console's own fields are in data"
+      required: [specVersion, dataVersion, id, key, type, at, aggregate, aggregateId, context, data]
       properties:
+        specVersion: { type: string, const: '1.0' }
+        dataVersion: { type: integer, minimum: 1, description: "The version of this type's data schema, 1 for every type in this catalogue" }
+        id: { type: string, description: 'Random (evt_ and a ULID), for tracing only; never de-duplicate on it' }
+        key: { type: string, description: 'Deterministic; consumers de-duplicate on it' }
+        seq: { type: integer, minimum: 1, description: "The publisher's outbox sequence, one total order per service" }
         type: { type: string }
+        at: { type: string, format: date-time }
+        aggregate: { type: string, description: 'What the event is about: resource, finding, or an identity subject kind' }
+        aggregateId: { type: string, description: 'The wfrn, the finding id, or the identity subject id' }
+        actor: { type: string, description: The console user or service that caused it }
+        onBehalfOf: { $ref: '#/components/schemas/OnBehalfOf' }
+        context: { $ref: '#/components/schemas/Context' }
+        traceparent: { type: string }
+        data:
+          type: object
+          required: [version]
+          properties:
+            version: { type: integer, minimum: 1, description: The subject's version after this event }
+          additionalProperties: true
+    OnBehalfOf:
+      type: object
+      description: The console user a platform job was started for, when the event comes from one
+      required: [id]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+    Context:
+      type: object
+      required: [accountId]
+      properties:
         accountId: { $ref: '#/components/schemas/AccountId' }
         region: { $ref: '#/components/schemas/RegionName' }
-        version: { type: integer, minimum: 1, description: The subject's version after this event }
-        key: { type: string, description: 'Deterministic; consumers de-duplicate on it' }
-        at: { type: string, format: date-time }
-        actor: { type: string, description: The console user or service that caused it }
-        jobId: { type: string, description: The platform job, when one is involved }
-        requestId: { type: string, description: The console request id (X-Console-Request-Id) }
-        traceparent: { type: string }
-        data: { type: object, additionalProperties: true }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        consoleRequestId: { type: string, description: The console request id (X-Console-Request-Id) }
     ResourceEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
         - type: object
-          required: [wfrn, state]
+          required: [context, data]
           properties:
-            wfrn: { $ref: '#/components/schemas/Wfrn' }
-            state: { $ref: '#/components/schemas/ResourceState', description: The resource's state after this event }
-            resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
+            aggregate: { const: resource }
+            aggregateId: { $ref: '#/components/schemas/Wfrn' }
+            context:
+              type: object
+              required: [accountId, region, wfrn]
+            data:
+              type: object
+              required: [version, state]
+              properties:
+                version: { type: integer, minimum: 1, description: "The resource's state version after this event" }
+                state: { $ref: '#/components/schemas/ResourceState', description: "The resource's state after this event" }
+                resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
+                jobId: { type: string, description: The platform job, when one is involved }
     FindingEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
         - type: object
-          required: [wfrn, data]
+          required: [context, data]
           properties:
-            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            aggregate: { const: finding }
+            aggregateId: { type: string, description: The finding id }
+            context:
+              type: object
+              required: [accountId, region, wfrn]
             data:
               type: object
-              required: [findingId]
+              required: [version, findingId]
               properties:
+                version: { type: integer, minimum: 1, description: "The finding's version after this event" }
                 findingId: { type: string }
                 severity: { type: string, enum: [info, warning, critical] }
                 fields:
@@ -489,12 +578,17 @@ components:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
         - type: object
-          required: [subject, subjectId]
+          required: [data]
           properties:
-            subject: { type: string, enum: [account, user, group, role, policy, accessKey, quota] }
-            subjectId: { type: string }
-            action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked] }
-            data: { type: object, description: The subject as the identity service serves it after the change, without secrets, additionalProperties: true }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota], description: The subject kind }
+            aggregateId: { type: string, description: The subject id (the accountId for an account) }
+            data:
+              type: object
+              required: [version, action]
+              properties:
+                version: { type: integer, minimum: 1, description: "The subject's version after this event" }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked] }
+                snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
     DriftField:
       type: object
       required: [path]

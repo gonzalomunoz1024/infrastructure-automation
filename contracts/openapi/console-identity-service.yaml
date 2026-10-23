@@ -29,6 +29,9 @@ info:
 
     **Resources in policies** are wfrn patterns (`contracts/wfrn/SPEC.md`), and `POST /v1/authorize`
     takes wfrns or patterns as the resource of each check.
+
+    **Internal operations** (`/internal/...` and `GET /v1/accounts/{accountId}/platform-credentials`)
+    serve the console's own services and OPA, never a user: a user's JWT answers 404 there.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -43,6 +46,8 @@ tags:
   - name: Access keys
   - name: Quotas
   - name: Authorization
+  - name: Internal
+    description: For the console's own services (the `svc` claim) and OPA; a user's JWT answers 404
   - name: Health
 security:
   - consoleJwt: []
@@ -844,6 +849,63 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/platform-credentials:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: getPlatformCredentials
+      summary: The platform service account bound to an account
+      description: |
+        For the console's own services (the `svc` claim; a user's JWT answers 404): the platform
+        service account (P-03, preset `console`) the state service and the BFF act through for this
+        account, and where its token is. `source: local` answers the token itself (the demo and dev
+        profiles, where the identity service minted the account on platform-fake); `source: vault`
+        answers the Vault path `console/accounts/{accountId}/platform-service-account`, which the
+        caller reads with its own Vault identity (production), and no token. The token never
+        appears in events, logs or the audit trail.
+      tags: [Internal]
+      responses:
+        '200':
+          description: The service account and where its token is
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformCredentials' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/opa/bundles/console-authz.tar.gz:
+    get:
+      operationId: getOpaBundle
+      summary: The OPA bundle of every account's policies
+      description: |
+        The authorization bundle the console's OPA instances poll (OPA's bundle service API): a
+        gzipped tar with the compiled policies and data of every account, rebuilt on each
+        `identity.changes` event. `ETag` is the bundle revision (the `.manifest` revision) and a
+        matching `If-None-Match` answers 304, so polling costs nothing between changes. Callers are
+        the console-internal principal, or OPA itself with the configured bundle token
+        (`Authorization: Bearer <token>`, `identity.opa.bundle-token`); a user's JWT answers 404.
+      tags: [Internal]
+      security:
+        - consoleJwt: []
+        - bundleToken: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: The bundle
+          headers:
+            ETag:
+              description: The bundle revision
+              schema: { type: string }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '304':
+          description: The caller's bundle is current
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     consoleJwt:
@@ -851,6 +913,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: The console's internal JWT, with `sub`, `acct` (the console account), `groups` and `svc` (the calling service)
+    bundleToken:
+      type: http
+      scheme: bearer
+      description: The static token OPA presents for its bundle (`identity.opa.bundle-token`); accepted on the bundle path only
   parameters:
     AccountIdPath:
       name: accountId
@@ -928,6 +994,16 @@ components:
           type: array
           items: { $ref: '#/components/schemas/Problem' }
         correlationId: { type: string }
+    PlatformCredentials:
+      type: object
+      required: [accountId, platformServiceAccountId, source]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        platformServiceAccountId: { type: string, description: The platform service account (P-03, preset console) }
+        source: { type: string, enum: [local, vault], description: Where the token is }
+        token: { type: string, description: 'The bearer token; with source local only' }
+        vaultPath: { type: string, description: 'The Vault secret; with source vault only: console/accounts/{accountId}/platform-service-account' }
+        issuedAt: { type: string, format: date-time }
     Problem:
       type: object
       required: [code, message]
@@ -950,7 +1026,7 @@ components:
         status: { $ref: '#/components/schemas/AccountStatus' }
         owningTeam: { type: string }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
-        platformServiceAccountId: { type: string, description: 'The platform service account bound to this account (P-03); its token is held by the BFF''s vault, never here' }
+        platformServiceAccountId: { type: string, description: 'The platform service account bound to this account (P-03); its token is never in this record: GET /v1/accounts/{accountId}/platform-credentials tells the console''s own services where it is' }
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
