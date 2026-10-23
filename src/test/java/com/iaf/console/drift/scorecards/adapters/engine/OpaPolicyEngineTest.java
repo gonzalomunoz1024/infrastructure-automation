@@ -76,7 +76,7 @@ class OpaPolicyEngineTest {
 
     @Test
     void everyExampleGetsItsVerdictFromOpa() {
-        OpaPolicyEngine engine = new OpaPolicyEngine(WebClient.builder(), baseUrl, Duration.ofSeconds(10));
+        OpaPolicyEngine engine = new OpaPolicyEngine(WebClient.builder(), baseUrl, Duration.ofSeconds(10), null);
         engine.pushPolicies(PACKS).block(Duration.ofSeconds(30));
         int checked = 0;
         for (RulePack pack : PACKS.packs()) {

@@ -126,7 +126,7 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.kafka.bootstrap-servers`, `group-id`, `topics` | `localhost:9092`, `console-drift-service`, `[state.resources]` | The state events consumer (`kafka` profile) |
 | `console.outbox.relay.*` | on, `1s` | The service kit's outbox relay |
 | `console.scorecards.engine` | `embedded` | The policy engine rules run on: `embedded` (the packs' declarative `when`/`check`) or `opa` |
-| `console.scorecards.opa-url`, `opa-timeout`, `push-policies` | `http://localhost:8181`, `5s`, `true` | The firm's OPA, and whether this service loads the packs' Rego into it at start (`PUT /v1/policies/console-scorecards/<pack>/<rule>`) |
+| `console.scorecards.opa-url`, `opa-timeout`, `opa-token`, `push-policies` | `http://localhost:8181`, `5s`, none (`CONSOLE_OPA_TOKEN`), `false` | The firm's OPA, the bearer token every call carries when set, and whether this service loads the packs' Rego into it at start (`PUT /v1/policies/console-scorecards/<pack>/<rule>`). Turn it on only for an OPA of the console's own; a rule whose Rego declares any package but `console.scorecards.<pack>.<rule>` stops the load before anything is written |
 | `console.scorecards.packs-dir` | none | A directory of `*.yaml` rule packs besides the three built in |
 | `console.scorecards.snapshot-interval` | `10m` | How often accounts without today's snapshot are recounted and snapshotted |
 

@@ -64,7 +64,7 @@ public class ScorecardConfiguration {
             log.info("scorecards: the embedded engine (the rules' declarative half)");
             return new EmbeddedPolicyEngine();
         }
-        OpaPolicyEngine opa = new OpaPolicyEngine(webClients, s.opaUrl(), s.opaTimeout());
+        OpaPolicyEngine opa = new OpaPolicyEngine(webClients, s.opaUrl(), s.opaTimeout(), s.opaToken());
         log.info("scorecards: OPA at {}", s.opaUrl());
         if (s.pushPolicies()) {
             opa.pushPolicies(packs).subscribe(null, e -> log.warn("scorecards: loading the packs' Rego into OPA failed: {}", e.toString()));

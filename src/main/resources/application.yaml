@@ -124,7 +124,8 @@ console:
     engine: embedded
     opa-url: http://localhost:8181
     opa-timeout: 5s
-    push-policies: true       # load the packs' Rego into OPA at start
+    opa-token: ${CONSOLE_OPA_TOKEN:}   # sent as a bearer token when set
+    push-policies: false      # load the packs' Rego into OPA at start; only for an OPA of the console's own
     # packs-dir: /etc/console/rule-packs   # packs besides the ones built in (rule-packs/*.yaml)
     snapshot-interval: 10m    # accounts without today's snapshot are recounted
   kafka:
