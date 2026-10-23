@@ -1,6 +1,7 @@
 package com.iaf.console.drift.drift.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +28,7 @@ import com.iaf.console.drift.drift.ports.outbound.CostEstimatesPort;
 import com.iaf.console.drift.drift.ports.outbound.DiscoveryStorePort;
 import com.iaf.console.drift.drift.ports.outbound.ResourceTypesPort;
 import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
@@ -53,12 +55,15 @@ import reactor.core.scheduler.Schedulers;
  * neighbours) and what it costs a month. An object can be assigned to another team's account,
  * which then lists it too; an import by either account mints the object a wfrn through the state
  * service ({@code POST /v1/resources:import}, source {@code discover}) and takes every copy off the
- * lists. One run per type and region at a time.
+ * lists. One run per type and region at a time: a second is a 409 naming the running one, and a
+ * run still running after {@link #ABANDONED_AFTER} lost its walk, so it is marked failed and steps aside.
  */
 public final class DiscoveryService {
 
     private static final Logger log = LoggerFactory.getLogger(DiscoveryService.class);
     private static final int PAGE = 500;
+    /** A run still running after this long lost its walk (the pod stopped): it is marked failed and no longer blocks a new one. */
+    static final Duration ABANDONED_AFTER = Duration.ofHours(2);
 
     private final DiscoveryStorePort store;
     private final ResourceTypesPort types;
@@ -99,10 +104,19 @@ public final class DiscoveryService {
                         return Mono.error(new InvalidInputException("the type cannot be discovered",
                                 List.of(Problem.error("type.notDiscoverable", "type", type + " has no observe.discover or observe.list action"))));
                     }
-                    return store.findRunningRun(scope, type, region).switchIfEmpty(Mono.defer(() -> {
-                        DiscoveryRun run = DiscoveryRun.start("disc-" + Ulid.next().toLowerCase(Locale.ROOT), scope.accountId(), type, region, clock.instant());
-                        return store.saveRun(run).doOnSuccess(saved -> walk(scope, t, saved).subscribeOn(Schedulers.boundedElastic()).subscribe());
-                    }));
+                    // one run per type and region: a second is a 409 naming the running one, unless that one was abandoned
+                    return store.findRunningRun(scope, type, region)
+                            .flatMap(running -> running.startedAt().plus(ABANDONED_AFTER).isAfter(clock.instant())
+                                    ? Mono.<DiscoveryRun>error(new ConflictException("discover.running: a discovery run of " + type + " in " + region
+                                            + " is already running", Map.of("runId", running.runId())))
+                                    : store.saveRun(running.failed("abandoned: the run did not finish within " + ABANDONED_AFTER.toHours() + " hours",
+                                            running.seen() == null ? 0 : running.seen(), running.unmanaged() == null ? 0 : running.unmanaged(), clock.instant()))
+                                            .doOnSuccess(r -> log.warn("discovery {} abandoned, starting another", r.runId()))
+                                            .then(Mono.<DiscoveryRun>empty()))
+                            .switchIfEmpty(Mono.defer(() -> {
+                                DiscoveryRun run = DiscoveryRun.start("disc-" + Ulid.next().toLowerCase(Locale.ROOT), scope.accountId(), type, region, clock.instant());
+                                return store.saveRun(run).doOnSuccess(saved -> walk(scope, t, saved).subscribeOn(Schedulers.boundedElastic()).subscribe());
+                            }));
                 });
     }
 

@@ -137,7 +137,7 @@ Pages are 1 to 200 items, 50 by default, with the kit's opaque cursors (`after`,
 | `POST /v1/findings/{id}:revert` | 202 `{findingId, jobId}`; the type's update workflow runs with the desired values, on behalf of the person |
 | `POST /v1/findings/{id}:accept` | 200, the finding closed as `accepted`; the observed values are the desired ones on the state service |
 | `POST /v1/findings/{id}:ignore` | 200, closed as `ignored`; the fields stay silent until the desired state changes, or until `until` |
-| `POST /v1/discover` | 202, a discovery run over the account's discoverable types, or the `type` and `region` given |
+| `POST /v1/discover` | 202, a discovery run of the `type` in the `region`; 409 `discover.running` with the running run's `runId` in `detail` while one runs (a run still running after two hours lost its walk: it is marked failed and a new one starts) |
 | `GET /v1/discover/{runId}` | The run: types read, objects seen, unmanaged found |
 | `GET /v1/unmanaged` | Provider objects no account manages, with `ownerGuess`, `monthlyCost` and `assignment`; filters `type`, `region`, `owner` (`any`, `mine`: guessed to be or assigned to the account, `unknown`: no guess) |
 | `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on; every account's copy leaves the lists |

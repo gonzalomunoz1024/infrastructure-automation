@@ -6,10 +6,13 @@ import java.time.Duration;
 import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.console.drift.drift.domain.DiscoveryRun;
+import com.iaf.console.drift.drift.ports.outbound.DiscoveryStorePort;
 
 /**
  * The shadow-infrastructure finder (WP 5.3) and the drift numbers (WP 9.5) on the demo: who most
@@ -17,6 +20,9 @@ import com.fasterxml.jackson.databind.JsonNode;
  * that team taking it under management, and the counts of a window.
  */
 class FinderJourneyTest extends DemoServiceTest {
+
+    @Autowired
+    private DiscoveryStorePort runs;
 
     /** Ana, a developer of the data account. */
     private WebTestClient ana() {
@@ -148,5 +154,24 @@ class FinderJourneyTest extends DemoServiceTest {
         dana().get().uri(uri("/v1/findings/stats?since=" + encode("2026-10-23T12:00:00Z") + "&until=" + encode("2026-10-23T11:00:00Z"))).exchange()
                 .expectStatus().isBadRequest();
         dana().get().uri("/v1/findings/stats?since=yesterday").exchange().expectStatus().isBadRequest();
+    }
+
+    @Test
+    void aSecondRunWhileOneRunsIsA409NamingItAndAnAbandonedRunStepsAside() {
+        runs.saveRun(DiscoveryRun.start("disc-held", ACCOUNT, "vm", "global", Instant.now())).block();
+        JsonNode refused = body(dana().post().uri("/v1/discover").contentType(MediaType.APPLICATION_JSON).bodyValue("{\"type\":\"vm\",\"region\":\"global\"}")
+                .exchange().expectStatus().isEqualTo(409));
+        ContractSchemas.assertValid(ContractSchemas.ERROR, refused, "the refusal");
+        assertThat(refused.path("error").asText()).startsWith("discover.running");
+        assertThat(refused.path("detail").path("runId").asText()).isEqualTo("disc-held");
+
+        // the pod walking it stopped three hours ago: the run is marked failed and a new one starts
+        runs.saveRun(new DiscoveryRun("disc-held", ACCOUNT, "vm", "global", DiscoveryRun.RUNNING, Instant.now().minus(Duration.ofHours(3)), null, 7, 1, null))
+                .block();
+        discover(dana());
+        JsonNode held = body(dana().get().uri("/v1/discover/disc-held").exchange().expectStatus().isOk());
+        assertThat(held.path("status").asText()).isEqualTo("failed");
+        assertThat(held.path("error").asText()).startsWith("abandoned");
+        assertThat(held.path("seen").asInt()).isEqualTo(7);
     }
 }
