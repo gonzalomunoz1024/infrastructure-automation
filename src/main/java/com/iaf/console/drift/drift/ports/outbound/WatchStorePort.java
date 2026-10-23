@@ -25,6 +25,11 @@ public interface WatchStorePort {
 
     Flux<Watch> findByProviderId(String providerId, String type);
 
+    /** The watches of the type with any of the provider ids: what a page of the type's discover pages names. */
+    default Flux<Watch> findByProviderIds(Collection<String> providerIds, String type) {
+        return Flux.fromIterable(providerIds).concatMap(id -> findByProviderId(id, type));
+    }
+
     /** The accounts that have a watched resource. */
     Flux<String> listAccounts();
 

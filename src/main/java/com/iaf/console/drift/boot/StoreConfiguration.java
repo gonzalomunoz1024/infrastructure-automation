@@ -9,10 +9,12 @@ import org.springframework.context.annotation.Profile;
 import com.iaf.console.drift.drift.adapters.memory.InMemoryDiscoveryStore;
 import com.iaf.console.drift.drift.adapters.memory.InMemoryFindingStore;
 import com.iaf.console.drift.drift.adapters.memory.InMemoryIdempotencyKeys;
+import com.iaf.console.drift.drift.adapters.memory.InMemoryWalkStore;
 import com.iaf.console.drift.drift.adapters.memory.InMemoryWatchStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoDiscoveryStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoFindingStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoIdempotencyKeys;
+import com.iaf.console.drift.drift.adapters.mongo.MongoWalkStore;
 import com.iaf.console.drift.drift.adapters.mongo.MongoWatchStore;
 import com.iaf.console.drift.monitoring.adapters.memory.InMemoryAlarmStore;
 import com.iaf.console.drift.monitoring.adapters.mongo.MongoAlarmStore;
@@ -23,7 +25,7 @@ import com.iaf.console.drift.rightsizing.adapters.mongo.MongoUtilisationStore;
 import com.iaf.console.kit.mongo.Mongo;
 
 /**
- * Where findings, watches, idempotency keys, discovery, alarms, recommendations and utilisation live:
+ * Where findings, watches, the lists' walks, idempotency keys, discovery, alarms, recommendations and utilisation live:
  * MongoDB under the {@code mongo} profile, memory otherwise.
  */
 @Configuration(proxyBeanMethods = false)
@@ -41,6 +43,11 @@ public class StoreConfiguration {
         @Bean
         public MongoWatchStore watchStore(Mongo mongo) {
             return new MongoWatchStore(mongo);
+        }
+
+        @Bean
+        public MongoWalkStore walkStore(Mongo mongo) {
+            return new MongoWalkStore(mongo);
         }
 
         @Bean
@@ -81,6 +88,11 @@ public class StoreConfiguration {
         @Bean
         public InMemoryWatchStore watchStore() {
             return new InMemoryWatchStore();
+        }
+
+        @Bean
+        public InMemoryWalkStore walkStore() {
+            return new InMemoryWalkStore();
         }
 
         @Bean

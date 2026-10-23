@@ -84,6 +84,15 @@ public final class MongoWatchStore implements WatchStorePort, MongoIndexed {
     }
 
     @Override
+    public Flux<Watch> findByProviderIds(Collection<String> providerIds, String type) {
+        if (providerIds.isEmpty()) {
+            return Flux.empty();
+        }
+        Bson byIds = Filters.or(Filters.in("providerId", providerIds), Filters.in("registryId", providerIds));
+        return Flux.from(mongo.collection(COLLECTION).find(type == null ? byIds : Filters.and(byIds, Filters.eq("type", type)))).map(this::read);
+    }
+
+    @Override
     public Flux<String> listAccounts() {
         return Flux.from(mongo.collection(COLLECTION).distinct("accountId", String.class));
     }

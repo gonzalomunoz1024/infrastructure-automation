@@ -1,0 +1,19 @@
+estate: 1,000,000 resources in 2,000 accounts (the largest 100,000), 23,126 groups; seeded in 2.6 s
+tiers: hot 50,208, warm 750,007, cold 199,785; imported 0.001; loops temporal; budget 300/min, burst 50, account share 0.25; latency page PT0.5S, batch PT0.3S
+
+| Hour | Requests/s mean | peak min | Provider calls/s mean | peak min | Pages | Batches (resources) | Discover pages | 429 | Deferred: budget, 429 | Reads/resource hot, warm, cold | Early reads | Overdue reads | Past interval at end | Turns cut | State calls | Wall s | CPU s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4.01 | 5.67 | 10.5 | 22.7 | 1,038 | 12,360 (35,606) | 1,039 | 0 | 17,303,635, 0 | 0.53, 0.48, 0.45 | 54.7% | 16.56% | 58.14% | 0 | 0 | 78 | 76 |
+  past interval at end by tier: hot 45,390, warm 536,023, cold 0; longest gap between reads: hot PT1H10M49.304S, warm PT1H49M55.718S, cold PT21H21M57.79S
+| 2 | 4.15 | 5.57 | 14.3 | 29.9 | 903 | 12,323 (48,844) | 1,721 | 0 | 21,730,860, 0 | 0.59, 0.45, 0.40 | 42.8% | 34.04% | 56.50% | 0 | 5,260 | 91 | 89 |
+  past interval at end by tier: hot 44,089, warm 520,900, cold 0; longest gap between reads: hot PT2H9M53.854S, warm PT2H50M42.589S, cold PT22H16M34.081S
+| 3 | 4.03 | 5.58 | 13.0 | 20.9 | 840 | 11,395 (43,850) | 2,268 | 0 | 21,785,460, 0 | 0.59, 0.42, 0.38 | 34.7% | 27.99% | 56.52% | 0 | 14,833 | 90 | 87 |
+  past interval at end by tier: hot 44,437, warm 520,720, cold 0; longest gap between reads: hot PT3H9M48.166S, warm PT3H50M36.113S, cold PT23H15M35.694S
+
+| Hour | Lists walked | Walks started | Walks finished | Started per walked list, mean / max | Largest list (resources): started, finished |
+|---|---|---|---|---|---|
+| 1 | 62 of 23,126 | 276 | 46 | 4.45 / 122 | 25,920: 122, 0 |
+| 2 | 87 of 23,126 | 265 | 82 | 3.05 / 22 | 25,920: 0, 0 |
+| 3 | 89 of 23,126 | 233 | 84 | 2.62 / 22 | 25,920: 0, 0 |
+discover walks (type|environment: started, finished): network|dev: 19, 0; database|dev: 33, 0; volume|dev: 64, 0; vm|dev: 226, 0;
+run: 262.5 s wall, 254.8 s CPU; open findings at the end 0 (no provider drifts, so any is a wrong read)

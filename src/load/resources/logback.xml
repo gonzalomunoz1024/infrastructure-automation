@@ -1,0 +1,11 @@
+<!-- The scan load test prints its own rows; the service's per-turn lines would drown them. -->
+<configuration>
+    <appender name="out" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss} %-5level %logger{0} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="WARN">
+        <appender-ref ref="out"/>
+    </root>
+</configuration>
