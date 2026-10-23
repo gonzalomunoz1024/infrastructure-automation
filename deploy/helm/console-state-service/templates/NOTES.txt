@@ -1,0 +1,11 @@
+console-state-service {{ .Chart.AppVersion }} is rolling out as {{ include "console-state-service.fullname" . }}.
+
+Profiles: {{ include "console-state-service.profiles" . }}
+API:      http://{{ include "console-state-service.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/resources
+Health:   /actuator/health/readiness
+Metrics:  /actuator/prometheus
+
+Secrets this release reads (create them before the pods start):
+  {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}            the MongoDB URI of database {{ .Values.mongodb.database }}
+  {{ .Values.crypto.existingSecret }}/{{ .Values.crypto.masterKeyKey }}        the 32-byte base64 master key (never rotate it without re-wrapping)
+  {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's internal service-account token

@@ -1,0 +1,704 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-state-service
+  version: 1.0.0
+  summary: The console's own record of every resource, named by wfrn, from the first request to the tombstone.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Account scope.** Every call runs as a console account, the `acct` claim of the caller's
+    internal JWT (the BFF's, or an internal service's with the account it acts for). Every read
+    and every command is scoped to that account: a wfrn of another account answers 404, never 403.
+    The console-internal principal (the indexer, the drift service) may name an account with
+    `accountId` on list calls; a console account's own `accountId` is the only value it may give.
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console
+    API; the service kit's `CursorPaging` enforces it). Lists sort by `-updatedAt` unless `sort`
+    says otherwise.
+
+    **Tombstones.** A deleted resource keeps its name for 90 days (`contracts/wfrn/SPEC.md`):
+    `GET /v1/wfrn/{wfrn}` answers 410 with the tombstone, the log stays readable, and the name is
+    never minted again.
+
+    **Commands are idempotent** on `Idempotency-Key`; a replayed command answers the first result
+    with the response header `Idempotent-Replay: true`.
+
+    **Errors.** `{ error, problems?, correlationId? }`: 400 bad input (with `problems`), 401 no
+    valid JWT, 404 unknown or out of scope, 409 a version mismatch or a command the state refuses,
+    410 a tombstone, 429 over a quota.
+
+    **wfrns in URLs.** A wfrn in a path is percent-encoded (`:` and `/` included), as
+    `/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A123456789012%3Avm%2Fvm-01jbx7q2m4k9d3c8f5r6t1w0ya`;
+    filters take it as a query parameter.
+
+    **Versions.** Every resource carries a `version` that grows by one per event. A command may
+    carry `expectedVersion`, and answers 409 `version.mismatch` when the resource moved on. The
+    events of `contracts/asyncapi/console-events.yaml`, channel `state.resources`, carry the same
+    versions, so a consumer can tell an event it has already applied.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Resources
+  - name: Commands
+  - name: Health
+security:
+  - consoleJwt: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /v1/resources:
+    get:
+      operationId: listResources
+      summary: List the account's resources
+      tags: [Resources]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceState' }
+        - name: name
+          in: query
+          description: A name prefix
+          schema: { type: string }
+        - name: tag.<name>
+          in: query
+          description: Resources whose tag `<name>` equals the value
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - name: wfrn
+          in: query
+          description: A wfrn pattern (`*` and `?`, contracts/wfrn/SPEC.md); exact names go to `/v1/wfrn/{wfrn}`
+          schema: { type: string }
+        - name: updatedAfter
+          in: query
+          schema: { type: string, format: date-time }
+        - name: drift
+          in: query
+          description: Only resources with an open finding
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          description: The order; a leading `-` is descending
+          schema: { type: string, enum: [-updatedAt, updatedAt, -createdAt, createdAt, name, -name], default: -updatedAt }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleResource' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/resources:mint:
+    post:
+      operationId: mintResource
+      summary: Mint a wfrn for a create request
+      description: Records `ResourceRequested` and answers the new name, before the platform job starts; the BFF sends it as `X-Resource-Wfrn` (P-04). Idempotent on `Idempotency-Key`.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MintRequest' }
+      responses:
+        '201':
+          description: The resource, in `pending`, version 1
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/resources:import:
+    post:
+      operationId: importResource
+      summary: Take an existing resource under management
+      description: Records `Imported`, from the platform's backfill (P-05) or a discovered object the account claims; the wfrn is the platform's when it has one, else minted here.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportRequest' }
+      responses:
+        '201':
+          description: The resource, in `active`
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/wfrn/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResource
+      summary: Get a resource by wfrn
+      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had); `reveal=sensitive` answers the sensitive fields in clear instead of masked, for an internal principal (`svc` without `acct`) and for a person whose `roles` claim holds `account-admin`, and is ignored otherwise.'
+      tags: [Resources]
+      parameters:
+        - name: asOf
+          in: query
+          description: A past version of the resource
+          schema: { type: integer, minimum: 1 }
+        - name: reveal
+          in: query
+          schema: { type: string, enum: [sensitive] }
+      responses:
+        '200':
+          description: The resource
+          headers:
+            ETag:
+              description: The resource's version
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResource' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}/events:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: listResourceEvents
+      summary: A resource's event log
+      description: Every event of the resource in version order, oldest first; `after` is a version. Tombstoned resources keep their log for the tombstone's life.
+      tags: [Resources]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ResourceEvent' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/wfrn/{wfrn}:request-update:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: requestUpdate
+      summary: Record an update request
+      description: Records `UpdateRequested` and moves the resource to `updating`; the job's outcome, read from the platform feed, ends it.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  required: [workflow, changes]
+                  properties:
+                    jobId: { type: string, description: 'The platform job, when the BFF started it before recording the request; a job that has already ended settles the request at once' }
+                    workflow: { type: string }
+                    changes: { type: object, additionalProperties: true }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:request-delete:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: requestDelete
+      summary: Record a delete request
+      description: Records `DeleteRequested` and moves the resource to `deleting`; the platform's `resource.retired` or the job's success records `Deleted`. A request naming the job that has already deleted the resource answers the tombstone (200, `state` `deleted`) instead of 410.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  required: [workflow]
+                  properties:
+                    jobId: { type: string, description: 'The platform job, when the BFF started it before recording the request; a job that has already ended settles the request at once' }
+                    workflow: { type: string }
+                    reason: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:request-retry:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: requestRetry
+      summary: Record a retry of a failed create
+      description: 'Records `RetryRequested` and moves a `failed` resource back to `pending` (409 `resource.notFailed` in any other state). The BFF first reruns the failed job with the platform''s `POST /api/v1/jobs/{id}:rerun` from `lastError.failedStep`, a new job that keeps the original context, then records the retry naming that job in `jobId`, so a rerun the platform refuses records nothing; a retry recorded before its job, without `jobId`, works too. The job''s events end the retry as they end a create, and a retry naming a job already on record (its outcome came first) changes nothing.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  properties:
+                    jobId: { type: string, description: 'The rerun job, when the BFF started it before recording the retry; a job that has already ended settles the retry at once' }
+                    workflow: { type: string, description: The workflow the retry runs; the resource's create workflow when left out }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:tag:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: tagResource
+      summary: Set or remove tags
+      description: Records `Tagged`. Tag names are `[a-z0-9-]{1,32}`, values up to 256 characters, at most 50 tags.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  properties:
+                    set:
+                      type: object
+                      additionalProperties: { type: string, maxLength: 256 }
+                    removed:
+                      type: array
+                      items: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:record-observation:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: recordObservation
+      summary: Record what the provider reports
+      description: 'The drift service''s command after an observe read; records `Observed`. A `not_found` observation of a resource whose type says `notFound: deleted` records `Deleted`.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  required: [status, observedAt]
+                  properties:
+                    status: { type: string, enum: [found, not_found, error] }
+                    observed: { type: object, additionalProperties: true }
+                    observedAt: { type: string, format: date-time }
+                    provider: { type: string }
+                    action: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:record-drift:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: recordDrift
+      summary: Flag a resource as drifted
+      description: The drift service's command when a finding opens; records `DriftDetected`.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  required: [findingId, fields]
+                  properties:
+                    findingId: { type: string }
+                    fields:
+                      type: array
+                      items: { $ref: '#/components/schemas/DriftField' }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:resolve-drift:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: resolveDrift
+      summary: Clear a resource's drift flag
+      description: Records `DriftResolved`; an accepted finding also writes the observed values into the desired attributes.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  required: [findingId, resolution]
+                  properties:
+                    findingId: { type: string }
+                    resolution: { type: string, enum: [reverted, accepted, ignored, vanished] }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+components:
+  securitySchemes:
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
+  parameters:
+    WfrnPath:
+      name: wfrn
+      in: path
+      required: true
+      description: The resource's wfrn, percent-encoded
+      schema: { $ref: '#/components/schemas/Wfrn' }
+    AccountId:
+      name: accountId
+      in: query
+      required: false
+      description: The account to read; a console account may only name its own, the internal principal any
+      schema: { $ref: '#/components/schemas/AccountId' }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      description: The `next` of the previous page
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: The same key with the same body answers the first result for 24 hours; with another body it is 409
+      schema: { type: string, maxLength: 255 }
+    ConsoleRequestId:
+      name: X-Console-Request-Id
+      in: header
+      required: false
+      description: The console request that caused the command, kept on the event as `context.consoleRequestId`
+      schema: { type: string, maxLength: 128 }
+  headers:
+    IdempotentReplay:
+      description: '`true` when the command was a replay of an Idempotency-Key and this is the first result, replayed'
+      schema: { type: boolean }
+  responses:
+    ResourceUpdated:
+      description: The resource after the command, with its new version
+      headers:
+        Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleResource' }
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid JWT
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: A version mismatch, a command the state refuses, or an Idempotency-Key reused with another body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Gone:
+      description: A tombstone; the resource was deleted and the name stays reserved for 90 days
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Tombstone' }
+    TooManyRequests:
+      description: Over the account's quota
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+      description: The next page, null on the last one
+    ResourceState:
+      type: string
+      enum: [pending, active, updating, deleting, deleted, failed]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/Problem' }
+        correlationId: { type: string }
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        field: { type: string, description: A JSON pointer }
+        message: { type: string }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    Command:
+      type: object
+      properties:
+        expectedVersion: { type: integer, description: 'Refuse with 409 when the resource''s version is not this one' }
+        actor: { type: string, description: The console user, when the BFF sends the command for one }
+    DriftField:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string }
+        expected: {}
+        observed: {}
+    Drift:
+      type: object
+      required: [findingId, since]
+      properties:
+        findingId: { type: string }
+        since: { type: string, format: date-time }
+        severity: { type: string, enum: [info, warning, critical] }
+        fields:
+          type: array
+          items: { $ref: '#/components/schemas/DriftField' }
+    ConsoleResource:
+      type: object
+      required: [wfrn, accountId, region, type, service, state, version, attributes, tags, createdAt, updatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        service: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        version: { type: integer }
+        registryId: { type: string, description: 'The platform''s registry id, once registered' }
+        providerId: { type: string }
+        attributes: { type: object, description: The desired attributes, as last registered or requested, additionalProperties: true }
+        observed: { type: object, description: What the provider last reported, mapped, additionalProperties: true }
+        observedAt: { type: string, format: date-time }
+        drift: { $ref: '#/components/schemas/Drift' }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        requestedBy: { type: string }
+        lastJobId: { type: string }
+        changes: { type: object, description: 'The fields an update requested and their values, while the resource is `updating`; cleared when the job ends', additionalProperties: true }
+        observedStatus: { type: string, enum: [found, not_found, error], description: What the last observation found }
+        lastError:
+          type: object
+          description: The last job that failed on this resource
+          properties:
+            jobId: { type: string }
+            status: { type: string, enum: [failed, cancelled, rolled-back] }
+            errorClass: { type: string }
+            failedStep: { type: string }
+            message: { type: string }
+        source: { type: string, enum: [backfill, discover], description: 'How an imported resource came under management; absent for a resource created from the console' }
+        deletedAt: { type: string, format: date-time }
+        tombstoneUntil: { type: string, format: date-time, description: 'Until when the name answers 410 (90 days after deletedAt)' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Tombstone:
+      type: object
+      required: [error, wfrn, deletedAt, tombstoneUntil]
+      properties:
+        error: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        deletedAt: { type: string, format: date-time }
+        tombstoneUntil: { type: string, format: date-time }
+        lastVersion: { type: integer }
+    ResourceEvent:
+      type: object
+      description: 'One entry of a resource''s log, the same shape as the `state.resources` message: the platform''s P-01 envelope with the console''s fields in `data` (contracts/asyncapi/console-events.yaml)'
+      required: [specVersion, dataVersion, id, key, type, at, aggregate, aggregateId, context, data]
+      properties:
+        specVersion: { type: string, const: '1.0' }
+        dataVersion: { type: integer, minimum: 1 }
+        id: { type: string }
+        key: { type: string, description: '`<type>:<wfrn>:<version>`' }
+        seq: { type: integer, description: "The service's outbox sequence" }
+        type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested] }
+        at: { type: string, format: date-time }
+        aggregate: { type: string, const: resource }
+        aggregateId: { $ref: '#/components/schemas/Wfrn' }
+        actor: { type: string }
+        onBehalfOf:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+        context:
+          type: object
+          required: [accountId, region, wfrn]
+          properties:
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            region: { $ref: '#/components/schemas/RegionName' }
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            consoleRequestId: { type: string }
+        traceparent: { type: string }
+        data:
+          type: object
+          required: [version, state]
+          properties:
+            version: { type: integer, description: "The resource's version after this event" }
+            state: { $ref: '#/components/schemas/ResourceState' }
+            resourceType: { type: string }
+            jobId: { type: string }
+          additionalProperties: true
+    MintRequest:
+      type: object
+      required: [type, region, workflow]
+      properties:
+        type: { type: string, description: The resource type }
+        region: { $ref: '#/components/schemas/RegionName' }
+        name: { type: string }
+        workflow: { type: string, description: The create workflow about to start }
+        input: { type: object, description: The create input, redacted before it is stored, additionalProperties: true }
+        actor: { type: string }
+    ImportRequest:
+      type: object
+      required: [type, region, registryId, attributes, source]
+      properties:
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: 'The platform''s wfrn when it has one (backfill); minted here when left out' }
+        registryId: { type: string }
+        providerId: { type: string }
+        name: { type: string }
+        attributes: { type: object, additionalProperties: true }
+        source: { type: string, enum: [backfill, discover] }
+        actor: { type: string }
