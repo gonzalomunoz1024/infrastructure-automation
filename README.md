@@ -26,15 +26,10 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase` |
 | Authorization | `POST /v1/authorize`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
-Beyond the contract, as the console's access-request journey needs (the BFF passes them through):
-
-| Operation | What |
-|---|---|
-| `GET/POST /v1/accounts/{accountId}/access-requests` | A user asks for a role (`{action, resource?, role, reason}`, 202); `?scope=mine` (default) or `account`, `?status=` |
-| `GET .../access-requests/{requestId}` | One request |
-| `POST .../access-requests/{requestId}:decide` | `{decision: approve\|reject, comment?}` (202); approving joins the requester to the group that holds the role |
-| `GET .../quota-requests/{requestId}` | One quota increase request |
-| `DELETE .../quota-requests/{requestId}` | Denies it (internal) |
+Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
+`POST .../access-requests/{requestId}:decide`) and quota requests (`GET/DELETE .../quota-requests/{requestId}`)
+are part of the contract since hub `e8992fb`; nothing is served beyond it (`ContractCoverageTest`
+fails on an operation the contract lacks, so a new one goes to the hub first).
 
 ## How it decides
 
@@ -64,6 +59,15 @@ Beyond the contract, as the console's access-request journey needs (the BFF pass
   (and its ETag) is the global revision, bumped on every identity change.
 - **Refusals.** A 403 carries `denied: {layer, action, resource, reason, role?, policyId?,
   statement?, requestable, suggestedRole?}` so the BFF can show why and offer the request.
+- **Access requests.** A person asks for a role after a refusal (`{action, resource?, role?, reason}`;
+  without `role` the managed role the denial suggests). The request goes to the members of the
+  groups whose policies allow `access-request:decide` (the owners, plus any custom approver group);
+  approving joins the requester to the group that carries the role. Everyone sees their own
+  requests; the account's are for whoever may `access-request:list` (admins, auditors, approver
+  groups: the managed viewer and operator policies leave those reads out). The same open request answers
+  409 with the existing one; a pending request expires after thirty days (a sweep every fifteen
+  minutes stores it). Every step publishes `AccessRequestChanged` (`created`, `approved`,
+  `rejected`, `expired`) and an approval the `GroupChanged` of the group joined.
 
 ## Accounts, keys, quotas, events
 
@@ -75,10 +79,13 @@ Beyond the contract, as the console's access-request journey needs (the BFF pass
   rotation keeps the previous secret for ten minutes; a removed user's keys are revoked.
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the
   bucket too), `access-keys` counts usable keys (default 50), `resources.<type>` defaults to 100
-  (used counts arrive from the state service later). Users request increases; internal callers
-  set limits, which approves open requests at or below the new limit.
+  (used counts arrive from the state service later). Users request increases (one open request
+  per key, answered as a `QuotaRequest` with `currentLimit` and `requestedLimit`); the requester
+  or an account admin withdraws one (`DELETE`, 204); the platform team decides by setting the
+  limit (internal `PUT`): at or above the ask approves the request, below rejects it.
 - Every change appends an `identity.changes` event (`AccountChanged`, `UserChanged`,
-  `GroupChanged`, `RoleChanged`, `PolicyChanged`, `AccessKeyChanged`, `QuotaChanged`) in the
+  `GroupChanged`, `RoleChanged`, `PolicyChanged`, `AccessKeyChanged`, `QuotaChanged`,
+  `AccessRequestChanged`) in the
   platform envelope: key `<type>:<accountId>:<subjectId>:<version>`, partition key the account id,
   `data: {version, action, snapshot}`. The outbox relay publishes to Kafka with the `kafka` profile.
 - Writes take `If-Match` (a version, bare or quoted; 409 when stale) and `Idempotency-Key` (a replay

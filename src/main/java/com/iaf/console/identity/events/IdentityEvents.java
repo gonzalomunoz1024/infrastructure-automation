@@ -33,7 +33,8 @@ public final class IdentityEvents {
         ROLE("role", "RoleChanged"),
         POLICY("policy", "PolicyChanged"),
         ACCESS_KEY("accessKey", "AccessKeyChanged"),
-        QUOTA("quota", "QuotaChanged");
+        QUOTA("quota", "QuotaChanged"),
+        ACCESS_REQUEST("access-request", "AccessRequestChanged");
 
         private final String aggregate;
         private final String type;

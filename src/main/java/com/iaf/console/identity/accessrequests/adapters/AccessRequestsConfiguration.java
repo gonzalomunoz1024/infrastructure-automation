@@ -10,6 +10,8 @@ import org.springframework.context.annotation.Profile;
 import com.iaf.console.identity.accessrequests.adapters.memory.InMemoryAccessRequestStore;
 import com.iaf.console.identity.accessrequests.adapters.mongo.MongoAccessRequestStore;
 import com.iaf.console.identity.accessrequests.application.AccessRequestCommands;
+import com.iaf.console.identity.events.IdentityEvents;
+import com.iaf.console.identity.accessrequests.application.AccessRequestExpiry;
 import com.iaf.console.identity.accessrequests.application.AccessRequestQueries;
 import com.iaf.console.identity.accessrequests.ports.outbound.AccessRequestStore;
 import com.iaf.console.identity.common.Ids;
@@ -41,8 +43,18 @@ public class AccessRequestsConfiguration {
 
     @Bean
     public AccessRequestCommands accessRequestCommands(AccessRequestStore requests, MembershipStore memberships, GroupStore groups, RoleStore roles,
-            Memberships membership, PrincipalQueries principals, AccessGuard guard, IamSupport support, Ids ids, Clock clock) {
-        return new AccessRequestCommands(requests, memberships, groups, roles, membership, principals, guard, support, ids, clock);
+            Memberships membership, PrincipalQueries principals, AccessGuard guard, IamSupport support, IdentityEvents events, Ids ids, Clock clock) {
+        return new AccessRequestCommands(requests, memberships, groups, roles, membership, principals, guard, support, events, ids, clock);
+    }
+
+    @Bean
+    public AccessRequestExpiry accessRequestExpiry(AccessRequestStore requests, IdentityEvents events, Clock clock) {
+        return new AccessRequestExpiry(requests, events, clock);
+    }
+
+    @Bean
+    public AccessRequestExpirySchedule accessRequestExpirySchedule(AccessRequestExpiry expiry) {
+        return new AccessRequestExpirySchedule(expiry);
     }
 
     @Bean

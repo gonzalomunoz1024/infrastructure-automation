@@ -69,7 +69,7 @@ public final class InMemoryQuotaStore implements QuotaStore {
     @Override
     public Mono<QuotaRequest> findOpenRequest(AccountScope scope, String key) {
         return Mono.justOrEmpty(requests.values().stream()
-                .filter(r -> r.accountId().equals(scope.accountId()) && r.key().equals(key) && r.status() == QuotaRequest.Status.open).findFirst());
+                .filter(r -> r.accountId().equals(scope.accountId()) && r.quotaKey().equals(key) && r.status() == QuotaRequest.Status.open).findFirst());
     }
 
     @Override

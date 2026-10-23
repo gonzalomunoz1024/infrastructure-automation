@@ -19,4 +19,10 @@ public interface AccessGuard {
      * from the policies as they stand: whom an access request goes to, for one.
      */
     Mono<List<String>> groupsAllowed(String accountId, String action, String resource);
+
+    /**
+     * The managed role an access request should ask for when the caller may not do the action:
+     * empty when the action is allowed already or no managed role would allow it.
+     */
+    Mono<String> suggestedRole(Caller caller, String accountId, String action, String resource);
 }

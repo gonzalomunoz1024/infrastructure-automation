@@ -9,6 +9,7 @@ import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.Names;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
+import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.identity.iam.application.Memberships;
 import com.iaf.console.identity.iam.domain.Actions;
@@ -48,11 +49,13 @@ public final class AccessRequestCommands {
     private final PrincipalQueries principals;
     private final AccessGuard guard;
     private final IamSupport support;
+    private final IdentityEvents events;
     private final Ids ids;
     private final Clock clock;
 
     public AccessRequestCommands(AccessRequestStore requests, MembershipStore memberships, GroupStore groups, RoleStore roles, Memberships membership,
-            PrincipalQueries principals, AccessGuard guard, IamSupport support, Ids ids, Clock clock) {
+            PrincipalQueries principals, AccessGuard guard, IamSupport support, IdentityEvents events, Ids ids, Clock clock) {
+        this.events = events;
         this.requests = requests;
         this.memberships = memberships;
         this.groups = groups;
@@ -73,27 +76,34 @@ public final class AccessRequestCommands {
                         return Mono.error(new InvalidInputException("an access request is a user's", List.of(Problem.error("invalid", "requester",
                                 "only a user opens an access request"))));
                     }
-                    String role = ManagedIam.canonicalRole(input.role());
+                    String named = input.role() == null ? null : ManagedIam.canonicalRole(input.role());
                     new Names.Check()
                             .require(input.action() != null && Actions.isValid(input.action()), "action", "action is <service>:<verb>")
                             .require(input.resource() == null || PolicyValidation.isPattern(input.resource()), "resource", "resource is a wfrn or a wfrn pattern")
-                            .require(input.reason() != null && input.reason().length() >= 10 && input.reason().length() <= 1000, "reason",
-                                    "reason is 10 to 1000 characters")
-                            .require(role != null && Names.isName(role), "role", "role is the name of a role of the account")
+                            .require(input.reason() != null && !input.reason().isBlank() && input.reason().length() <= 2000, "reason",
+                                    "reason is 1 to 2000 characters")
+                            .require(named == null || Names.isName(named), "role", "role is the name of a role of the account")
                             .done("the access request");
                     String resource = input.resource() == null ? support.everything(accountId) : input.resource();
-                    return memberships.find(scope, caller.id())
-                            .switchIfEmpty(Mono.error(NotFoundException.of("user", caller.id())))
-                            .flatMap(me -> roles.findByName(scope, role)
+                    // the role asked for: the one named, else the managed role the denial suggested
+                    Mono<String> role = named != null ? Mono.just(named)
+                            : guard.suggestedRole(caller, accountId, input.action(), resource)
                                     .switchIfEmpty(Mono.error(new InvalidInputException("the access request is not valid",
-                                            List.of(Problem.error("unknown", "role", "'" + role + "' is no role of this account")))))
-                                    .then(requests.findPending(scope, caller.id(), role)
-                                            .flatMap(pending -> Mono.<AccessRequest>error(new ConflictException("the same request is pending",
-                                                    java.util.Map.of("requestId", pending.requestId())))))
+                                            List.of(Problem.error("required", "role", "no managed role would allow " + input.action() + " on " + resource
+                                                    + " (or it is allowed already); name the role to ask for")))));
+                    return role.flatMap(roleName -> memberships.find(scope, caller.id())
+                            .switchIfEmpty(Mono.error(NotFoundException.of("user", caller.id())))
+                            .flatMap(me -> roles.findByName(scope, roleName)
+                                    .switchIfEmpty(Mono.error(new InvalidInputException("the access request is not valid",
+                                            List.of(Problem.error("unknown", "role", "'" + roleName + "' is no role of this account")))))
+                                    .then(requests.findPending(scope, caller.id(), roleName)
+                                            .flatMap(pending -> Mono.<AccessRequest>error(new AccessRequestPending(pending.served(clock.instant())))))
                                     .switchIfEmpty(Mono.defer(() -> approvers(scope)
                                             .flatMap(approvers -> requests.insert(AccessRequest.open(ids.accessRequest(), accountId,
-                                                    new AccessRequest.Requester(me.userId(), me.email(), me.name()), input.action(), resource, role,
-                                                    input.reason(), approvers, clock.instant()))))));
+                                                    new AccessRequest.Requester(me.userId(), me.email(), me.name()), input.action(), resource, roleName,
+                                                    input.reason(), approvers, clock.instant())))
+                                            .flatMap(r -> events.changed(IdentityEvents.Subject.ACCESS_REQUEST, r.requestId(), accountId, caller.actor(),
+                                                    r.version(), "created", r).thenReturn(r))))));
                 });
     }
 
@@ -115,7 +125,7 @@ public final class AccessRequestCommands {
                 .flatMap(scope -> {
                     boolean approve = "approve".equals(input.decision());
                     new Names.Check().require(approve || "reject".equals(input.decision()), "decision", "decision is approve or reject")
-                            .require(input.comment() == null || input.comment().length() <= 1000, "comment", "comment is at most 1000 characters")
+                            .require(input.comment() == null || input.comment().length() <= 2000, "comment", "comment is at most 2000 characters")
                             .done("the decision");
                     return requests.find(scope, requestId)
                             .switchIfEmpty(Mono.error(NotFoundException.of("access request", requestId)))
@@ -127,12 +137,17 @@ public final class AccessRequestCommands {
                                 AccessRequest decided = request.decided(approve ? AccessRequest.Status.approved : AccessRequest.Status.rejected, caller.actor(),
                                         input.comment(), clock.instant());
                                 return grant.then(requests.update(decided, request.version()))
-                                        .switchIfEmpty(Mono.error(new ConflictException("the request moved on; read it again")));
+                                        .switchIfEmpty(Mono.error(new ConflictException("the request moved on; read it again")))
+                                        .flatMap(stored -> events.changed(IdentityEvents.Subject.ACCESS_REQUEST, stored.requestId(), accountId, caller.actor(),
+                                                stored.version(), stored.status().name(), stored).thenReturn(stored));
                             });
                 });
     }
 
-    /** Puts the requester in the group that carries the role: the managed group of a managed role, else the first group holding the role. */
+    /**
+     * Puts the requester in the group that carries the role (the managed group of a managed role,
+     * else the first group holding it), with the GroupChanged event that goes with a new member.
+     */
     private Mono<Void> grant(AccountScope scope, AccessRequest request, String actor) {
         return roles.findByName(scope, request.role())
                 .switchIfEmpty(Mono.error(new ConflictException("the role " + request.role() + " no longer exists")))
@@ -144,7 +159,12 @@ public final class AccessRequestCommands {
                 })
                 .flatMap(group -> memberships.find(scope, request.requester().userId())
                         .switchIfEmpty(Mono.error(new ConflictException("the requester is no longer a user of the account")))
-                        .flatMap(m -> membership.join(scope, m, group.groupId(), actor)))
+                        .flatMap(m -> membership.join(scope, m, group.groupId(), actor))
+                        // the group's version moves with its members, so the GroupChanged carries a new key
+                        .then(groups.update(group.changed(group.name(), group.description(), group.roles(), group.idpGroups(), clock.instant()), group.version()))
+                        .switchIfEmpty(Mono.error(new ConflictException("the group " + group.name() + " moved on; decide again")))
+                        .flatMap(stored -> events.changed(IdentityEvents.Subject.GROUP, stored.groupId(), scope.accountId(), actor, stored.version(), "updated",
+                                stored)))
                 .then();
     }
 }

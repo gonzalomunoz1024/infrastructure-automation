@@ -11,6 +11,8 @@ import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
+import java.time.Instant;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /** The in-memory access requests of the demo and the tests. */
@@ -49,6 +51,11 @@ public final class InMemoryAccessRequestStore implements AccessRequestStore {
     public Mono<AccessRequest> findPending(AccountScope scope, String userId, String role) {
         return Mono.justOrEmpty(requests.values().stream().filter(r -> r.accountId().equals(scope.accountId()) && r.requester().userId().equals(userId)
                 && r.role().equals(role) && r.status() == AccessRequest.Status.pending).findFirst());
+    }
+
+    @Override
+    public Flux<AccessRequest> findPendingBefore(Instant cutoff) {
+        return Flux.fromStream(() -> requests.values().stream().filter(r -> r.status() == AccessRequest.Status.pending && r.requestedAt().isBefore(cutoff)));
     }
 
     @Override

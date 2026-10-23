@@ -30,14 +30,8 @@ class ContractCoverageTest extends WithService {
 
     private static final List<String> METHODS = List.of("get", "post", "put", "patch", "delete");
 
-    /** Beyond the contract: access requests and the quota request reads and denials, as the README lists them. */
-    static final Set<String> EXTRAS = new TreeSet<>(List.of(
-            "DELETE /v1/accounts/{accountId}/quota-requests/{requestId}",
-            "GET /v1/accounts/{accountId}/access-requests",
-            "GET /v1/accounts/{accountId}/access-requests/{requestId}",
-            "GET /v1/accounts/{accountId}/quota-requests/{requestId}",
-            "POST /v1/accounts/{accountId}/access-requests",
-            "POST /v1/accounts/{accountId}/access-requests/{requestId}:decide"));
+    /** Operations served beyond the contract: none since the hub folded access requests and quota requests in (e8992fb). */
+    static final Set<String> EXTRAS = new TreeSet<>();
 
     @Autowired
     @Qualifier("requestMappingHandlerMapping")
@@ -58,7 +52,7 @@ class ContractCoverageTest extends WithService {
                 }
             }
         }
-        assertThat(wanted).hasSizeGreaterThan(30);
+        assertThat(wanted).hasSizeGreaterThan(40);
 
         Set<String> served = new TreeSet<>();
         for (RequestMappingInfo info : mappings.getHandlerMethods().keySet()) {
@@ -76,6 +70,6 @@ class ContractCoverageTest extends WithService {
         assertThat(missing).as("contract operations nothing serves").isEmpty();
         Set<String> extras = new TreeSet<>(served);
         extras.removeAll(wanted);
-        assertThat(extras).as("operations beyond the contract; list a new one in the README and here").isEqualTo(EXTRAS);
+        assertThat(extras).as("operations beyond the contract; add a new one to the contract on the hub first").isEqualTo(EXTRAS);
     }
 }

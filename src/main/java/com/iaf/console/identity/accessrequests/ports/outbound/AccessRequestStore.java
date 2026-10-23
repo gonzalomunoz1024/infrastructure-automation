@@ -4,6 +4,9 @@ import com.iaf.console.identity.accessrequests.domain.AccessRequest;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
+import java.time.Instant;
+import com.iaf.console.kit.scope.GlobalRead;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /** Where access requests live. */
@@ -20,4 +23,8 @@ public interface AccessRequestStore {
 
     /** One page in id order; of one requester when given; of one stored status when given. */
     Mono<Page<AccessRequest>> list(AccountScope scope, String requesterUserId, AccessRequest.Status status, int limit, String after);
+
+    /** Every pending request opened before the cutoff, across accounts: what the expiry sweep works through. */
+    @GlobalRead
+    Flux<AccessRequest> findPendingBefore(Instant cutoff);
 }

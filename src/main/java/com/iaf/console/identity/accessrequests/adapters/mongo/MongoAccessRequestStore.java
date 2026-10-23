@@ -1,5 +1,6 @@
 package com.iaf.console.identity.accessrequests.adapters.mongo;
 
+import java.time.Instant;
 import java.util.List;
 
 import org.bson.Document;
@@ -38,7 +39,8 @@ public final class MongoAccessRequestStore implements AccessRequestStore, MongoI
     public Mono<Void> ensureIndexes() {
         return mongo.indexes(COLLECTION, List.of(
                 new IndexModel(Indexes.ascending("accountId", "requesterId", "role", "status")),
-                new IndexModel(Indexes.ascending("accountId", "status", "_id"))));
+                new IndexModel(Indexes.ascending("accountId", "status", "_id")),
+                new IndexModel(Indexes.ascending("status", "requestedAt"))));
     }
 
     @Override
@@ -63,6 +65,12 @@ public final class MongoAccessRequestStore implements AccessRequestStore, MongoI
     public Mono<AccessRequest> findPending(AccountScope scope, String userId, String role) {
         return Mono.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("accountId", scope.accountId()), Filters.eq("requesterId", userId),
                 Filters.eq("role", role), Filters.eq("status", AccessRequest.Status.pending.name()))).sort(Sorts.ascending("_id")).first()).map(this::read);
+    }
+
+    @Override
+    public Flux<AccessRequest> findPendingBefore(Instant cutoff) {
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("status", AccessRequest.Status.pending.name()),
+                Filters.lt("requestedAt", java.util.Date.from(cutoff)))).sort(Sorts.ascending("_id"))).map(this::read);
     }
 
     @Override
@@ -93,6 +101,7 @@ public final class MongoAccessRequestStore implements AccessRequestStore, MongoI
                 .append("requesterId", r.requester().userId())
                 .append("role", r.role())
                 .append("status", r.status().name())
+                .append("requestedAt", java.util.Date.from(r.requestedAt()))
                 .append("version", r.version())
                 .append(Mongo.DOC, mongo.doc(r));
     }

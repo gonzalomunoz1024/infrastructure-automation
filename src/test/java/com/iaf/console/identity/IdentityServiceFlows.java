@@ -28,7 +28,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.reactive.server.EntityExchangeResult;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Duration;
+import java.time.Instant;
+
 import com.iaf.console.identity.accesskeys.application.AccessKeyCommands;
+import com.iaf.console.identity.accessrequests.application.AccessRequestExpiry;
+import com.iaf.console.identity.accessrequests.domain.AccessRequest;
+import com.iaf.console.identity.accessrequests.ports.outbound.AccessRequestStore;
 import com.iaf.console.identity.accounts.application.AccountCommands;
 import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.authz.Tars;
@@ -58,6 +64,10 @@ abstract class IdentityServiceFlows extends WithService {
     PrincipalCommands principalCommands;
     @Autowired
     UserStore userStore;
+    @Autowired
+    AccessRequestStore accessRequestStore;
+    @Autowired
+    AccessRequestExpiry expiry;
     @Autowired
     PolicyCommands policyCommands;
     @Autowired
@@ -348,6 +358,12 @@ abstract class IdentityServiceFlows extends WithService {
         String requestId = accepted.get("requestId").asText();
         assertThat(requestId).startsWith("qreq_");
         assertThat(accepted.get("status").asText()).isEqualTo("open");
+        assertThat(accepted.get("quotaKey").asText()).isEqualTo("resources.vm");
+        assertThat(accepted.get("currentLimit").asInt()).isEqualTo(100);
+        assertThat(accepted.get("requestedLimit").asInt()).isEqualTo(200);
+        assertThat(accepted.get("accountId").asText()).isEqualTo(s.accountId());
+        assertThat(accepted.get("requestedBy").asText()).isEqualTo(mia);
+        assertThat(accepted.get("requestedAt").asText()).isNotBlank();
         JsonNode pending = call(GET, quotas + "/resources.vm", viewer, null, OK);
         assertThat(pending.get("limit").asInt()).isEqualTo(100);
         assertThat(pending.get("used").asInt()).isZero();
@@ -357,7 +373,7 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode request = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
         assertThat(request.get("status").asText()).isEqualTo("open");
         assertThat(request.get("requestedBy").asText()).isEqualTo(mia);
-        assertThat(request.get("limit").asInt()).isEqualTo(200);
+        assertThat(request.get("requestedLimit").asInt()).isEqualTo(200);
 
         JsonNode raised = call(PUT, quotas + "/resources.vm", internal(), Map.of("limit", 200), OK);
         assertThat(raised.get("limit").asInt()).isEqualTo(200);
@@ -365,11 +381,32 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(raised.has("pendingRequestId")).isFalse();
         assertThat(call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK).get("status").asText()).isEqualTo("approved");
 
+        JsonNode approvedView = call(GET, s.base() + "/quota-requests/" + requestId, viewer, null, OK);
+        assertThat(approvedView.get("decidedBy").asText()).isEqualTo("svc:console-bff");
+        assertThat(approvedView.get("decidedAt").asText()).isNotBlank();
+
+        // an admin withdraws someone else's open request; a decided one is a 409
         JsonNode second = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 5, "reason", "need more databases now"), ACCEPTED);
         String secondId = second.get("requestId").asText();
-        call(DELETE, s.base() + "/quota-requests/" + secondId, s.owner(), null, NOT_FOUND);
-        assertThat(call(DELETE, s.base() + "/quota-requests/" + secondId, internal(), null, OK).get("status").asText()).isEqualTo("denied");
-        call(DELETE, s.base() + "/quota-requests/" + secondId, internal(), null, CONFLICT);
+        send(DELETE, s.base() + "/quota-requests/" + secondId, s.owner(), null, Map.of()).expectStatus().isNoContent();
+        assertThat(call(GET, s.base() + "/quota-requests/" + secondId, viewer, null, OK).get("status").asText()).isEqualTo("withdrawn");
+        call(DELETE, s.base() + "/quota-requests/" + secondId, s.owner(), null, CONFLICT);
+        call(DELETE, s.base() + "/quota-requests/" + requestId, internal(), null, CONFLICT);
+        // the requester withdraws their own; an operator may not withdraw another person's
+        String dana = addUser(s, "dana", "members");
+        String operator = bearer(dana, s.accountId(), List.of("members"));
+        JsonNode third = call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 7, "reason", "need more networks now"), ACCEPTED);
+        String thirdId = third.get("requestId").asText();
+        JsonNode refused = call(DELETE, s.base() + "/quota-requests/" + thirdId, operator, null, FORBIDDEN);
+        assertThat(refused.get("denied").get("action").asText()).isEqualTo("quota:set");
+        send(DELETE, s.base() + "/quota-requests/" + thirdId, viewer, null, Map.of()).expectStatus().isNoContent();
+        assertThat(call(GET, s.base() + "/quota-requests/" + thirdId, s.owner(), null, OK).get("status").asText()).isEqualTo("withdrawn");
+        // a limit set below the ask rejects the request
+        JsonNode fourth = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 500, "reason", "need many more databases"), ACCEPTED);
+        call(PUT, quotas + "/resources.db", internal(), Map.of("limit", 50), OK);
+        JsonNode rejected = call(GET, s.base() + "/quota-requests/" + fourth.get("requestId").asText(), viewer, null, OK);
+        assertThat(rejected.get("status").asText()).isEqualTo("rejected");
+        assertThat(rejected.get("decidedBy").asText()).isEqualTo("svc:console-bff");
         call(GET, quotas + "/nonsense", s.owner(), null, NOT_FOUND);
         call(GET, s.base() + "/quota-requests/qreq_nope", s.owner(), null, NOT_FOUND);
         assertThat(texts(call(GET, quotas, s.owner(), null, OK).get("items"), "key")).contains("resources.vm");
@@ -467,22 +504,35 @@ abstract class IdentityServiceFlows extends WithService {
         String requests = s.base() + "/access-requests";
         Map<String, Object> ask = Map.of("action", "compute:create", "resource", s.vm("*"), "role", "operator", "reason", "I deploy the test machines");
 
-        JsonNode opened = call(POST, requests, viewer, ask, ACCEPTED);
+        // without a role the request asks for the managed role the denial suggests
+        JsonNode opened = call(POST, requests, viewer, Map.of("action", "compute:create", "resource", s.vm("*"), "reason", "I deploy the test machines"),
+                ACCEPTED);
         String id = opened.get("requestId").asText();
         assertThat(id).startsWith("areq_");
         assertThat(opened.get("status").asText()).isEqualTo("pending");
+        assertThat(opened.get("role").asText()).isEqualTo("operator");
         assertThat(opened.get("requester").get("userId").asText()).isEqualTo(mia);
+        assertThat(opened.get("requester").get("email").asText()).contains("@example.com");
         assertThat(opened.get("approvers").get(0).asText()).isEqualTo(s.ownerId());
-        call(POST, requests, viewer, ask, CONFLICT);
+        JsonNode duplicate = call(POST, requests, viewer, ask, CONFLICT);
+        assertThat(duplicate.get("requestId").asText()).as("409 answers the existing request").isEqualTo(id);
         call(POST, requests, internal(), ask, BAD_REQUEST);
         call(POST, requests, viewer, Map.of("action", "compute:create", "role", "nonexistent", "reason", "I deploy the test machines"), BAD_REQUEST);
+        call(POST, requests, viewer, Map.of("action", "compute:get", "resource", s.vm("*"), "reason", "already allowed, no role to ask for"), BAD_REQUEST);
+        call(POST, requests, viewer, Map.of("action", "audit:export", "role", "auditor", "reason", "x".repeat(2001)), BAD_REQUEST);
         assertThat(call(GET, requests, viewer, null, OK).get("items")).hasSize(1);
-        assertThat(call(GET, requests + "?scope=account&status=pending", s.owner(), null, OK).get("items")).hasSize(1);
-        assertThat(call(GET, requests + "?scope=account&status=approved", s.owner(), null, OK).get("items")).isEmpty();
+        assertThat(call(GET, requests + "?status=pending", s.owner(), null, OK).get("items")).as("an admin sees the account's requests").hasSize(1);
+        assertThat(call(GET, requests + "?status=pending", internal(), null, OK).get("items")).hasSize(1);
+        assertThat(call(GET, requests + "?requester=" + mia, s.owner(), null, OK).get("items")).hasSize(1);
+        assertThat(call(GET, requests + "?requester=" + s.ownerId(), s.owner(), null, OK).get("items")).isEmpty();
+        assertThat(call(GET, requests + "?requester=" + mia, viewer, null, OK).get("items")).hasSize(1);
+        call(GET, requests + "?requester=" + s.ownerId(), viewer, null, FORBIDDEN);
+        assertThat(call(GET, requests + "?status=approved", s.owner(), null, OK).get("items")).isEmpty();
         call(GET, requests + "?status=weird", viewer, null, BAD_REQUEST);
 
         call(POST, requests + "/" + id + ":decide", viewer, Map.of("decision", "approve"), FORBIDDEN);
         call(POST, requests + "/" + id + ":decide", s.owner(), Map.of("decision", "maybe"), BAD_REQUEST);
+        call(POST, requests + "/" + id + ":decide", s.owner(), Map.of("decision", "approve", "comment", "x".repeat(2001)), BAD_REQUEST);
         JsonNode approved = call(POST, requests + "/" + id + ":decide", s.owner(), Map.of("decision", "approve", "comment", "welcome"), ACCEPTED);
         assertThat(approved.get("status").asText()).isEqualTo("approved");
         assertThat(approved.get("decidedBy").asText()).isEqualTo(s.ownerId());
@@ -501,6 +551,44 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode alias = call(POST, requests, viewer, Map.of("action", "iam:create", "role", "admin", "reason", "I need to manage the users"), ACCEPTED);
         assertThat(alias.get("role").asText()).isEqualTo("account-admin");
         assertThat(alias.get("resource").asText()).isEqualTo("wfrn:wf:*:*:" + s.accountId() + ":*");
+
+        List<EventEnvelope> events = outbox.after(0, 100_000).filter(e -> s.accountId().equals(e.partitionKey())).map(OutboxEntry::event)
+                .filter(e -> "AccessRequestChanged".equals(e.type())).collectList().block();
+        assertThat(events).isNotNull();
+        List<String> actions = events.stream().filter(e -> id.equals(e.aggregateId())).map(e -> e.data().get("action").asText()).toList();
+        assertThat(actions).containsExactly("created", "approved");
+        EventEnvelope approvedEvent = events.stream().filter(e -> id.equals(e.aggregateId()) && "approved".equals(e.data().get("action").asText())).findFirst()
+                .orElseThrow();
+        assertThat(approvedEvent.aggregate()).isEqualTo("access-request");
+        assertThat(approvedEvent.key()).isEqualTo("AccessRequestChanged:" + s.accountId() + ":" + id + ":2");
+        assertThat(approvedEvent.data().get("snapshot").get("status").asText()).isEqualTo("approved");
+        assertThat(approvedEvent.data().get("snapshot").get("requester").get("userId").asText()).isEqualTo(mia);
+        assertThat(events.stream().filter(e -> second.get("requestId").asText().equals(e.aggregateId())).map(e -> e.data().get("action").asText()).toList())
+                .containsExactly("created", "rejected");
+        assertThat(outbox.after(0, 100_000).filter(e -> s.accountId().equals(e.partitionKey()) && "GroupChanged".equals(e.event().type())
+                && "members".equals(e.event().data().get("snapshot").get("name").asText())).count().block()).as("the approval's GroupChanged").isGreaterThan(1);
+    }
+
+    @Test
+    void pendingAccessRequestsExpireAfterThirtyDays() {
+        Seeded s = newAccount();
+        String mia = addUser(s, "mia", "viewers");
+        Instant old = clock.instant().minus(AccessRequest.PENDING_FOR).minus(Duration.ofDays(1));
+        AccessRequest stale = AccessRequest.open("areq_stale_" + s.accountId(), s.accountId(), new AccessRequest.Requester(mia, "mia@example.com", "mia"),
+                "compute:create", s.vm("*"), "operator", "forgotten", List.of(s.ownerId()), old);
+        accessRequestStore.insert(stale).block();
+        JsonNode read = call(GET, s.base() + "/access-requests/" + stale.requestId(), s.owner(), null, OK);
+        assertThat(read.get("status").asText()).as("served as expired before the sweep stores it").isEqualTo("expired");
+        assertThat(expiry.sweep().block()).isEqualTo(1);
+        assertThat(expiry.sweep().block()).isZero();
+        assertThat(call(GET, s.base() + "/access-requests/" + stale.requestId(), s.owner(), null, OK).get("status").asText()).isEqualTo("expired");
+        assertThat(call(GET, s.base() + "/access-requests?status=expired", s.owner(), null, OK).get("items")).hasSize(1);
+        call(POST, s.base() + "/access-requests/" + stale.requestId() + ":decide", s.owner(), Map.of("decision", "approve"), CONFLICT);
+        EventEnvelope expired = outbox.after(0, 100_000).filter(e -> stale.requestId().equals(e.event().aggregateId())).map(OutboxEntry::event).blockLast();
+        assertThat(expired).isNotNull();
+        assertThat(expired.type()).isEqualTo("AccessRequestChanged");
+        assertThat(expired.data().get("action").asText()).isEqualTo("expired");
+        assertThat(expired.actor()).isEqualTo("svc:console-identity-service");
     }
 
     @Test

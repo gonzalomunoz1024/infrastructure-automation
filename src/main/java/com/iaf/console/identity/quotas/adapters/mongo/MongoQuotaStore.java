@@ -101,7 +101,7 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
     }
 
     private Document request(QuotaRequest r) {
-        return new Document("_id", r.requestId()).append("accountId", r.accountId()).append("key", r.key()).append("status", r.status().name())
+        return new Document("_id", r.requestId()).append("accountId", r.accountId()).append("key", r.quotaKey()).append("status", r.status().name())
                 .append("version", r.version()).append(Mongo.DOC, mongo.doc(r));
     }
 }

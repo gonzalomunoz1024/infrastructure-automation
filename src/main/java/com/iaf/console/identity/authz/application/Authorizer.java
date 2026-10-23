@@ -78,6 +78,16 @@ public final class Authorizer implements AccessGuard {
     }
 
     @Override
+    public Mono<String> suggestedRole(Caller caller, String accountId, String action, String resource) {
+        AuthorizeRequest request = new AuthorizeRequest(new Principal(caller.id(), accountId, caller.groups(), caller.service()),
+                List.of(new Check(action, resource, null)));
+        return decisions.decide(request).flatMap(response -> {
+            Decision d = response.decisions().isEmpty() ? null : response.decisions().get(0);
+            return d == null || d.allowed() || d.suggestedRole() == null ? Mono.empty() : Mono.just(d.suggestedRole());
+        });
+    }
+
+    @Override
     public Mono<List<String>> groupsAllowed(String accountId, String action, String resource) {
         return snapshots.get().map(compiled -> {
             CompiledAccount account = compiled.accounts().get(accountId);

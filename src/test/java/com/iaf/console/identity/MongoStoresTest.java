@@ -271,7 +271,7 @@ class MongoStoresTest {
         assertThat(store.findOverride(SCOPE, "nope").block()).isNull();
         assertThat(store.findOverrides(SCOPE).map(QuotaOverride::key).collectList().block()).containsExactly("access-keys", "jobs-per-minute");
 
-        QuotaRequest r = QuotaRequest.open("qreq_1", ACCOUNT, "resources.vm", 200, "more test machines", "usr_mia", NOW);
+        QuotaRequest r = QuotaRequest.open("qreq_1", ACCOUNT, "resources.vm", 100, 200, "more test machines", "usr_mia", NOW);
         assertThat(store.insertRequest(r).block()).isEqualTo(r);
         assertThatThrownBy(() -> store.insertRequest(r).block()).isInstanceOf(ConflictException.class);
         assertThat(store.findRequest(SCOPE, "qreq_1").block()).isEqualTo(r);
@@ -279,7 +279,7 @@ class MongoStoresTest {
         assertThat(store.findOpenRequest(SCOPE, "resources.vm").block()).isEqualTo(r);
         assertThat(store.findOpenRequest(SCOPE, "resources.db").block()).isNull();
         assertThat(store.listRequests(SCOPE, QuotaRequest.Status.open, 10, null).block().items()).containsExactly(r);
-        QuotaRequest approved = r.decided(QuotaRequest.Status.approved, "svc:console-bff", NOW.plusSeconds(1));
+        QuotaRequest approved = r.decided(QuotaRequest.Status.approved, "svc:console-bff", null, NOW.plusSeconds(1));
         assertThat(store.updateRequest(approved, 1).block()).isEqualTo(approved);
         assertThat(store.updateRequest(approved, 1).block()).isNull();
         assertThat(store.findOpenRequest(SCOPE, "resources.vm").block()).isNull();
@@ -305,10 +305,18 @@ class MongoStoresTest {
         assertThat(store.findPending(SCOPE, "usr_mia", "auditor").block()).isNull();
         assertThat(store.list(SCOPE, "usr_mia", null, 10, null).block().items()).containsExactly(r1);
         assertThat(store.list(SCOPE, null, AccessRequest.Status.pending, 10, null).block().items()).containsExactlyInAnyOrder(r1, r2);
+        assertThat(store.findPendingBefore(NOW.plusSeconds(2)).collectList().block()).containsExactlyInAnyOrder(r1, r2);
+        assertThat(store.findPendingBefore(NOW.plusSeconds(1)).collectList().block()).containsExactly(r1);
+        assertThat(store.findPendingBefore(NOW).collectList().block()).isEmpty();
         AccessRequest approved = r1.decided(AccessRequest.Status.approved, "usr_owner", "welcome", NOW.plusSeconds(2));
         assertThat(store.update(approved, 1).block()).isEqualTo(approved);
         assertThat(store.update(approved, 1).block()).isNull();
         assertThat(store.findPending(SCOPE, "usr_mia", "operator").block()).isNull();
+        assertThat(store.findPendingBefore(NOW.plusSeconds(10)).collectList().block()).containsExactly(r2);
+        AccessRequest expired = r2.expired();
+        assertThat(store.update(expired, 1).block()).isEqualTo(expired);
+        assertThat(store.findPendingBefore(NOW.plusSeconds(10)).collectList().block()).isEmpty();
+        assertThat(store.list(SCOPE, null, AccessRequest.Status.expired, 10, null).block().items()).containsExactly(expired);
         assertThat(store.list(SCOPE, null, AccessRequest.Status.approved, 10, null).block().items()).containsExactly(approved);
         Page<AccessRequest> page = store.list(SCOPE, null, null, 1, null).block();
         assertThat(page.items()).hasSize(1);

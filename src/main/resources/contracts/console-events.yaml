@@ -16,8 +16,8 @@ info:
     `actor`, `onBehalfOf`, `context` (`accountId`, `region`, `wfrn`, `consoleRequestId`),
     `traceparent` and `data`. `aggregate` and `aggregateId` name the subject: `resource` and the
     wfrn on `state.resources`, `finding` and the finding id on `drift.findings`, the subject kind
-    (`account`, `user`, `group`, `role`, `policy`, `accessKey`, `quota`) and its id on
-    `identity.changes`. `context.accountId` is the account every event belongs to; `context.wfrn`
+    (`account`, `user`, `group`, `role`, `policy`, `accessKey`, `quota`, `access-request`) and its
+    id on `identity.changes`. `context.accountId` is the account every event belongs to; `context.wfrn`
     is the resource on `state.resources` and `drift.findings`; `context.region` is absent on
     `identity.changes` (identity is region-less). The console's own fields ride in `data`: every
     event carries `data.version`, the subject's version after the event (a resource's state
@@ -125,6 +125,7 @@ channels:
       policyChanged: { $ref: '#/components/messages/policyChanged' }
       accessKeyChanged: { $ref: '#/components/messages/accessKeyChanged' }
       quotaChanged: { $ref: '#/components/messages/quotaChanged' }
+      accessRequestChanged: { $ref: '#/components/messages/accessRequestChanged' }
     bindings:
       kafka:
         topic: identity.changes
@@ -478,6 +479,18 @@ components:
             properties:
               type: { const: QuotaChanged }
               aggregate: { const: quota }
+    accessRequestChanged:
+      name: AccessRequestChanged
+      title: An access request was opened, decided or expired
+      summary: The BFF tells the requester and the account's admins; approving one also publishes the GroupChanged that carries the role
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: AccessRequestChanged }
+              aggregate: { const: access-request }
   schemas:
     Wfrn:
       type: string
@@ -584,14 +597,14 @@ components:
         - type: object
           required: [data]
           properties:
-            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota], description: The subject kind }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request], description: The subject kind }
             aggregateId: { type: string, description: The subject id (the accountId for an account) }
             data:
               type: object
               required: [version, action]
               properties:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
-                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked] }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
     DriftField:
       type: object

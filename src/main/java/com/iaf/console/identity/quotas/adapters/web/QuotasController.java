@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.iaf.console.identity.common.auth.Caller;
-import com.iaf.console.identity.quotas.application.IncreaseAccepted;
 import com.iaf.console.identity.quotas.application.QuotaCommands;
 import com.iaf.console.identity.quotas.application.QuotaQueries;
 import com.iaf.console.identity.quotas.application.RequestIncrease;
@@ -53,7 +52,7 @@ public class QuotasController {
 
     @PostMapping("/v1/accounts/{accountId}/quotas/{quotaKey}:request-increase")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public Mono<IncreaseAccepted> requestIncrease(Caller caller, @PathVariable String accountId, @PathVariable String quotaKey,
+    public Mono<QuotaRequest> requestIncrease(Caller caller, @PathVariable String accountId, @PathVariable String quotaKey,
             @RequestBody RequestIncrease body) {
         return commands.requestIncrease(caller, accountId, quotaKey, body);
     }
@@ -64,7 +63,8 @@ public class QuotasController {
     }
 
     @DeleteMapping("/v1/accounts/{accountId}/quota-requests/{requestId}")
-    public Mono<QuotaRequest> deny(Caller caller, @PathVariable String accountId, @PathVariable String requestId) {
-        return commands.deny(caller, accountId, requestId);
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public Mono<Void> withdraw(Caller caller, @PathVariable String accountId, @PathVariable String requestId) {
+        return commands.withdraw(caller, accountId, requestId);
     }
 }

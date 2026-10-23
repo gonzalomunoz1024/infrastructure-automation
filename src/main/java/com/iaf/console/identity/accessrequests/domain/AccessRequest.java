@@ -51,6 +51,12 @@ public record AccessRequest(String requestId, String accountId, Requester reques
                 version + 1);
     }
 
+    /** Past its thirty days: what the expiry sweep stores. */
+    public AccessRequest expired() {
+        return new AccessRequest(requestId, accountId, requester, action, resource, role, reason, Status.expired, requestedAt, decidedAt, decidedBy, comment,
+                approvers, version + 1);
+    }
+
     public AccessRequest served(Instant now) {
         Status s = status(now);
         return s == status ? this : new AccessRequest(requestId, accountId, requester, action, resource, role, reason, s, requestedAt, decidedAt, decidedBy,

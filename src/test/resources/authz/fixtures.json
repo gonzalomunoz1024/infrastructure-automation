@@ -7,94 +7,364 @@
           "status": "active",
           "version": 7,
           "users": {
-            "usr_viewer": { "status": "active", "groups": ["viewers"] },
-            "usr_operator": { "status": "active", "groups": ["members"] },
-            "usr_admin": { "status": "active", "groups": ["owners"] },
-            "usr_auditor": { "status": "active", "groups": ["auditors"] },
-            "usr_suspended": { "status": "suspended", "groups": ["members"] },
-            "usr_multi": { "status": "active", "groups": ["members", "deny-prod"] },
-            "usr_cond": { "status": "active", "groups": ["regional"] },
-            "usr_single": { "status": "active", "groups": ["one-vm"] },
-            "usr_approver": { "status": "active", "groups": ["viewers", "compute-approvers"] },
-            "usr_dev": { "status": "active", "groups": ["dev-resizers"] }
+            "usr_viewer": {
+              "status": "active",
+              "groups": [
+                "viewers"
+              ]
+            },
+            "usr_operator": {
+              "status": "active",
+              "groups": [
+                "members"
+              ]
+            },
+            "usr_admin": {
+              "status": "active",
+              "groups": [
+                "owners"
+              ]
+            },
+            "usr_auditor": {
+              "status": "active",
+              "groups": [
+                "auditors"
+              ]
+            },
+            "usr_suspended": {
+              "status": "suspended",
+              "groups": [
+                "members"
+              ]
+            },
+            "usr_multi": {
+              "status": "active",
+              "groups": [
+                "members",
+                "deny-prod"
+              ]
+            },
+            "usr_cond": {
+              "status": "active",
+              "groups": [
+                "regional"
+              ]
+            },
+            "usr_single": {
+              "status": "active",
+              "groups": [
+                "one-vm"
+              ]
+            },
+            "usr_approver": {
+              "status": "active",
+              "groups": [
+                "viewers",
+                "compute-approvers"
+              ]
+            },
+            "usr_dev": {
+              "status": "active",
+              "groups": [
+                "dev-resizers"
+              ]
+            }
           },
           "groups": {
-            "owners": { "roles": ["account-admin"] },
-            "members": { "roles": ["operator"] },
-            "viewers": { "roles": ["viewer"] },
-            "auditors": { "roles": ["auditor"] },
-            "deny-prod": { "roles": ["prod-guard"] },
-            "regional": { "roles": ["eu-operator"] },
-            "one-vm": { "roles": ["one-vm"] },
-            "compute-approvers": { "roles": ["approver"] },
-            "dev-resizers": { "roles": ["dev-resizer"] }
+            "owners": {
+              "roles": [
+                "account-admin"
+              ]
+            },
+            "members": {
+              "roles": [
+                "operator"
+              ]
+            },
+            "viewers": {
+              "roles": [
+                "viewer"
+              ]
+            },
+            "auditors": {
+              "roles": [
+                "auditor"
+              ]
+            },
+            "deny-prod": {
+              "roles": [
+                "prod-guard"
+              ]
+            },
+            "regional": {
+              "roles": [
+                "eu-operator"
+              ]
+            },
+            "one-vm": {
+              "roles": [
+                "one-vm"
+              ]
+            },
+            "compute-approvers": {
+              "roles": [
+                "approver"
+              ]
+            },
+            "dev-resizers": {
+              "roles": [
+                "dev-resizer"
+              ]
+            }
           },
           "roles": {
-            "viewer": { "policies": ["pol_viewer"] },
-            "operator": { "policies": ["pol_operator"] },
-            "account-admin": { "policies": ["pol_admin"] },
-            "auditor": { "policies": ["pol_auditor"] },
-            "prod-guard": { "policies": ["pol_prodguard"] },
-            "eu-operator": { "policies": ["pol_eu"] },
-            "one-vm": { "policies": ["pol_onevm"] },
-            "approver": { "policies": ["pol_approver"] },
-            "dev-resizer": { "policies": ["pol_devresize"] }
+            "viewer": {
+              "policies": [
+                "pol_viewer"
+              ]
+            },
+            "operator": {
+              "policies": [
+                "pol_operator"
+              ]
+            },
+            "account-admin": {
+              "policies": [
+                "pol_admin"
+              ]
+            },
+            "auditor": {
+              "policies": [
+                "pol_auditor"
+              ]
+            },
+            "prod-guard": {
+              "policies": [
+                "pol_prodguard"
+              ]
+            },
+            "eu-operator": {
+              "policies": [
+                "pol_eu"
+              ]
+            },
+            "one-vm": {
+              "policies": [
+                "pol_onevm"
+              ]
+            },
+            "approver": {
+              "policies": [
+                "pol_approver"
+              ]
+            },
+            "dev-resizer": {
+              "policies": [
+                "pol_devresize"
+              ]
+            }
           },
           "policies": {
             "pol_viewer": {
               "name": "managed-viewer",
               "statements": [
-                { "sid": "reads", "effect": "allow", "actions": ["*:get", "*:list", "*:observe", "*:history", "search:query", "cost:get", "cost:list", "access-request:get", "access-request:list", "access-request:create", "quota:request-increase"], "resources": ["wfrn:wf:*:*:123456789012:*"] }
+                {
+                  "sid": "reads",
+                  "effect": "allow",
+                  "actions": [
+                    "*:get",
+                    "*:list",
+                    "*:observe",
+                    "*:history",
+                    "search:query",
+                    "cost:get",
+                    "cost:list",
+                    "access-request:create",
+                    "quota:request-increase"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ],
+                  "notActions": [
+                    "access-request:get",
+                    "access-request:list"
+                  ]
+                }
               ]
             },
             "pol_operator": {
               "name": "managed-operator",
               "statements": [
-                { "sid": "changes", "effect": "allow", "actions": ["*:*"], "notActions": ["*:delete", "iam:*", "quota:set", "account:update", "access-request:decide"], "resources": ["wfrn:wf:*:*:123456789012:*"] },
-                { "sid": "iam-reads", "effect": "allow", "actions": ["iam:get", "iam:list"], "resources": ["wfrn:wf:*:*:123456789012:*"] }
+                {
+                  "sid": "changes",
+                  "effect": "allow",
+                  "actions": [
+                    "*:*"
+                  ],
+                  "notActions": [
+                    "*:delete",
+                    "iam:*",
+                    "quota:set",
+                    "account:update",
+                    "access-request:get",
+                    "access-request:list",
+                    "access-request:decide"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ]
+                },
+                {
+                  "sid": "iam-reads",
+                  "effect": "allow",
+                  "actions": [
+                    "iam:get",
+                    "iam:list"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ]
+                }
               ]
             },
             "pol_admin": {
               "name": "managed-account-admin",
               "statements": [
-                { "sid": "everything", "effect": "allow", "actions": ["*:*"], "resources": ["wfrn:wf:*:*:123456789012:*"] }
+                {
+                  "sid": "everything",
+                  "effect": "allow",
+                  "actions": [
+                    "*:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ]
+                }
               ]
             },
             "pol_auditor": {
               "name": "managed-auditor",
               "statements": [
-                { "sid": "reads", "effect": "allow", "actions": ["*:get", "*:list", "*:observe", "*:history", "search:query", "cost:get", "cost:list"], "resources": ["wfrn:wf:*:*:123456789012:*"] },
-                { "sid": "audit", "effect": "allow", "actions": ["audit:*"], "resources": ["wfrn:wf:*:*:123456789012:*"] }
+                {
+                  "sid": "reads",
+                  "effect": "allow",
+                  "actions": [
+                    "*:get",
+                    "*:list",
+                    "*:observe",
+                    "*:history",
+                    "search:query",
+                    "cost:get",
+                    "cost:list"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ]
+                },
+                {
+                  "sid": "audit",
+                  "effect": "allow",
+                  "actions": [
+                    "audit:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ]
+                }
               ]
             },
             "pol_prodguard": {
               "name": "no-prod-restarts",
               "statements": [
-                { "sid": "deny-prod-restart", "effect": "deny", "actions": ["compute:restart"], "resources": ["wfrn:wf:compute:*:123456789012:*"], "conditions": { "tag.env": "prod" } }
+                {
+                  "sid": "deny-prod-restart",
+                  "effect": "deny",
+                  "actions": [
+                    "compute:restart"
+                  ],
+                  "resources": [
+                    "wfrn:wf:compute:*:123456789012:*"
+                  ],
+                  "conditions": {
+                    "tag.env": "prod"
+                  }
+                }
               ]
             },
             "pol_eu": {
               "name": "eu-only",
               "statements": [
-                { "sid": "eu", "effect": "allow", "actions": ["compute:*"], "resources": ["wfrn:wf:compute:*:123456789012:*"], "conditions": { "region": ["eu-west-1", "eu-central-1"] } }
+                {
+                  "sid": "eu",
+                  "effect": "allow",
+                  "actions": [
+                    "compute:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:compute:*:123456789012:*"
+                  ],
+                  "conditions": {
+                    "region": [
+                      "eu-west-1",
+                      "eu-central-1"
+                    ]
+                  }
+                }
               ]
             },
             "pol_onevm": {
               "name": "one-vm",
               "statements": [
-                { "sid": "s0", "effect": "allow", "actions": ["compute:*"], "resources": ["wfrn:wf:compute:global:123456789012:vm/vm-1", "wfrn:wf:compute:global:123456789012:vm/web-?"] }
+                {
+                  "sid": "s0",
+                  "effect": "allow",
+                  "actions": [
+                    "compute:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:compute:global:123456789012:vm/vm-1",
+                    "wfrn:wf:compute:global:123456789012:vm/web-?"
+                  ]
+                }
               ]
             },
             "pol_approver": {
               "name": "approvers-only",
               "statements": [
-                { "sid": "approve", "effect": "allow", "actions": ["compute:approve"], "resources": ["wfrn:wf:*:*:123456789012:*"], "conditions": { "requester.group": ["compute-approvers"] } }
+                {
+                  "sid": "approve",
+                  "effect": "allow",
+                  "actions": [
+                    "compute:approve"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:123456789012:*"
+                  ],
+                  "conditions": {
+                    "requester.group": [
+                      "compute-approvers"
+                    ]
+                  }
+                }
               ]
             },
             "pol_devresize": {
               "name": "dev-resizes",
               "statements": [
-                { "sid": "dev", "effect": "allow", "actions": ["compute:resize"], "resources": ["wfrn:wf:compute:*:123456789012:vm/*"], "conditions": { "context.environment": "dev", "requester.user": "usr_dev" } }
+                {
+                  "sid": "dev",
+                  "effect": "allow",
+                  "actions": [
+                    "compute:resize"
+                  ],
+                  "resources": [
+                    "wfrn:wf:compute:*:123456789012:vm/*"
+                  ],
+                  "conditions": {
+                    "context.environment": "dev",
+                    "requester.user": "usr_dev"
+                  }
+                }
               ]
             }
           }
@@ -102,35 +372,621 @@
         "210987654321": {
           "status": "suspended",
           "version": 2,
-          "users": { "usr_data": { "status": "active", "groups": ["owners"] } },
-          "groups": { "owners": { "roles": ["account-admin"] } },
-          "roles": { "account-admin": { "policies": ["pol_admin2"] } },
-          "policies": { "pol_admin2": { "name": "managed-account-admin", "statements": [ { "sid": "everything", "effect": "allow", "actions": ["*:*"], "resources": ["wfrn:wf:*:*:210987654321:*"] } ] } }
+          "users": {
+            "usr_data": {
+              "status": "active",
+              "groups": [
+                "owners"
+              ]
+            }
+          },
+          "groups": {
+            "owners": {
+              "roles": [
+                "account-admin"
+              ]
+            }
+          },
+          "roles": {
+            "account-admin": {
+              "policies": [
+                "pol_admin2"
+              ]
+            }
+          },
+          "policies": {
+            "pol_admin2": {
+              "name": "managed-account-admin",
+              "statements": [
+                {
+                  "sid": "everything",
+                  "effect": "allow",
+                  "actions": [
+                    "*:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:210987654321:*"
+                  ]
+                }
+              ]
+            }
+          }
         }
       }
     }
   },
   "cases": [
-    { "name": "viewer reads a vm", "input": { "principal": { "userId": "usr_viewer", "accountId": "123456789012", "groups": ["viewers"] }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": true, "role": "viewer", "policyId": "pol_viewer", "statement": "reads" } ], "version": 7 },
-    { "name": "viewer cannot create: operator would", "input": { "principal": { "userId": "usr_viewer", "accountId": "123456789012" }, "checks": [ { "action": "compute:create", "resource": "wfrn:wf:compute:global:123456789012:vm/*" } ] }, "expect": [ { "allowed": false, "requestable": true, "suggestedRole": "operator" } ] },
-    { "name": "viewer cannot delete: account-admin would", "input": { "principal": { "userId": "usr_viewer", "accountId": "123456789012" }, "checks": [ { "action": "compute:delete", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "requestable": true, "suggestedRole": "account-admin" } ] },
-    { "name": "operator creates", "input": { "principal": { "userId": "usr_operator", "accountId": "123456789012" }, "checks": [ { "action": "compute:create", "resource": "wfrn:wf:compute:global:123456789012:vm/*" } ] }, "expect": [ { "allowed": true, "role": "operator", "policyId": "pol_operator", "statement": "changes" } ] },
-    { "name": "operator cannot delete (notActions)", "input": { "principal": { "userId": "usr_operator", "accountId": "123456789012" }, "checks": [ { "action": "compute:delete", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "requestable": true, "suggestedRole": "account-admin" } ] },
-    { "name": "operator cannot write iam but reads it", "input": { "principal": { "userId": "usr_operator", "accountId": "123456789012" }, "checks": [ { "action": "iam:create", "resource": "wfrn:wf:iam::123456789012:user/*" }, { "action": "iam:list", "resource": "wfrn:wf:iam::123456789012:group/*" } ] }, "expect": [ { "allowed": false, "requestable": true, "suggestedRole": "account-admin" }, { "allowed": true, "role": "operator", "statement": "iam-reads" } ] },
-    { "name": "admin does everything", "input": { "principal": { "userId": "usr_admin", "accountId": "123456789012" }, "checks": [ { "action": "iam:delete", "resource": "wfrn:wf:iam::123456789012:user/usr_viewer" }, { "action": "compute:delete", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": true, "role": "account-admin", "statement": "everything" }, { "allowed": true, "role": "account-admin" } ] },
-    { "name": "auditor exports the trail, cannot change", "input": { "principal": { "userId": "usr_auditor", "accountId": "123456789012" }, "checks": [ { "action": "audit:export", "resource": "wfrn:wf:audit:global:123456789012:trail/*" }, { "action": "compute:create", "resource": "wfrn:wf:compute:global:123456789012:vm/*" } ] }, "expect": [ { "allowed": true, "role": "auditor", "statement": "audit" }, { "allowed": false, "requestable": true, "suggestedRole": "operator" } ] },
-    { "name": "unknown account", "input": { "principal": { "userId": "usr_viewer", "accountId": "999999999999" }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:999999999999:vm/vm-1" } ] }, "expect": [ { "allowed": false, "reason": "account unknown" } ] },
-    { "name": "service principal", "input": { "principal": { "accountId": "123456789012", "service": "console-state-service" }, "checks": [ { "action": "compute:delete", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": true, "reason": "service principal" } ] },
-    { "name": "suspended user", "input": { "principal": { "userId": "usr_suspended", "accountId": "123456789012" }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "reason": "user suspended" } ] },
-    { "name": "suspended account", "input": { "principal": { "userId": "usr_data", "accountId": "210987654321" }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:210987654321:vm/vm-1" } ] }, "expect": [ { "allowed": false, "reason": "account suspended" } ], "version": 2 },
-    { "name": "not a member", "input": { "principal": { "userId": "usr_nobody", "accountId": "123456789012", "groups": ["owners"] }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "reason": "not a member of the account" } ] },
-    { "name": "deny wins across roles with a tag condition", "input": { "principal": { "userId": "usr_multi", "accountId": "123456789012" }, "checks": [ { "action": "compute:restart", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1", "context": { "tags": { "env": "prod" } } }, { "action": "compute:restart", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1", "context": { "tags": { "env": "dev" } } }, { "action": "compute:restart", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "role": "prod-guard", "policyId": "pol_prodguard", "statement": "deny-prod-restart" }, { "allowed": true, "role": "operator" }, { "allowed": true, "role": "operator" } ] },
-    { "name": "region condition from the wfrn", "input": { "principal": { "userId": "usr_cond", "accountId": "123456789012" }, "checks": [ { "action": "compute:create", "resource": "wfrn:wf:compute:eu-west-1:123456789012:vm/*" }, { "action": "compute:create", "resource": "wfrn:wf:compute:global:123456789012:vm/*" } ] }, "expect": [ { "allowed": true, "role": "eu-operator", "statement": "eu" }, { "allowed": false, "requestable": true, "suggestedRole": "operator" } ] },
-    { "name": "a list over a pattern needs a covering wildcard", "input": { "principal": { "userId": "usr_single", "accountId": "123456789012" }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" }, { "action": "compute:list", "resource": "wfrn:wf:compute:global:123456789012:vm/*" }, { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/web-3" }, { "action": "compute:get", "resource": "wfrn:wf:compute:global:123456789012:vm/web-30" } ] }, "expect": [ { "allowed": true, "role": "one-vm" }, { "allowed": false, "requestable": true, "suggestedRole": "viewer" }, { "allowed": true, "role": "one-vm" }, { "allowed": false } ] },
-    { "name": "viewer lists over a pattern", "input": { "principal": { "userId": "usr_viewer", "accountId": "123456789012" }, "checks": [ { "action": "compute:list", "resource": "wfrn:wf:compute:global:123456789012:vm/*" } ] }, "expect": [ { "allowed": true, "role": "viewer" } ] },
-    { "name": "requester.group condition", "input": { "principal": { "userId": "usr_approver", "accountId": "123456789012" }, "checks": [ { "action": "compute:approve", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": true, "role": "approver", "statement": "approve" } ] },
-    { "name": "viewer cannot approve: operator would", "input": { "principal": { "userId": "usr_viewer", "accountId": "123456789012" }, "checks": [ { "action": "compute:approve", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": false, "requestable": true, "suggestedRole": "operator" } ] },
-    { "name": "context and requester.user conditions", "input": { "principal": { "userId": "usr_dev", "accountId": "123456789012" }, "checks": [ { "action": "compute:resize", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1", "context": { "environment": "dev" } }, { "action": "compute:resize", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1", "context": { "environment": "prod" } }, { "action": "compute:resize", "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1" } ] }, "expect": [ { "allowed": true, "role": "dev-resizer", "statement": "dev" }, { "allowed": false, "suggestedRole": "operator" }, { "allowed": false, "suggestedRole": "operator" } ] },
-    { "name": "another account's resource is not covered", "input": { "principal": { "userId": "usr_admin", "accountId": "123456789012" }, "checks": [ { "action": "compute:get", "resource": "wfrn:wf:compute:global:210987654321:vm/vm-1" } ] }, "expect": [ { "allowed": false, "requestable": false } ] }
+    {
+      "name": "viewer reads a vm",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012",
+          "groups": [
+            "viewers"
+          ]
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "viewer",
+          "policyId": "pol_viewer",
+          "statement": "reads"
+        }
+      ],
+      "version": 7
+    },
+    {
+      "name": "viewer cannot create: operator would",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:create",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "operator"
+        }
+      ]
+    },
+    {
+      "name": "viewer cannot delete: account-admin would",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "operator creates",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:create",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "operator",
+          "policyId": "pol_operator",
+          "statement": "changes"
+        }
+      ]
+    },
+    {
+      "name": "operator cannot delete (notActions)",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "operator cannot write iam but reads it",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "iam:create",
+            "resource": "wfrn:wf:iam::123456789012:user/*"
+          },
+          {
+            "action": "iam:list",
+            "resource": "wfrn:wf:iam::123456789012:group/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        },
+        {
+          "allowed": true,
+          "role": "operator",
+          "statement": "iam-reads"
+        }
+      ]
+    },
+    {
+      "name": "admin does everything",
+      "input": {
+        "principal": {
+          "userId": "usr_admin",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "iam:delete",
+            "resource": "wfrn:wf:iam::123456789012:user/usr_viewer"
+          },
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "auditor exports the trail, cannot change",
+      "input": {
+        "principal": {
+          "userId": "usr_auditor",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "audit:export",
+            "resource": "wfrn:wf:audit:global:123456789012:trail/*"
+          },
+          {
+            "action": "compute:create",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "audit"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "operator"
+        }
+      ]
+    },
+    {
+      "name": "unknown account",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "999999999999"
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:999999999999:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "reason": "account unknown"
+        }
+      ]
+    },
+    {
+      "name": "service principal",
+      "input": {
+        "principal": {
+          "accountId": "123456789012",
+          "service": "console-state-service"
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "reason": "service principal"
+        }
+      ]
+    },
+    {
+      "name": "suspended user",
+      "input": {
+        "principal": {
+          "userId": "usr_suspended",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "reason": "user suspended"
+        }
+      ]
+    },
+    {
+      "name": "suspended account",
+      "input": {
+        "principal": {
+          "userId": "usr_data",
+          "accountId": "210987654321"
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:210987654321:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "reason": "account suspended"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "name": "not a member",
+      "input": {
+        "principal": {
+          "userId": "usr_nobody",
+          "accountId": "123456789012",
+          "groups": [
+            "owners"
+          ]
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "reason": "not a member of the account"
+        }
+      ]
+    },
+    {
+      "name": "deny wins across roles with a tag condition",
+      "input": {
+        "principal": {
+          "userId": "usr_multi",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1",
+            "context": {
+              "tags": {
+                "env": "prod"
+              }
+            }
+          },
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1",
+            "context": {
+              "tags": {
+                "env": "dev"
+              }
+            }
+          },
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "role": "prod-guard",
+          "policyId": "pol_prodguard",
+          "statement": "deny-prod-restart"
+        },
+        {
+          "allowed": true,
+          "role": "operator"
+        },
+        {
+          "allowed": true,
+          "role": "operator"
+        }
+      ]
+    },
+    {
+      "name": "region condition from the wfrn",
+      "input": {
+        "principal": {
+          "userId": "usr_cond",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:create",
+            "resource": "wfrn:wf:compute:eu-west-1:123456789012:vm/*"
+          },
+          {
+            "action": "compute:create",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "eu-operator",
+          "statement": "eu"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "operator"
+        }
+      ]
+    },
+    {
+      "name": "a list over a pattern needs a covering wildcard",
+      "input": {
+        "principal": {
+          "userId": "usr_single",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          },
+          {
+            "action": "compute:list",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          },
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/web-3"
+          },
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/web-30"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "one-vm"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "viewer"
+        },
+        {
+          "allowed": true,
+          "role": "one-vm"
+        },
+        {
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "name": "viewer lists over a pattern",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:list",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/*"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "viewer"
+        }
+      ]
+    },
+    {
+      "name": "requester.group condition",
+      "input": {
+        "principal": {
+          "userId": "usr_approver",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:approve",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "approver",
+          "statement": "approve"
+        }
+      ]
+    },
+    {
+      "name": "viewer cannot approve: operator would",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:approve",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "operator"
+        }
+      ]
+    },
+    {
+      "name": "context and requester.user conditions",
+      "input": {
+        "principal": {
+          "userId": "usr_dev",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:resize",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1",
+            "context": {
+              "environment": "dev"
+            }
+          },
+          {
+            "action": "compute:resize",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1",
+            "context": {
+              "environment": "prod"
+            }
+          },
+          {
+            "action": "compute:resize",
+            "resource": "wfrn:wf:compute:global:123456789012:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "dev-resizer",
+          "statement": "dev"
+        },
+        {
+          "allowed": false,
+          "suggestedRole": "operator"
+        },
+        {
+          "allowed": false,
+          "suggestedRole": "operator"
+        }
+      ]
+    },
+    {
+      "name": "another account's resource is not covered",
+      "input": {
+        "principal": {
+          "userId": "usr_admin",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:210987654321:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": false
+        }
+      ]
+    }
   ]
 }

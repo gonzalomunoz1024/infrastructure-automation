@@ -2,6 +2,8 @@ package com.iaf.console.identity.accessrequests.application;
 
 import java.time.Clock;
 
+import java.util.Optional;
+import com.iaf.console.identity.common.web.DeniedException;
 import com.iaf.console.identity.accessrequests.domain.AccessRequest;
 import com.iaf.console.identity.accessrequests.ports.outbound.AccessRequestStore;
 import com.iaf.console.identity.common.auth.AccessGuard;
@@ -12,7 +14,7 @@ import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
-/** The reads on access requests: a user's own, or the account's for an admin ({@code scope=account}). */
+/** The reads on access requests: a person sees their own; an account admin or the internal principal every request of the account. */
 public final class AccessRequestQueries {
 
     private static final String KIND = "access-request";
@@ -39,15 +41,15 @@ public final class AccessRequestQueries {
                 }));
     }
 
-    public Mono<Page<AccessRequest>> list(Caller caller, String accountId, String status, String listScope, int limit, String after) {
+    public Mono<Page<AccessRequest>> list(Caller caller, String accountId, String status, String requester, int limit, String after) {
         return support.scope(caller, accountId).flatMap(scope -> {
-            boolean account = "account".equals(listScope) || caller.isInternal();
             AccessRequest.Status wanted = status == null ? null : parse(status);
-            boolean expiredWanted = wanted == AccessRequest.Status.expired;
-            AccessRequest.Status stored = expiredWanted ? AccessRequest.Status.pending : wanted;
-            Mono<Void> allowed = account ? guard.require(caller, accountId, "access-request:list", support.anyResource(accountId, KIND)) : Mono.empty();
-            String requester = account ? null : caller.id();
-            return allowed.then(requests.list(scope, requester, stored, limit, after))
+            boolean own = caller.isUser() && (requester == null || requester.equals(caller.id()));
+            // whoever may list the account's requests sees them all (filtered by requester when asked); anyone else their own, nobody else's
+            Mono<Optional<String>> filter = caller.isInternal() ? Mono.just(Optional.ofNullable(requester))
+                    : guard.require(caller, accountId, "access-request:list", support.anyResource(accountId, KIND)).thenReturn(Optional.ofNullable(requester))
+                            .onErrorResume(DeniedException.class, denied -> own ? Mono.just(Optional.of(caller.id())) : Mono.error(denied));
+            return filter.flatMap(f -> requests.list(scope, f.orElse(null), wanted, limit, after))
                     .map(page -> new Page<>(page.items().stream().map(r -> r.served(clock.instant()))
                             .filter(r -> wanted == null || r.status() == wanted).toList(), page.next()));
         });
