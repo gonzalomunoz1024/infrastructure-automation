@@ -100,14 +100,15 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const tagging = route.query.action === 'tags' && !deleted
   const current: ConsoleAction | undefined = route.query.action && !editing && !tagging && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
 
-  if (!resource && !detail) {
+  // a deleted resource has no live view and, once live, often no platform record either: its tombstone is the page
+  if (!resource && !detail && !deleted) {
     if (record.loading || view.loading) return <SkeletonRows n={4} />
     const why = deleted ? record.error : (view.error ?? record.error)
     return <ExplainedError error={why} what={`Load this ${noun}`} onRetry={() => void Promise.all([record.refetch(), view.refetch()])} />
   }
 
   const name = detail?.name ?? resource?.name ?? id
-  const status = resource?.status ?? detail?.state ?? 'unknown'
+  const status = resource?.status ?? detail?.state ?? (deleted ? 'deleted' : 'unknown')
   const flight = detail && (detail.state === 'pending' || detail.state === 'updating' || detail.state === 'deleting') && !deleted ? detail.state : null
   const attributes = resource?.attributes ?? detail?.attributes ?? {}
   // the BFF runs a verb only on an active or failed resource (409 otherwise): say so before the form opens
