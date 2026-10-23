@@ -335,6 +335,31 @@ POST /console/v1/scorecards/packs/{pack}/rules/{ruleId}:remediate   { wfrn, inpu
   `remediation.none`, `remediation.unavailable`, `remediation.needsPerson`, `resource.inFlight`)
   come back as they were. PR #19's 409 list leaves out `remediation.needsPerson`.
 
+## Phase 9 (from hub PR #16, decision 27, folded in when it merges)
+
+Not in the pinned contract: hub PR #16 (console-root--phase-9-web, at 1bda04e) adds these six
+operations, and this service serves them with that branch's shapes until the pin moves past it.
+
+```
+GET  /console/v1/insights?period=&scope=                     -> Insights
+GET  /console/v1/jobs/{jobId}/explanation                     -> JobExplanation
+```
+
+- `insights:get` is decided on `wfrn:<partition>:insights:*:<account>:*` in each account covered;
+  every managed role reads it. `period` is `7d`, `30d` (the default) or `90d`, `scope` is
+  `account` or `organization` (the default); anything else is a 400 (`period.invalid`,
+  `scope.invalid`). None of the accounts allowed is a 403 with the session account's Denial.
+- `Insights.drift.partial: true` (not in PR #16) says the drift service did not answer for one
+  of the accounts, the numbers then covering the others.
+- `Insights.from` is the period's start to the minute (the search indexer's time terms are to the
+  minute); `to` and `asOf` are now.
+- A rerun the console starts (a retry, with or without a fix) carries the platform job label
+  `retry-of: <failed job id>`. The executive home counts such a request as one a person stepped
+  in on, and the explainer finds the retry that fixed a failure by it.
+- `JobExplanation` answers 404 for a job of another account and 409 `job.not-failed`
+  (`detail.status`) for a job that is neither `failed`, `rolled-back` nor `needs-attention`.
+  `status` is `needs-attention` for a paused job, `failed` otherwise.
+
 ## Session
 
 `Session.account` carries `roles` (the managed roles the person holds in the account) and
