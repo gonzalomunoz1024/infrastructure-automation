@@ -1,5 +1,5 @@
 # A copy of the hub's pinned contracts/platform/sample-content/providers/team-platform/list-prices.yaml
-# (hub 080bc12), served until the platform serves its price lists (P-22). Several lists may follow as
+# (hub 4a016b8), served until the platform serves its price lists (P-22). Several lists may follow as
 # YAML documents.
 apiVersion: iaf.platform/v1
 kind: PriceList

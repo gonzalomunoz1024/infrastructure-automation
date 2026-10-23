@@ -1,4 +1,4 @@
-# The `cost` blocks of the hub's type overlays (type-overlays/<type>.yaml, hub 080bc12), by type,
+# The `cost` blocks of the hub's type overlays (type-overlays/<type>.yaml, hub 4a016b8), by type,
 # served until the platform's resource types carry them (P-22). A type not named here is unpriced.
 types:
   vm:
