@@ -1,0 +1,17 @@
+# OPA as the identity service's decision engine (its `opa` profile): it polls the identity
+# service's bundle (the Rego policy plus every account compiled as data) and answers
+# POST /v1/data/console/authz. The bundle token is made fresh per run (scripts/keys.mjs).
+services:
+  identity:
+    url: http://identity:18083
+    credentials:
+      bearer:
+        token: "${E2E_OPA_BUNDLE_TOKEN}"
+bundles:
+  console:
+    service: identity
+    resource: /internal/opa/bundles/console-authz.tar.gz
+    polling:
+      # a change in the identity service reaches the decisions within two seconds
+      min_delay_seconds: 1
+      max_delay_seconds: 2

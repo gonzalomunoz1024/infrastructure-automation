@@ -1,0 +1,29 @@
+# console-identity-service in the e2e stack: profiles mongo,kafka,opa (production, without vault),
+# no demo. The accounts and people are created through its own internal API by scripts/seed.mjs,
+# with a service token the BFF issues the e2e harness (hub decision 23), not by the demo seed.
+console:
+  identity:
+    auth:
+      # the BFF's signing keys; tokens are verified against them alone
+      jwks-uri: http://bff:18081/.well-known/jwks.json
+      # the console services' defaults, and the harness, which seeds accounts as its own client
+      internal-services: [console-bff, console-search-indexer, console-drift-service, console-cost-service, console-e2e]
+      # what OPA presents for GET /internal/opa/bundles/console-authz.tar.gz
+      bundle-token: ${E2E_OPA_BUNDLE_TOKEN}
+    platform:
+      base-url: http://platform-fake:18090
+      # platform-fake has no admin service account; its dev header names its admin, gonzalo
+      dev-user: gonzalo
+    authz:
+      opa-url: http://opa:8181
+  outbox:
+    kafka:
+      bootstrap-servers: kafka:9092
+spring:
+  data:
+    mongodb:
+      uri: mongodb://mongo:27017
+      database: console_identity
+logging:
+  level:
+    com.iaf.console: info

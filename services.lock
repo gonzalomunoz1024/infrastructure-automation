@@ -1,0 +1,14 @@
+# The commits console-e2e runs, one line per image: the image, the branch, the full commit and why.
+# scripts/checkout.sh checks each out as a worktree under .work/src/<image>; scripts/build.sh builds
+# the console-e2e/<image>:local images from them. Re-pin by changing a line and running ./e2e.sh.
+#
+# image                     branch                                        commit                                    reason
+platform-fake-app           console-libs--phase-0                         cd6f535f91ee6c902f980e591b94c0d0a2575025  the branch's tip, with F-1, F-2, F-7 and F-11 fixed: runs on a JRE, publishes the feed to Kafka, serves P-22 price lists
+console-identity-service    console-identity-service--phase-7             317bc401e5abf475547f07bf1f9a16e53a217ee1  the branch's tip; console-e2e is listed in internal-services (config/identity)
+console-state-service       console-state-service--phase-9                0d6164a0da0cb4dbbde9c8bca92a16e1b0ab7c3f  the branch's tip; the BFF now mints single-audience tokens (F-16 fixed by the BFF pin)
+console-bff                 console-bff--cost                             c4dc41a2386708db01ca10be24069d1575b2577d  cost, scorecards and drift routes with phase 4's security fixes and F-13 (F-4 fixed)
+console-search-indexer      console-search-indexer--transfers             200dba42dff436a1970cc2f23fa6814df7bdd3e8  the branch's tip
+console-drift-service       console-drift-service--finder-and-monitoring  1f6e4ce6e05f1909b8fde4a77ec53bc97c75f3b4  the branch's tip; console-e2e is listed in service-callers (config/drift)
+console-cost-service        console-cost-service--phase-7                 3664b57fd30b68001f33638fe68b50dae57d9f0d  the branch's tip, with F-10 fixed; reached by people only through the BFF's cost routes (F-4)
+console-web                 console-web--phase-5                          757f3d6624053998cb13faf1a425e0ed4452d63c  the tip, with F-9, F-12 and F-14 fixed (#56 merged); the create wizard, the resource page, the drift tab and approvals
+console-web-cost            console-web--phase-9-cost                     b327e4d8568015df09cbae08699b73d8e8d94fe2  the newest web with a cost panel on the resource page (step 5), with F-9's fix (F-15 fixed), served on :3001

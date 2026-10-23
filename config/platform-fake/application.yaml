@@ -1,0 +1,7 @@
+# platform-fake-app in the e2e stack, as console-libs runs it (its own application.yaml: the demo
+# world seeded, 250 ms a step), plus the BFF's trust key as the key it checks the P-02
+# on-behalf-of assertions against. The world gives the console-internal service account the
+# console services read with and the images a VM is built from.
+console:
+  platform-fake:
+    jwks: ${E2E_BFF_TRUST_JWKS}

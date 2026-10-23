@@ -1,0 +1,59 @@
+# console-bff in the e2e stack: profiles mongo,kafka (its production profiles), no demo.
+# Mounted at /e2e/config/ and loaded with spring.config.additional-location, so it overrides the
+# jar's defaults the way the chart's rendered application.yaml does. ${E2E_*} values are made fresh
+# by scripts/keys.mjs for every run and reach the container through its env file.
+console:
+  web:
+    # the browser reaches the console through console-web's nginx on these origins
+    origins: ["http://localhost:3000", "http://localhost:3001"]   # console-web, and the cost web of step 5
+  oidc:
+    # the dev SSO: Dex, a real OpenID Connect provider (config/dex/config.yaml). The issuer must be
+    # the same URL for the browser and for this container, so the browser maps the host `dex` to
+    # 127.0.0.1 (journey/playwright.config.ts) and the port is published as is.
+    issuer: http://dex:5556/dex
+    client-id: console
+    client-secret: ""
+    redirect-uri: http://localhost:3000/auth/callback
+  session:
+    secure: false                     # plain http on localhost
+    secret: ${E2E_BFF_SESSION_SECRET}
+  trust:
+    key: ${E2E_BFF_TRUST_KEY}
+    clients:
+      console-search-indexer:
+        jwks: ${E2E_INDEXER_CLIENT_JWKS}
+      console-drift-service:
+        # the drift service prices unmanaged objects with the cost service (WP 5.3), so its
+        # client asks for that audience too (console-drift-finder: "the BFF's
+        # console-drift-service client must list it")
+        audiences: [console-state-service, console-identity-service, console-cost-service]
+        jwks: ${E2E_DRIFT_CLIENT_JWKS}
+      console-cost-service:
+        jwks: ${E2E_COST_CLIENT_JWKS}
+      # the e2e harness itself: it seeds the identity service (internal account creation) and
+      # asks the drift service for a check, as an operator would; registered like any client
+      console-e2e:
+        audiences: [console-identity-service, console-state-service, console-drift-service, console-search-indexer, console-cost-service]
+        jwks: ${E2E_HARNESS_CLIENT_JWKS}
+  identity:
+    url: http://identity:18083
+  state:
+    url: http://state:18082
+  search:
+    url: http://indexer:18085
+  cost:
+    url: http://cost:18086
+  drift:
+    url: http://drift:18084
+  platform:
+    base-url: http://platform-fake:18090
+    internal-token: ${E2E_PLATFORM_INTERNAL_TOKEN}
+  kafka:
+    bootstrap-servers: kafka:9092
+spring:
+  data:
+    mongodb:
+      uri: mongodb://mongo:27017/console_bff
+logging:
+  level:
+    com.iaf.console: info
