@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.application.OrganizationScope;
+import com.iaf.console.bff.common.errors.CodedConflictException;
 import com.iaf.console.bff.common.relay.RelayCall;
 import com.iaf.console.bff.common.relay.RelayClient;
 import com.iaf.console.bff.common.relay.Relayed;
@@ -139,15 +140,21 @@ public class Scorecards {
             } catch (WfrnException e) {
                 throw invalid("wfrn", "/wfrn", e.getMessage());
             }
-            if (!name.account().equals(session.accountId())) {
+            if (!name.account().equals(session.accountId()) || !name.region().equals(session.region())) {
                 throw new NotFoundException("no resource " + wfrn + " here");
             }
             return access.require(session, ScorecardNames.REMEDIATE, name.format())
                     .then(fixOf(session, pack, ruleId))
                     .flatMap(fix -> {
-                        String action = fix.map(f -> f.action(name.service())).orElse(null);
-                        // a rule the packs do not describe is the drift service's to refuse (404, 409 remediation.none)
-                        return action == null ? Mono.<Void>empty() : access.require(session, action, name.format()).then(sessions.requireFreshFor(session, action));
+                        // fail closed: with no fix to name, no verb is checked, so nothing is started
+                        Fix found = fix.orElseThrow(() -> new CodedConflictException("remediation.none",
+                                "the rule " + ruleId + " of " + pack + " names no fix", Map.of("pack", pack, "ruleId", ruleId)));
+                        String action = found.action(name.service());
+                        if (action == null) {
+                            throw new CodedConflictException("remediation.unavailable",
+                                    "the fix of " + ruleId + " names no verb to check", Map.of("pack", pack, "ruleId", ruleId));
+                        }
+                        return access.require(session, action, name.format()).then(sessions.requireFreshFor(session, action));
                     })
                     .then(Mono.defer(() -> {
                         Map<String, String> headers = new LinkedHashMap<>();
@@ -163,15 +170,16 @@ public class Scorecards {
         });
     }
 
-    /** The fix the pack describes for the rule, read from the drift service's packs; empty when it names none. */
+    /**
+     * The fix the pack describes for the rule, read from the drift service's packs; empty when it
+     * names none. A 409 {@code remediation.unavailable} when the packs cannot be read, never a guess.
+     */
     Mono<Optional<Fix>> fixOf(Session session, String pack, String ruleId) {
         return person(session, RelayCall.get("/v1/scorecards/packs", List.of())).map(answer -> {
-            if (!answer.ok()) {
-                return Optional.<Fix>empty();
-            }
-            JsonNode root = parse(answer.body());
+            JsonNode root = answer.ok() ? parse(answer.body()) : null;
             if (root == null) {
-                return Optional.<Fix>empty();
+                throw new CodedConflictException("remediation.unavailable", "the rule packs could not be read; try again",
+                        Map.of("pack", pack, "ruleId", ruleId));
             }
             for (JsonNode p : root.path("items")) {
                 if (!pack.equals(p.path("name").asText())) {

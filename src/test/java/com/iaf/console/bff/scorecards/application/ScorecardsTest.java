@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.common.errors.CodedConflictException;
 import com.iaf.console.bff.common.relay.Relayed;
 import com.iaf.console.bff.cost.CostFixtures;
 import com.iaf.console.bff.cost.CostFixtures.Answer;
@@ -101,6 +102,26 @@ class ScorecardsTest {
             assertEquals("req_4", call.headers().get("x-console-request-id"));
             assertEquals(COMPUTE, claims(call).path("acct").asText(), "as the person");
             assertEquals("tidy", JSON.readTree(call.body()).path("reason").asText());
+        }
+    }
+
+    @Test
+    void aFixFailsClosedWhenItsRuleCannotBeToldOrTheResourceIsInAnotherRegion() {
+        byte[] body = ("{\"wfrn\":\"" + VM + "\"}").getBytes(StandardCharsets.UTF_8);
+        try (Stub broken = new Stub(seen -> Answer.json(404, "{}"))) { // a 5xx already fails the call; a refusal must not read as "no fix"
+            CodedConflictException down = assertThrows(CodedConflictException.class, () -> scorecards(broken.url(), (a, b) -> true)
+                    .remediate(CostFixtures.session(), "baseline", "owner-tag", body, null, "req").block());
+            assertEquals("remediation.unavailable", down.code(), "the packs could not be read");
+            assertTrue(broken.seen.stream().noneMatch(s -> s.path().endsWith(":remediate")), "nothing started without the verb check");
+        }
+        try (Stub drift = drift(Answer.json(200, "{}"))) {
+            CodedConflictException none = assertThrows(CodedConflictException.class, () -> scorecards(drift.url(), (a, b) -> true)
+                    .remediate(CostFixtures.session(), "baseline", "no-such-rule", body, null, "req").block());
+            assertEquals("remediation.none", none.code());
+            assertThrows(com.iaf.console.kit.errors.NotFoundException.class, () -> scorecards(drift.url(), (a, b) -> true)
+                    .remediate(CostFixtures.session(), "baseline", "owner-tag", ("{\"wfrn\":\"" + VM.replace(":global:", ":eu-west:") + "\"}")
+                            .getBytes(StandardCharsets.UTF_8), null, "req").block(), "another region's resource");
+            assertTrue(drift.seen.stream().noneMatch(s -> s.path().endsWith(":remediate")));
         }
     }
 
