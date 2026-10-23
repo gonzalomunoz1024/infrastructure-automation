@@ -19,6 +19,10 @@ import com.iaf.console.kit.scope.AccountScope;
 public record ConsolePrincipal(String subject, String accountId, String region, List<String> groups, List<String> roles, String service,
         Set<RouteGroup> routes) {
 
+    /** The region of a read that names none, on a service token. */
+    public static final String DEFAULT_REGION = "global";
+
+
     /** The exchange attribute the authentication filter stores the principal under. */
     public static final String ATTRIBUTE = "com.iaf.console.cost.principal";
 
@@ -93,7 +97,8 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
             throw NotFoundException.of("account", account);
         }
         String r = requestedRegion != null ? requestedRegion : region;
-        return AccountScope.of(account, r, subject);
+        // a service token carries no region: the ledger keeps one region, global (decision 25)
+        return AccountScope.of(account, r != null ? r : DEFAULT_REGION, subject);
     }
 
     /**

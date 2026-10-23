@@ -144,6 +144,11 @@ class CallersTest {
         bff.get().uri("/v1/chargeback?month=2026-10&accountId=" + ACCOUNT).exchange().expectStatus().isOk();
         bff.get().uri("/v1/ledger/status").exchange().expectStatus().isOk();
         estimate(bff).expectStatus().isOk();
+        // one resource's cost takes its region from the wfrn, never from the token (F-10)
+        String wfrn = "wfrn:wf:compute:global:" + ACCOUNT + ":vm/f10";
+        bff.get().uri("/v1/wfrn/{wfrn}/cost", wfrn).exchange().expectStatus().value(s -> org.junit.jupiter.api.Assertions.assertTrue(s < 500, "status " + s));
+        bff.get().uri(uri -> uri.path("/v1/cost").query(MONTH).queryParam("wfrn", wfrn).build()).exchange()
+                .expectStatus().value(s -> org.junit.jupiter.api.Assertions.assertTrue(s < 500, "status " + s));
         // a call that acts for no account names one
         bff.get().uri("/v1/cost?" + MONTH).exchange().expectStatus().isBadRequest();
     }

@@ -75,7 +75,7 @@ public final class CostController {
                 wfrn);
         if (q.wfrn() != null) {
             Wfrn name = parse(q.wfrn());
-            return resources.report(principal.scope(accountIds == null || accountIds.isEmpty() ? name.account() : accountIds.get(0), null), q);
+            return resources.report(principal.scope(accountIds == null || accountIds.isEmpty() ? name.account() : accountIds.get(0), name.region()), q);
         }
         List<AccountScope> scopes = principal.scopes(accountIds, null);
         return queries.report(scopes, q);
@@ -85,7 +85,7 @@ public final class CostController {
     public Mono<ResourceCost> resourceCost(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestParam(required = false) String accountId) {
         Wfrn name = parse(wfrn);
-        AccountScope scope = Principals.of(exchange).scope(accountId != null ? accountId : name.account(), null);
+        AccountScope scope = Principals.of(exchange).scope(accountId != null ? accountId : name.account(), name.region());
         if (!scope.accountId().equals(name.account())) {
             return Mono.error(NotFoundException.of("resource", wfrn));
         }
