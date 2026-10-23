@@ -14,7 +14,16 @@ info:
     `accountId` on list calls; a console account's own `accountId` is the only value it may give.
 
     **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
-    sent back as `after`. `limit` is 1 to 500, 50 by default.
+    sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console
+    API; the service kit's `CursorPaging` enforces it). Lists sort by `-updatedAt` unless `sort`
+    says otherwise.
+
+    **Tombstones.** A deleted resource keeps its name for 90 days (`contracts/wfrn/SPEC.md`):
+    `GET /v1/wfrn/{wfrn}` answers 410 with the tombstone, the log stays readable, and the name is
+    never minted again.
+
+    **Commands are idempotent** on `Idempotency-Key`; a replayed command answers the first result
+    with the response header `Idempotent-Replay: true`.
 
     **Errors.** `{ error, problems?, correlationId? }`: 400 bad input (with `problems`), 401 no
     valid JWT, 404 unknown or out of scope, 409 a version mismatch or a command the state refuses,
@@ -92,6 +101,10 @@ paths:
           in: query
           description: Only resources with an open finding
           schema: { type: boolean }
+        - name: sort
+          in: query
+          description: The order; a leading `-` is descending
+          schema: { type: string, enum: [-updatedAt, updatedAt, -createdAt, createdAt, name, -name], default: -updatedAt }
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/After'
       responses:
@@ -126,6 +139,8 @@ paths:
       responses:
         '201':
           description: The resource, in `pending`, version 1
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ConsoleResource' }
@@ -149,6 +164,8 @@ paths:
       responses:
         '201':
           description: The resource, in `active`
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ConsoleResource' }
@@ -161,7 +178,16 @@ paths:
     get:
       operationId: getResource
       summary: Get a resource by wfrn
+      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had); `reveal=sensitive` answers the sensitive fields in clear instead of masked, for the console-internal principal and for a BFF call made for an account admin, and is ignored otherwise.'
       tags: [Resources]
+      parameters:
+        - name: asOf
+          in: query
+          description: A past version of the resource
+          schema: { type: integer, minimum: 1 }
+        - name: reveal
+          in: query
+          schema: { type: string, enum: [sensitive] }
       responses:
         '200':
           description: The resource
@@ -412,7 +438,7 @@ components:
       name: limit
       in: query
       required: false
-      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
     After:
       name: after
       in: query
@@ -429,11 +455,17 @@ components:
       name: X-Console-Request-Id
       in: header
       required: false
-      description: The console request that caused the command, kept on the event as `requestId`
+      description: The console request that caused the command, kept on the event as `context.consoleRequestId`
       schema: { type: string, maxLength: 128 }
+  headers:
+    IdempotentReplay:
+      description: '`true` when the command was a replay of an Idempotency-Key and this is the first result, replayed'
+      schema: { type: boolean }
   responses:
     ResourceUpdated:
       description: The resource after the command, with its new version
+      headers:
+        Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ConsoleResource' }
@@ -458,7 +490,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Gone:
-      description: A tombstone; the resource was deleted and the name stays reserved for 30 days
+      description: A tombstone; the resource was deleted and the name stays reserved for 90 days
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Tombstone' }
@@ -554,6 +586,20 @@ components:
           additionalProperties: { type: string }
         requestedBy: { type: string }
         lastJobId: { type: string }
+        changes: { type: object, description: 'The fields an update requested and their values, while the resource is `updating`; cleared when the job ends', additionalProperties: true }
+        observedStatus: { type: string, enum: [found, not_found, error], description: What the last observation found }
+        lastError:
+          type: object
+          description: The last job that failed on this resource
+          properties:
+            jobId: { type: string }
+            status: { type: string, enum: [failed, cancelled, rolled-back] }
+            errorClass: { type: string }
+            failedStep: { type: string }
+            message: { type: string }
+        source: { type: string, enum: [backfill, discover], description: 'How an imported resource came under management; absent for a resource created from the console' }
+        deletedAt: { type: string, format: date-time }
+        tombstoneUntil: { type: string, format: date-time, description: 'Until when the name answers 410 (90 days after deletedAt)' }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     Tombstone:
@@ -567,21 +613,43 @@ components:
         lastVersion: { type: integer }
     ResourceEvent:
       type: object
-      description: One entry of a resource's log, the same shape as the `state.resources` message
-      required: [type, wfrn, accountId, region, version, key, at, state, data]
+      description: 'One entry of a resource''s log, the same shape as the `state.resources` message: the platform''s P-01 envelope with the console''s fields in `data` (contracts/asyncapi/console-events.yaml)'
+      required: [specVersion, dataVersion, id, key, type, at, aggregate, aggregateId, context, data]
       properties:
+        specVersion: { type: string, const: '1.0' }
+        dataVersion: { type: integer, minimum: 1 }
+        id: { type: string }
+        key: { type: string, description: '`<type>:<wfrn>:<version>`' }
+        seq: { type: integer, description: "The service's outbox sequence" }
         type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported] }
-        wfrn: { $ref: '#/components/schemas/Wfrn' }
-        accountId: { $ref: '#/components/schemas/AccountId' }
-        region: { $ref: '#/components/schemas/RegionName' }
-        version: { type: integer }
-        key: { type: string }
         at: { type: string, format: date-time }
-        state: { $ref: '#/components/schemas/ResourceState' }
+        aggregate: { type: string, const: resource }
+        aggregateId: { $ref: '#/components/schemas/Wfrn' }
         actor: { type: string }
-        jobId: { type: string }
-        requestId: { type: string }
-        data: { type: object, additionalProperties: true }
+        onBehalfOf:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+        context:
+          type: object
+          required: [accountId, region, wfrn]
+          properties:
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            region: { $ref: '#/components/schemas/RegionName' }
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            consoleRequestId: { type: string }
+        traceparent: { type: string }
+        data:
+          type: object
+          required: [version, state]
+          properties:
+            version: { type: integer, description: "The resource's version after this event" }
+            state: { $ref: '#/components/schemas/ResourceState' }
+            resourceType: { type: string }
+            jobId: { type: string }
+          additionalProperties: true
     MintRequest:
       type: object
       required: [type, region, workflow]

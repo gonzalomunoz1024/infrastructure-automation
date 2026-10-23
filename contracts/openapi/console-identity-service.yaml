@@ -14,7 +14,7 @@ info:
     account's roles and policies (`POST /v1/authorize`).
 
     **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
-    sent back as `after`. `limit` is 1 to 500, 50 by default.
+    sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console API).
 
     **Errors.** `{ error, problems?, correlationId? }`: 400 bad input, 401 no valid JWT, 404 unknown
     or out of scope, 409 a conflict (a name in use, a version mismatch), 429 over a quota.
@@ -934,7 +934,7 @@ components:
       name: limit
       in: query
       required: false
-      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
     After:
       name: after
       in: query

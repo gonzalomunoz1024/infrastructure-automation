@@ -449,7 +449,8 @@ account's service account acts for exactly that group's team.
    `resources:observe` (P-09) and `events:read` (P-01). The new preset `console` is
    `registry:read`, `jobs:start`, `jobs:read`, `resources:observe`, `console:act`. A second new
    preset, `console-internal`, for the state service, the drift service and the indexer:
-   `registry:read`, `jobs:read`, `resources:observe`, `events:read`.
+   `registry:read`, `jobs:read`, `resources:observe`, `events:read`, `resources:backfill` (P-05's
+   backfill, so the state service's import can run it without a person).
 2. **Account binding.** `ServiceAccount` gains `consoleAccount` (the 12-digit account id, null for
    every other account). `POST /service-accounts` accepts `consoleAccount` with the `console`
    preset, admin only, and requires `teams` to be exactly one team: the account's owning team.
