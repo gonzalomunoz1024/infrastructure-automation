@@ -32,6 +32,12 @@ branch validates everything here.
   (`/v1/wfrn/wfrn%3Awf%3A...`), and where the platform uses a query parameter (`?wfrn=`) the
   console does too. A path never serves two shapes under one template, which is why the BFF's
   detail route repeats the type: `/console/v1/r/{type}/{wfrn}`.
+- **Calls between services.** Every console service verifies the BFF's internal JWT against the
+  BFF's JWKS and nothing else. A call behind a person carries the token the BFF minted for the
+  session (`acct`, `groups`, `roles`); a service calling on its own carries a service token the
+  BFF issued it at `POST /internal/v1/token` (no `acct`; `sub` and `svc` the caller's service id),
+  for which it authenticates with its Kubernetes service-account token or its own registered key
+  (decision 23). No service holds the BFF's signing key or a static token.
 - **Idempotency.** A command takes `Idempotency-Key`; the same key with the same body answers the
   first result, with another body it is 409.
 - **Events.** Consumers de-duplicate platform events on `key`, never `id`; console topics are
