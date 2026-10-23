@@ -9,7 +9,12 @@ platform changes the console needs.
 - Plan: [Customer console plan](https://claude.ai/artifact/Sp3X9oC33s3XjN86vkYsXC) (the full
   design: personas, wfrn, the dynamic console, services, scale, security, roadmap, risks).
 - Platform changes: [platform-changes/README.md](platform-changes/README.md), a plan only.
-- Status: planning, 2026-10-23. All ten decisions are answered. No service branch has code yet.
+- Status: phase 0 in progress, 2026-10-23. All ten decisions are answered, and the phase 0
+  decisions below are taken. On this branch the platform's target contracts
+  (`contracts/platform/`), the console's own event catalog and the five service drafts
+  (`contracts/`), the wfrn specification, fixtures and JavaScript reference, the schemas, the type
+  overlays and the global region, the contract checks (`npm run check`) and the nightly platform
+  contract check have landed. `console-libs` and `console-web` are being set up in parallel.
   Revised the same day after an independent review against the platform at `c9529d5`: P-18 to
   P-21, and a phase 9 of features beyond the AWS console. The console is built against the
   platform as it will be after all twenty-one changes.
@@ -46,7 +51,7 @@ services run against `platform-fake`, an in-memory implementation of the target 
 | Branch | Future repository | What it holds | Build | Depends on |
 | --- | --- | --- | --- | --- |
 | `console-root` | `console-hub` | This README, decisions, `contracts/`, `type-overlays/`, `platform-changes/` | none (docs and schemas; CI validates the schemas) | none |
-| `console-libs` | `console-libs` | Gradle convention plugins (`build-logic`), the Java `wfrn` library, `service-kit` (account scope, errors, outbox, idempotent consumer, MongoDB and OpenTelemetry helpers), clients generated from `contracts/`; published to GitHub Packages as `com.iaf.console:*` | Gradle | `console-root` contracts |
+| `console-libs` | `console-libs` | Gradle convention plugins (`build-logic`), the Java `wfrn` library, `service-kit` (account scope, errors, outbox, idempotent consumer, MongoDB and OpenTelemetry helpers), the platform client typed against `contracts/platform/openapi-target.yaml`, `platform-fake` and `platform-fake-app`; published to GitHub Packages as `com.iaf.console:*` | Gradle | `console-root` contracts |
 | `console-bff` | `console-bff` | Sign-in, sessions, type descriptors, page APIs, commands, SSE | Gradle, Spring WebFlux | `console-libs` |
 | `console-identity-service` | `console-identity-service` | Accounts, users, groups, roles, policies, access keys, quotas, OPA bundles | Gradle, Spring WebFlux | `console-libs` |
 | `console-state-service` | `console-state-service` | The event-sourced resource inventory by wfrn, desired against observed | Gradle, Spring WebFlux | `console-libs` |
@@ -69,9 +74,10 @@ its own MongoDB database, its own Helm chart under `deploy/`, and its own
   the platform's API as it is today for reference (`contracts/platform/openapi-c9529d5.json`,
   read-only), and the wfrn fixtures (`contracts/wfrn/fixtures.json`) that the Java
   and TypeScript wfrn libraries both run.
-- `console-libs` generates its clients from a pinned commit of this branch, recorded in
-  `console-libs/contracts.lock`, and publishes them with a version. Services depend on a
-  published version, never on a branch.
+- `console-libs` builds its platform client and its fake against a pinned commit of this branch,
+  recorded in `console-libs/contracts.lock` (the commit and the sha256 of every contract file it
+  reads; `contracts/README.md` shows the file), and publishes them with a version. Every service
+  pins the same way. Services depend on a published version, never on a branch.
 - A breaking change to a contract is a new version of that API (`/v2`) or a new event type, and
   both versions are served for one release.
 - **Nightly platform contract check.** A nightly CI job on this branch fetches `/openapi.json`
@@ -103,6 +109,26 @@ with no hints still gets a full console from its schema and workflows; hints onl
 | 8 | Repositories | Each service its own repository in concept; for now one orphan branch per service here, with this branch as the hub |
 | 9 | Look and feel | AWS's layout and interactions, drawn in Atlas visuals with Apple-grade restraint: think Jony Ive, elegant, quiet, precise. The one Atlas exception is `@tanstack/react-virtual` for row virtualisation |
 | 10 | Drift remediation | Detect drift and show it with a one-click revert (plus accept and ignore field); never revert automatically |
+
+## Phase 0 decisions
+
+Taken 2026-10-23 while the foundations were built, on top of the ten decisions above.
+
+| # | Decision | Answer |
+| --- | --- | --- |
+| 11 | How `console-web` gets Atlas and the shared components | It vendors Atlas: `packages/ui` is copied verbatim from the platform at `c9529d5`, and `packages/console-kit` holds the console's forks of SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList, with `x-console` support added. `packages/wfrn` is the TypeScript wfrn library. The web app switches to the published P-14 packages when they exist |
+| 12 | What `platform-fake` is | A library in `console-libs` plus a runnable `platform-fake-app`, an in-memory implementation of the target contracts seeded from the `c9529d5` sample content pinned in `contracts/platform/sample-content/` plus P-15's additions (the `global` region, the overlays' `console` and `observe` blocks, `update-vm`) |
+| 13 | How the platform client is written | Hand-written reactive code in `console-libs`, typed against `contracts/platform/openapi-target.yaml`, with an abstract contract test suite that runs against the fake in CI and against the real platform when `CONSOLE_TEST_PLATFORM_URL` is set. Code generation is revisited for the service-to-service clients in phase 1 |
+| 14 | How a service pins the contracts | By hub commit, in a `contracts.lock` at the service root holding the commit and the sha256 of every contract file it reads (`contracts/README.md`) |
+| 15 | How shared code is published | `console-libs` publishes `com.iaf.console:*` to GitHub Packages from merges to `console-libs`; services depend on a published version |
+| 16 | The wfrn pattern rules | As settled in `contracts/wfrn/SPEC.md`: `*` matches any run of characters and `?` exactly one, across `:` and `/`, as in IAM; a pattern is judged with a name's rules, except that a segment with a wildcard is checked only for its alphabet and length, a pattern may stop early at a segment that ends in `*`, and the id may be absent when the type segment ends in `*`. The fixtures in `contracts/wfrn/fixtures.json` are the test every wfrn library passes |
+| 17 | The shape of the console's own events | The platform's P-01 envelope, the one the service kit's `EventEnvelope`, outbox and Kafka publisher write and every consumer already reads for the platform's feed: `aggregate` and `aggregateId` name the subject, `context` carries `accountId`, `region` and `wfrn`, and the console's fields ride in `data` (`data.version` on every event, `data.state` on resources, `data.action` and `data.snapshot` on identity changes). Type names stay PascalCase (`UserChanged`) so they never collide with the platform's dotted `resource.*` types in a merged stream (`contracts/asyncapi/console-events.yaml`) |
+| 18 | Where a console account's platform credential lives | The identity service answers `GET /v1/accounts/{accountId}/platform-credentials` to the console's own services: the token itself in the demo and dev profiles (`source: local`, minted on platform-fake), or the Vault path `console/accounts/{accountId}/platform-service-account` in production (`source: vault`), never in events or the account record. OPA fetches its bundle from `GET /internal/opa/bundles/console-authz.tar.gz` with an ETag |
+| 19 | What the BFF answers a refused person | Every 403 but a missing CSRF token carries a `Denial`: the layer that decided (console IAM or the platform), the `<service>:<verb>`, the resource, the reason, the role, policy and statement or scope behind it, whether access may be requested and which role would grant it; the same block greys an action in the descriptors (`ConsoleAction.allowed`, `denied`). A step-up refusal is a 403 with `detail.stepUp`. IAM is passed through at `/console/v1/iam/*` for the session's account with the identity service's schemas unchanged; access requests live at `/console/v1/access-requests`; `/.well-known/jwks.json` publishes the BFF's keys (`contracts/openapi/console-bff.yaml`) |
+| 20 | Page sizes, tombstones and job events across the services | Every console API pages 1 to 200 (the plan's cap; the service kit's `CursorPaging` enforces it), 50 by default. A deleted resource's name is a tombstone for 90 days, as the wfrn spec and the plan say. The three job events keep one type each whatever the job: `ProvisioningStarted` keeps the state, `ProvisioningSucceeded` ends a create or update in `active`, a succeeded delete is recorded as `Deleted` alone, `ProvisioningFailed` leaves a create `failed` and returns an update or delete to `active`. The platform's backfill may be run by the `console-internal` preset (`resources:backfill`), so the state service imports the registry without a person |
+| 21 | The managed roles and how a service knows the caller's | Four managed roles per account, `viewer`, `operator`, `account-admin` and `auditor` (shown as Viewer, Operator, Admin, Auditor), born with the groups `viewers`, `members` (the owning identity-provider team joins it at sign-in), `owners` (account-admin) and `auditors`. The internal JWT the BFF signs (verified against its JWKS) carries `sub`, `acct`, `region`, `groups`, `roles` (from the membership the identity service serves) and `svc`; every service decides admin-only things (the state service's `reveal=sensitive`, deciding access requests) on `roles` containing `account-admin`, never on a group name |
+| 22 | Quota requests are decided explicitly; who sees the access-request queue | `POST …/quota-requests/{requestId}:decide` (internal principal, i.e. the platform team) approves with a granted limit (the ask by default) and a comment, or rejects; an internal `PUT` of a limit at or above an open ask approves it as moot, a lower limit leaves it open. Everyone reads their own access requests; the account's queue needs `access-request:get`/`list`, granted to the managed `account-admin` and `auditor` policies and left out of `viewer` and `operator`. A pending access request expires after 30 days |
+| 23 | How a console service calls another as itself | The BFF stays the only issuer of internal JWTs, so every verifier keeps its one JWKS. A service that calls another on its own account (the search indexer reading the state service and the accounts; the drift service next) asks the BFF for a service token at `POST /internal/v1/token`: OAuth 2.0 client credentials (RFC 6749 §4.4) with a JWT client assertion (RFC 7523). In a cluster the assertion is the pod's projected Kubernetes service-account token with audience `console-bff`, verified against the cluster's service-account issuer, so no secret exists; anywhere else (a laptop, CI, a VM) it is a JWT the service signs with its own EC key (`iss` and `sub` its service id, `aud` `console-bff`, a fresh `jti`, at most 5 minutes long), verified against the public keys registered for it. The BFF registers each client with its service account or keys and the audiences it may ask for (the indexer: `console-state-service`, `console-identity-service`), and answers `{ access_token, token_type: Bearer, expires_in }`: a 5-minute ES256 token with `iss` `console-bff`, `aud` only the services asked for (never the shared `console`), `sub` and `svc` the service id and no `acct`, which verifiers already treat as the console-internal principal. The BFF's signing key never leaves it, and there are no static tokens. The endpoint is in-cluster only (the ingress routes `/auth`, `/console` and the JWKS, never `/internal`). The demos keep the dev headers (`contracts/openapi/console-bff.yaml`, `issueServiceToken`) |
 
 ## Build order
 

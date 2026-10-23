@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/type-overlay.schema.json",
+  "title": "TypeOverlay",
+  "description": "The hub's overlay for one sample resource type (type-overlays/<type>.yaml): exactly the console and observe blocks of the platform change P-06, metadata.name of the type it applies to and the service it belongs to, and schema patches that add x-console hints to the type's fields. Merged over the platform's resource-types/<type>.yaml it gives the file P-15 adds to the platform; platform-fake reads both. A patch may also add a field the provider reports but no workflow sets (powerState on a vm), so observe.map can name it.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "iaf.console/v1" },
+    "kind": { "const": "TypeOverlay" },
+    "metadata": {
+      "type": "object",
+      "required": ["name", "service"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The ResourceType this overlay applies to (its metadata.name)",
+          "$ref": "resource-type.schema.json#/$defs/metadata/properties/name"
+        },
+        "service": {
+          "description": "Becomes the type's metadata.service",
+          "$ref": "resource-type.schema.json#/$defs/metadata/properties/service"
+        }
+      }
+    },
+    "console": { "$ref": "resource-type.schema.json#/$defs/console" },
+    "observe": { "$ref": "resource-type.schema.json#/$defs/observe" },
+    "schema": {
+      "description": "Patches to the type's schema, by field",
+      "type": "object",
+      "required": ["properties"],
+      "additionalProperties": false,
+      "properties": {
+        "properties": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
+          "additionalProperties": { "$ref": "#/$defs/fieldPatch" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fieldPatch": {
+      "description": "The x-console hints of one field; type, title, description, enum and readOnly only when the patch adds an observed-only field",
+      "type": "object",
+      "required": ["x-console"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "array", "object"] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "enum": { "type": "array", "minItems": 1 },
+        "readOnly": { "const": true },
+        "x-console": { "$ref": "resource-type.schema.json#/$defs/xConsole" }
+      }
+    }
+  }
+}

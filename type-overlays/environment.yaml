@@ -1,0 +1,8 @@
+# Only the service is set, and to the value P-06's default would give (the owner team-platform
+# without its prefix): the console draws the environment pages from the schema and the workflows
+# alone, which proves the defaults (P-15). Merged over the platform's resource-types/environment.yaml.
+apiVersion: iaf.console/v1
+kind: TypeOverlay
+metadata:
+  name: environment
+  service: platform

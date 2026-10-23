@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/wfrn-fixtures.schema.json",
+  "title": "wfrn fixtures",
+  "description": "The shape of contracts/wfrn/fixtures.json, the one set of wfrn test cases every implementation runs (contracts/wfrn/SPEC.md, The fixtures). Five lists plus the pattern list the implementations must refuse.",
+  "type": "object",
+  "required": ["version", "valid", "invalid", "format", "patterns", "invalidPatterns", "mintedIds"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "valid": {
+      "description": "parse(input) succeeds with exactly parts, and format(parts) gives back input",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "input", "parts"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "input": { "type": "string" },
+          "parts": { "$ref": "#/$defs/parts" }
+        }
+      }
+    },
+    "invalid": {
+      "description": "parse(input) fails with code",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "input", "code"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "input": { "type": "string" },
+          "code": { "$ref": "#/$defs/code" }
+        }
+      }
+    },
+    "format": {
+      "description": "format(parts) gives expected, or refuses the parts with error",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "parts"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "parts": { "$ref": "#/$defs/parts" },
+          "expected": { "type": "string" },
+          "error": { "$ref": "#/$defs/code" }
+        },
+        "oneOf": [{ "required": ["expected"] }, { "required": ["error"] }]
+      }
+    },
+    "patterns": {
+      "description": "matches(pattern, s) is true for each of matches and false for each of misses",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "pattern", "matches", "misses"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "pattern": { "type": "string" },
+          "matches": { "type": "array", "items": { "type": "string" } },
+          "misses": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "invalidPatterns": {
+      "description": "patterns the implementation must refuse, with the code",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "pattern", "code"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "pattern": { "type": "string" },
+          "code": { "$ref": "#/$defs/code" }
+        }
+      }
+    },
+    "mintedIds": {
+      "description": "mintId(type, ulid) == id and parseMintedId(type, id) == parsed; an entry with error instead of parsed must be refused",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "ulid", "id"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "type": { "type": "string" },
+          "ulid": { "type": ["string", "null"] },
+          "id": { "type": "string" },
+          "parsed": {
+            "type": "object",
+            "required": ["type", "ulid"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string" },
+              "ulid": { "type": "string" }
+            }
+          },
+          "error": { "$ref": "#/$defs/code" }
+        },
+        "oneOf": [{ "required": ["parsed"] }, { "required": ["error"] }]
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "description": "What a test reports when the entry fails; unique within its list",
+      "type": "string",
+      "minLength": 1
+    },
+    "code": {
+      "description": "The error codes of SPEC.md, in the order the rules are checked",
+      "type": "string",
+      "enum": [
+        "wfrn.length",
+        "wfrn.case",
+        "wfrn.wildcard",
+        "wfrn.prefix",
+        "wfrn.segments",
+        "wfrn.partition",
+        "wfrn.service",
+        "wfrn.region",
+        "wfrn.account",
+        "wfrn.type",
+        "wfrn.id"
+      ]
+    },
+    "parts": {
+      "description": "The six parts of a name; region and account may be empty, never absent",
+      "type": "object",
+      "required": ["partition", "service", "region", "account", "type", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "partition": { "type": "string" },
+        "service": { "type": "string" },
+        "region": { "type": "string" },
+        "account": { "type": "string" },
+        "type": { "type": "string" },
+        "id": { "type": "string" }
+      }
+    }
+  }
+}

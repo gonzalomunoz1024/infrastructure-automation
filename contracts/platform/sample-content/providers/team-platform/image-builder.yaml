@@ -1,0 +1,60 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: image-builder
+  title: Image builder (Packer)
+  owner: team-platform
+  version: 1.0.2
+  description: The Packer build farm behind a small HTTP API.
+spec:
+  type: http
+  endpoints:
+    dev: https://images-dev.example.com/api
+    prod: https://images.example.com/api
+  auth: { type: bearer, credential: vault:image-builder/token }
+  actions:
+    - id: build.start
+      title: Start build
+      operation: { method: POST, path: /builds }
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [os]
+        properties:
+          os: { type: string }
+          hardening: { type: string }
+          name: { type: string }
+      example: { id: build-77, imageId: img-77, templateId: tpl-pending, state: queued }
+      sample: { id: "build-{{ $job.seq }}", imageId: "img-{{ $job.seq }}", templateId: "tpl-{{ $input.os }}-{{ $input.hardening }}", state: queued }
+    - id: build.wait
+      title: Wait for build
+      operation: { method: GET, path: "/builds/{buildId}" }
+      effect: read
+      retry: safe
+      description: Polls the build until it is done or the timeout passes.
+      input:
+        type: object
+        required: [buildId]
+        properties:
+          buildId: { type: string }
+          timeout: { type: integer, default: 3600 }
+      example: { id: build-77, state: done, templateId: tpl-ubuntu-2404-cis1, sizeGb: 12 }
+      sample: { id: "{{ $input.buildId }}", state: done, templateId: "tpl-{{ $input.buildId.replace('build-', '') }}", sizeGb: 12 }
+    - id: image.scan
+      title: Scan image
+      operation: { method: POST, path: "/images/{imageId}:scan" }
+      effect: read
+      retry: safe
+      input:
+        type: object
+        required: [imageId]
+        properties:
+          imageId: { type: string }
+      example: { imageId: img-77, critical: 0, high: 2, medium: 9 }
+      sample: { imageId: "{{ $input.imageId }}", critical: 0, high: 2, medium: 9 }
+  errors:
+    - { match: { status: 404 }, class: not_found, retry: false }
+    - { match: { status: 503 }, class: unavailable, retry: true }
+  slo: { successRate: 98.0, p95Ms: 2000 }
+  alerts: { channel: "#platform-alerts" }

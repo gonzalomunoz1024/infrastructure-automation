@@ -1,0 +1,7 @@
+# Only the service is set: the console draws the image pages from the schema and the workflows
+# alone, which proves the defaults (P-15). Merged over the platform's resource-types/image.yaml.
+apiVersion: iaf.console/v1
+kind: TypeOverlay
+metadata:
+  name: image
+  service: compute

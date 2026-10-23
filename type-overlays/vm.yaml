@@ -1,0 +1,50 @@
+# The polished example (P-15): the full console block, drift observation through vSphere and
+# x-console hints. Merged over the platform's resource-types/vm.yaml (contracts/platform/sample-content).
+apiVersion: iaf.console/v1
+kind: TypeOverlay
+metadata:
+  name: vm
+  service: compute
+console:
+  title: Virtual machines
+  icon: server
+  list:
+    columns: [name, status, cpu, memoryGb, environment, created]
+    defaultSort: -created
+  detail:
+    tabs: [configuration, drift, activity, relationships, tags, monitoring]
+  lifecycle: { building: pending, ready: active, deprecated: active, retired: deleted }
+observe:
+  provider: vsphere
+  action: vm.get                    # effect: read
+  input: { id: "{{ $resource.providerId ?? $resource.id }}" }
+  map:                              # observed field -> expression over vm.get's response
+    cpu: "{{ $json.cpu }}"
+    memoryGb: "{{ $json.memoryGb }}"
+    powerState: "{{ $json.powerState }}"
+  ignore: [owner]                   # set by the workflow from the requester, never compared
+  interval: 15m
+  notFound: missing
+  discover:                         # what vSphere has, managed or not (the Unmanaged resources page)
+    action: vm.list                 # effect: read
+    input: { environment: "{{ $region.environment }}" }
+    items: "{{ $json.items }}"
+    id: "{{ $item.id }}"
+  # No `list` block: vm.list takes no paging input at c9529d5 (its input is `environment` only), so
+  # the type is observed one resource at a time on the slowest tier until the provider team adds a
+  # paged read (P-09, item 3).
+schema:
+  properties:
+    name:
+      x-console: { column: true, searchable: true }
+    cpu:
+      x-console: { column: true, mutable: true, group: Size }          # update-vm's cpu input (P-15)
+    memoryGb:
+      x-console: { format: gibibytes, column: true, mutable: true, group: Size }   # update-vm's memoryGb input
+    environment:
+      x-console: { column: true, searchable: true }
+    powerState:                     # observed only: vm.get reports it, no workflow sets it
+      type: string
+      enum: [poweredOn, poweredOff, suspended]
+      readOnly: true
+      x-console: { column: true }

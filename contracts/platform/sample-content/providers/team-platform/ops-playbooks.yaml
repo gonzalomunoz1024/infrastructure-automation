@@ -1,0 +1,59 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: ops-playbooks
+  title: Ops playbooks (Ansible)
+  owner: team-platform
+  version: 3.1.0
+  description: The shared Ansible repository. Every playbook is pinned to a tag and a commit; the platform runs them with ansible-runner in an execution environment.
+spec:
+  type: ansible
+  source:
+    git: { repo: github.com/acme/ops-playbooks, ref: v3.1.0 }
+    commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d
+  executionEnvironment: ee-platform:2.17
+  auth: { type: none }
+  actions:
+    - id: vm.restart
+      title: Restart a VM
+      playbook: vm/restart.yml
+      effect: change
+      retry: unsafe
+      vars:
+        type: object
+        required: [vm_id]
+        properties:
+          vm_id: { type: string }
+          graceful: { type: boolean, default: true }
+      sample: { ok: 4, changed: 2, failed: 0, rebootRequired: false }
+    - id: mongo.setFcv
+      title: Pin MongoDB feature compatibility
+      playbook: mongo/set-fcv.yml
+      effect: change
+      retry: safe
+      vars:
+        type: object
+        required: [fcv]
+        properties:
+          fcv: { type: string }
+      sample: { ok: 3, changed: 3, failed: 0 }
+    - id: patch.cve
+      title: Patch one CVE
+      playbook: patch/cve.yml
+      effect: change
+      retry: unsafe
+      vars:
+        type: object
+        required: [cve]
+        properties:
+          cve: { type: string }
+      sample:
+        ok: 9
+        changed: 3
+        failed: 0
+        rebootRequired: true
+        packages:
+          - { name: openssl, version: 3.0.14-1, cves: ["{{ $input.cve }}"] }
+          - { name: libssl3, version: 3.0.14-1, cves: ["{{ $input.cve }}"] }
+  slo: { successRate: 97.0, p95Ms: 240000 }
+  alerts: { channel: "#platform-alerts" }

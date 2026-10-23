@@ -1,0 +1,20 @@
+apiVersion: iaf.platform/v1
+kind: ResourceType
+metadata:
+  name: image
+  plural: images
+  owner: team-platform
+  description: A hardened VM image other workflows build VMs from.
+schema:
+  type: object
+  required: [templateId]
+  properties:
+    name: { type: string, examples: [ubuntu-24.04-cis-l1-2026-10-01, rhel-9-cis-l1-2026-09-15] }
+    os: { type: string, examples: [ubuntu-24.04, rhel-9] }
+    hardening: { type: string, examples: [cis-l1, cis-l2] }
+    templateId: { type: string, examples: [tpl-ubuntu-2404-cis-l1, tpl-rhel9-cis-l1] }
+    sizeGb: { type: integer, examples: [40, 60] }
+    scanned: { type: boolean, examples: [true] }
+states: [building, ready, deprecated, retired, failed]
+producedBy: build-vm-image
+visibility: public   # golden images are built by team-platform for every team's VMs

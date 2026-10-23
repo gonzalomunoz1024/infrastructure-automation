@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/resource-type.schema.json",
+  "title": "ResourceType",
+  "description": "A kind: ResourceType file as the platform change P-06 leaves it: today's fields (metadata, schema, states, producedBy, visibility) plus metadata.service, the console block, the observe block and the x-console keywords inside the schema. Every new block is optional, so the five sample types at c9529d5 validate unchanged. The platform's own copy of this schema (packages/workflow-checks/schemas/resource-type.schema.json) is the first line of the P-06 checks; this is the hub's draft of it.",
+  "type": "object",
+  "required": ["metadata"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "iaf.platform/v1" },
+    "kind": { "const": "ResourceType" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "schema": {
+      "description": "The JSON Schema of a resource's attributes: what a register step must match, what the console draws its list, detail and forms from",
+      "$ref": "#/$defs/objectSchema"
+    },
+    "states": {
+      "description": "The states a resource of the type moves through; building, ready, deprecated and retired when left out",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+    },
+    "producedBy": {
+      "description": "The workflow whose register step creates this type; the console's Create button is keyed off it",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "visibility": {
+      "description": "What new resources of the type get: team (the owner team's) or public (every team's); hidden (P-19) keeps a type with live resources out of Create",
+      "type": "string",
+      "enum": ["team", "public", "hidden"]
+    },
+    "console": { "$ref": "#/$defs/console" },
+    "observe": { "$ref": "#/$defs/observe" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The type's name, the type segment of its wfrns",
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,64}$"
+        },
+        "plural": { "description": "The collection noun of the generated reads (/api/v1/<plural>); <name>s when left out", "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "owner": { "description": "The owning team", "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "service": {
+          "description": "P-06: the console's service grouping and the service segment of the wfrn; the owner team without its team- prefix when left out (check resourceType.service.invalid)",
+          "type": "string",
+          "pattern": "^[a-z0-9-]{2,32}$"
+        }
+      }
+    },
+    "objectSchema": {
+      "description": "An object JSON Schema whose properties may carry x-console; other JSON Schema keywords are allowed and left to the meta-schema",
+      "type": "object",
+      "properties": {
+        "type": { "anyOf": [{ "const": "object" }, { "type": "array", "items": { "type": "string" } }] },
+        "required": { "type": "array", "items": { "type": "string" } },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/propertySchema" }
+        },
+        "x-console": { "$ref": "#/$defs/xConsole" }
+      }
+    },
+    "propertySchema": {
+      "description": "One field of a resource: any JSON Schema, with the optional x-console hints the console reads",
+      "type": "object",
+      "properties": {
+        "type": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "examples": { "type": "array" },
+        "enum": { "type": "array" },
+        "readOnly": { "type": "boolean" },
+        "items": { "$ref": "#/$defs/propertySchema" },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/propertySchema" }
+        },
+        "x-console": { "$ref": "#/$defs/xConsole" }
+      }
+    },
+    "xConsole": {
+      "description": "P-06: hints for the console inside a schema field. The platform ignores them at run time and checks them (xConsole.format.unknown, xConsole.mutable.noUpdateWorkflow, xConsole.sensitive.searchable)",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "description": "How the value is shown",
+          "type": "string",
+          "enum": ["bytes", "gibibytes", "duration", "percent", "cost", "date", "wfrn", "code"]
+        },
+        "column": { "description": "Shown as a list column by default", "type": "boolean" },
+        "searchable": { "description": "Indexed for the filter bar and the global search; never together with sensitive", "type": "boolean" },
+        "sensitive": { "description": "Masked, never indexed, never in events", "type": "boolean" },
+        "mutable": { "description": "Editable through the type's update workflow (P-08); needs a published workflow with verb update", "type": "boolean" },
+        "operational": { "description": "P-08: an input of an update workflow that is not a field of the resource (reason, environment)", "type": "boolean" },
+        "group": { "description": "A section on forms and detail pages", "type": "string", "minLength": 1 },
+        "help": { "description": "A link to an info panel", "type": "string", "format": "uri-reference" },
+        "widget": { "description": "The form control", "type": "string", "enum": ["picker", "slider", "code", "key-value"] }
+      }
+    },
+    "console": {
+      "description": "P-06: how the console shows the type; every key is optional and has a default drawn from the schema and the workflows",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "description": "The service page title; the plural, capitalised, when left out", "type": "string", "minLength": 1 },
+        "icon": { "description": "A name from the Atlas icon set; a generic box when left out", "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "list": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "description": "Schema fields and the built-in columns name, status, wfrn, owner, created, updated (check console.column.unknownField)",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" }
+            },
+            "defaultSort": {
+              "description": "A column, with a leading - for descending",
+              "type": "string",
+              "pattern": "^-?[a-zA-Z][a-zA-Z0-9_]*$"
+            }
+          }
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tabs": {
+              "description": "The known tabs, in the order shown (check console.tab.unknown)",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": ["configuration", "drift", "activity", "relationships", "tags", "monitoring", "permissions", "json"]
+              }
+            }
+          }
+        },
+        "lifecycle": {
+          "description": "The type's states mapped to the console's lifecycle classes; by name when left out (checks console.lifecycle.unknownState, console.lifecycle.unknownClass)",
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+          "additionalProperties": { "$ref": "#/$defs/lifecycleClass" }
+        }
+      }
+    },
+    "lifecycleClass": {
+      "type": "string",
+      "enum": ["pending", "active", "updating", "deleting", "deleted", "failed"]
+    },
+    "expression": {
+      "description": "An expression of the platform's ExpressionEngine, usually inside {{ }}, with the roots $resource, $region, $json and $item",
+      "type": "string",
+      "minLength": 1
+    },
+    "expressionInput": {
+      "description": "The input of a provider action: field names to literals or expressions",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "observe": {
+      "description": "P-06: how drift detection reads the truth from the provider (P-09 executes it). The action must be a published provider's action with effect read.",
+      "type": "object",
+      "required": ["provider", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "description": "A published provider (check observe.provider.unknown)", "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "action": { "description": "A read action of the provider (checks observe.action.unknown, observe.action.notRead)", "$ref": "#/$defs/actionId" },
+        "input": { "$ref": "#/$defs/expressionInput" },
+        "map": {
+          "description": "Observed field to the expression over the action's response that yields it; every key is a schema field (check observe.map.unknownField)",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" },
+          "additionalProperties": { "$ref": "#/$defs/expression" }
+        },
+        "ignore": {
+          "description": "Schema fields never compared",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$" }
+        },
+        "interval": {
+          "description": "How often a resource of the type is read on the warm tier; at least 1m (check observe.interval.tooShort). A number with a unit (15m, 1h, 2d) or an ISO 8601 duration (PT15M)",
+          "type": "string",
+          "pattern": "^([0-9]+(s|m|h|d)|P(?!$)([0-9]+D)?(T([0-9]+H)?([0-9]+M)?([0-9]+S)?)?)$"
+        },
+        "notFound": {
+          "description": "What a not_found answer means: missing (the default) or deleted",
+          "type": "string",
+          "enum": ["missing", "deleted"]
+        },
+        "discover": {
+          "description": "Optional: list what the provider has, managed or not (P-09 :discover)",
+          "type": "object",
+          "required": ["action"],
+          "additionalProperties": false,
+          "properties": {
+            "action": { "description": "A read action (check observe.discover.action.notRead)", "$ref": "#/$defs/actionId" },
+            "input": { "$ref": "#/$defs/expressionInput" },
+            "items": { "description": "The expression for the array in the response; $json.items when left out", "$ref": "#/$defs/expression" },
+            "id": { "description": "The expression for one item's provider id; $item.id when left out", "$ref": "#/$defs/expression" }
+          }
+        },
+        "list": {
+          "description": "Optional: a read action that pages, for P-09's :observe-list; a type without it is observed one resource at a time",
+          "type": "object",
+          "required": ["action", "cursor"],
+          "additionalProperties": false,
+          "properties": {
+            "action": { "$ref": "#/$defs/actionId" },
+            "input": { "$ref": "#/$defs/expressionInput" },
+            "items": { "$ref": "#/$defs/expression" },
+            "id": { "$ref": "#/$defs/expression" },
+            "cursor": {
+              "type": "object",
+              "required": ["request", "response"],
+              "additionalProperties": false,
+              "properties": {
+                "request": { "description": "The input field the next cursor goes back in", "type": "string", "minLength": 1 },
+                "response": { "description": "The expression for the next cursor in the response", "$ref": "#/$defs/expression" }
+              }
+            },
+            "pageSize": { "type": "integer", "minimum": 1, "maximum": 500 }
+          }
+        },
+        "metrics": {
+          "description": "Optional: a read action for CPU, memory, disk and similar series (P-09 :metrics); a type without it has no monitoring tab",
+          "type": "object",
+          "required": ["action", "map"],
+          "additionalProperties": false,
+          "properties": {
+            "action": { "$ref": "#/$defs/actionId" },
+            "input": { "$ref": "#/$defs/expressionInput" },
+            "map": {
+              "description": "Series name to the expression over the response",
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "$ref": "#/$defs/expression" }
+            }
+          }
+        }
+      }
+    },
+    "actionId": {
+      "description": "A provider action id, such as vm.get",
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)+$"
+    }
+  }
+}

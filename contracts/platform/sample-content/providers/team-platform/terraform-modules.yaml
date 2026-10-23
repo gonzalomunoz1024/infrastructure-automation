@@ -1,0 +1,49 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: terraform-modules
+  title: Terraform modules
+  owner: team-platform
+  version: 2.3.0
+  description: Load balancers and networks from the shared Terraform modules. State lives in the platform's backend per job.
+spec:
+  type: terraform
+  module: { source: git::https://github.com/acme/tf-modules//lb, version: 2.3.0 }
+  auth: { type: none, credential: vault:terraform/platform }
+  actions:
+    - id: plan
+      title: Plan
+      effect: read
+      retry: safe
+      vars:
+        type: object
+        required: [name, targets]
+        properties:
+          name: { type: string }
+          targets: { type: array, items: { type: string } }
+      sample: { add: 3, change: 0, destroy: 0 }
+    - id: apply
+      title: Apply
+      effect: create
+      retry: unsafe
+      plan: plan
+      vars:
+        type: object
+        required: [name, targets]
+        properties:
+          name: { type: string }
+          targets: { type: array, items: { type: string } }
+      sample: { outputs: { url: "https://{{ $input.name }}.example.com", lbId: "lb-{{ $job.seq }}" }, add: 3, change: 0, destroy: 0 }
+    - id: destroy
+      title: Destroy
+      effect: delete
+      retry: unsafe
+      approval: required
+      vars:
+        type: object
+        required: [name]
+        properties:
+          name: { type: string }
+      sample: { destroy: 3 }
+  slo: { successRate: 98.0, p95Ms: 120000 }
+  alerts: { channel: "#platform-alerts" }

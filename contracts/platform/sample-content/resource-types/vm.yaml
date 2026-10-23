@@ -1,0 +1,19 @@
+apiVersion: iaf.platform/v1
+kind: ResourceType
+metadata:
+  name: vm
+  plural: vms
+  owner: team-compute
+  description: A virtual machine in vSphere.
+schema:
+  type: object
+  required: [name]
+  properties:
+    name: { type: string, examples: [web-01, api-01, web-02, batch-01, cache-01, shop-01] }
+    image: { type: string }
+    cpu: { type: integer, examples: [4, 2] }
+    memoryGb: { type: integer, examples: [16, 8] }
+    environment: { type: string, examples: [prod, dev] }
+    owner: { type: string, examples: [team-compute] }
+states: [building, ready, deprecated, retired]
+producedBy: create-vm
