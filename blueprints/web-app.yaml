@@ -1,0 +1,98 @@
+# A web application in one launch: a hardened image, the server built from it, its database and a
+# data volume on the server. The state service starts the image and the database at once, the server
+# when both are active, the volume when the server is; teardown runs the other way. Only the server's
+# type has a delete workflow in the pinned catalog (delete-vm), so teardown deletes the server and
+# keeps the rest (deletionPolicy: retain) until team-data and team-platform publish theirs.
+apiVersion: iaf.console/v1
+kind: Blueprint
+metadata:
+  name: web-app
+  version: 1.0.0
+  title: Web application
+  description: A hardened image, a web server built from it, its MongoDB database and a data volume on the server, launched and torn down together.
+  owner: team-platform
+  tags: [web, starter]
+spec:
+  parameters:
+    appName:
+      type: string
+      title: Application name
+      description: Names the server, the database and the image
+      pattern: '^[a-z][a-z0-9-]{2,20}$'
+    environment:
+      type: string
+      title: Stage
+      enum: [dev, test, prod]
+      default: dev
+    size:
+      type: string
+      title: Server size
+      enum: [small, medium, large]
+      default: small
+    os:
+      type: string
+      title: Operating system
+      enum: [ubuntu-24.04, rhel-9]
+      default: ubuntu-24.04
+    dbTier:
+      type: string
+      title: Database tier
+      enum: [M10, M30, M60]
+      default: M10
+    dataGb:
+      type: integer
+      title: Data volume (GB)
+      minimum: 10
+      maximum: 4000
+      default: 100
+  resources:
+    image:
+      type: image
+      title: Hardened image
+      input:
+        os: '${params.os}'
+        hardening: cis-l1
+        name: '${params.appName}-image'
+      deletionPolicy: retain   # a golden image outlives the servers built from it
+    database:
+      type: database
+      title: Database
+      input:
+        name: '${params.appName}-db'
+        environment: '${params.environment}'
+        tier: '${params.dbTier}'
+      tags:
+        app: '${params.appName}'
+      deletionPolicy: retain   # no delete workflow for databases yet
+    web:
+      type: vm
+      title: Web server
+      dependsOn: [database]
+      input:
+        name: '${params.appName}-web'
+        image: '${resources.image.registryId}'
+        size: '${params.size}'
+        environment: '${params.environment}'
+      tags:
+        app: '${params.appName}'
+      deleteInput:
+        reason: 'Stack ${stack.name} torn down: ${teardown.reason}'
+    data:
+      type: volume
+      title: Data volume
+      input:
+        vmId: '${resources.web.registryId}'
+        sizeGb: '${params.dataGb}'
+        tier: standard
+      deletionPolicy: retain   # no delete workflow for volumes yet
+  outputs:
+    server:
+      title: Web server
+      value: '${resources.web.wfrn}'
+    database:
+      title: Database
+      value: '${resources.database.wfrn}'
+    image:
+      title: Image
+      description: The image the server was built from
+      value: '${resources.image.attributes.name}'
