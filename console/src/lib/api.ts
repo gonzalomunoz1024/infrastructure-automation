@@ -1,12 +1,14 @@
 import { nextCursorFromLink } from '@iaf/console-kit'
-import { getCurrentUser } from './identity'
 import { parseRegions } from './regions'
-import type { CatalogEntry, Health, JobDetail, JobSummary, Lineage, Me, Page, PlatformEvent, Problem, Region, Resource, ResourceType } from './types'
+import { MOCK, getSession, setSessionState } from './session'
+import type { CatalogEntry, Denial, Health, JobDetail, JobSummary, Lineage, Me, Page, PlatformEvent, Problem, Region, Resource, ResourceType } from './types'
 
 /*
- * The console's API client: fetch with a traceparent on every call, the X-User dev header,
- * JSON errors turned into a typed ApiError, an ETag cache for the descriptors (resource types,
- * catalog, regions) persisted in localStorage, and cursor paging for lists (P-05).
+ * The console's API client: fetch with a traceparent on every call, the session's identity on
+ * every request (X-User for the platform's own endpoints, X-Csrf-Token on every write to the
+ * BFF), JSON errors turned into a typed ApiError that carries the Denial of a refusal, an ETag
+ * cache for the descriptors (resource types, catalog, regions) persisted in localStorage, and
+ * cursor paging for lists (P-05). A 401 from the BFF signs the browser out.
  */
 
 export const API_BASE = '/api/v1'
@@ -24,10 +26,16 @@ export interface ApiErrorBody {
   correlationId?: string
   /** a 429's wait in seconds */
   retryAfter?: number
+  /** a 403's refusal: who decided, and whether access can be requested */
+  denied?: Denial
   [key: string]: unknown
 }
 
-/** Every failed call throws one of these; status 0 means the platform did not answer. */
+function isDenial(v: unknown): v is Denial {
+  return !!v && typeof v === 'object' && typeof (v as Denial).layer === 'string' && typeof (v as Denial).action === 'string'
+}
+
+/** Every failed call throws one of these; status 0 means the backend did not answer. */
 export class ApiError extends Error {
   readonly status: number
   readonly error: string
@@ -36,6 +44,8 @@ export class ApiError extends Error {
   readonly body: ApiErrorBody | null
   readonly retryAfter?: number
   readonly correlationId?: string
+  /** the refusal a 403 carried */
+  readonly denied?: Denial
   /** the traceparent the failed request carried */
   readonly traceparent?: string
 
@@ -50,6 +60,7 @@ export class ApiError extends Error {
     this.body = body
     this.retryAfter = retryAfter ?? (typeof body?.retryAfter === 'number' ? body.retryAfter : undefined)
     this.correlationId = typeof body?.correlationId === 'string' && body.correlationId ? body.correlationId : undefined
+    this.denied = isDenial(body?.denied) ? body.denied : undefined
     this.traceparent = trace
   }
 
@@ -63,6 +74,17 @@ export class ApiError extends Error {
 
   get unauthorized(): boolean {
     return this.status === 401 || this.status === 403
+  }
+
+  get forbidden(): boolean {
+    return this.status === 403
+  }
+
+  /** The sign-in URL a 403 asks the browser to visit before a sensitive action (step-up). */
+  get stepUp(): string | null {
+    if (this.status !== 403 || this.error !== 'step-up.required') return null
+    const login = (this.detail as { login?: unknown } | undefined)?.login
+    return typeof login === 'string' && login.startsWith('/') ? login : null
   }
 }
 
@@ -116,16 +138,26 @@ export function qs(params?: QueryParams): string {
 
 const enc = encodeURIComponent
 
+/** The BFF's own paths: the session, the console API, sign-in and the demo identity provider. */
+export function isBffPath(path: string): boolean {
+  return path.startsWith('/console/') || path.startsWith('/auth/') || path.startsWith('/demo-idp/')
+}
+
 export function resolveUrl(path: string): string {
-  if (/^https?:\/\//.test(path) || path.startsWith('/api/') || path.startsWith('/actuator')) return path
+  if (/^https?:\/\//.test(path) || path.startsWith('/api/') || path.startsWith('/actuator') || isBffPath(path)) return path
   return `${API_BASE}${path}`
 }
 
-/** Accept, traceparent, X-User (when a dev user is chosen) and anything extra. */
-export function requestHeaders(extra?: Record<string, string>): Record<string, string> {
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/** Accept, traceparent, the session's user as X-User, the CSRF token on writes, and anything extra. */
+export function requestHeaders(extra?: Record<string, string>, method = 'GET'): Record<string, string> {
   const h: Record<string, string> = { Accept: 'application/json', traceparent: traceparent() }
-  const user = getCurrentUser()
-  if (user) h['X-User'] = user
+  const session = getSession()
+  if (session) {
+    h['X-User'] = session.user.userId
+    if (!SAFE_METHODS.has(method.toUpperCase())) h['X-Csrf-Token'] = session.csrfToken
+  }
   return { ...h, ...extra }
 }
 
@@ -134,7 +166,7 @@ export interface RequestOptions {
   headers?: Record<string, string>
 }
 
-async function fail(res: Response, trace?: string): Promise<never> {
+async function fail(res: Response, trace: string | undefined, path: string): Promise<never> {
   let body: ApiErrorBody | null
   try {
     body = (await res.json()) as ApiErrorBody
@@ -147,11 +179,17 @@ async function fail(res: Response, trace?: string): Promise<never> {
   } catch {
     retryAfter = undefined
   }
-  throw new ApiError(res.status, body, res.statusText || undefined, retryAfter, trace)
+  const error = new ApiError(res.status, body, res.statusText || undefined, retryAfter, trace)
+  // the BFF says the session is gone: back to the door, remembering nothing but the route
+  if (res.status === 401 && isBffPath(path) && getSession()) setSessionState({ status: 'signed-out', session: null })
+  // a sensitive action wants a fresh sign-in: the BFF names the door to use
+  const stepUp = error.stepUp
+  if (stepUp && !MOCK && typeof window !== 'undefined') window.location.assign(stepUp)
+  throw error
 }
 
 async function send(method: string, path: string, body: unknown, opts: RequestOptions): Promise<{ res: Response; trace: string }> {
-  const headers = requestHeaders({ ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...opts.headers })
+  const headers = requestHeaders({ ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...opts.headers }, method)
   const trace = headers.traceparent
   try {
     const res = await fetch(resolveUrl(path), {
@@ -159,6 +197,7 @@ async function send(method: string, path: string, body: unknown, opts: RequestOp
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: opts.signal,
+      credentials: 'same-origin',
     })
     return { res, trace }
   } catch (e) {
@@ -181,11 +220,11 @@ async function parseBody<T>(res: Response): Promise<T> {
 /** JSON in, JSON out; throws ApiError on anything but 2xx. */
 export async function request<T>(method: string, path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
   const { res, trace } = await send(method, path, body, opts)
-  if (!res.ok) return fail(res, trace)
+  if (!res.ok) return fail(res, trace, path)
   return parseBody<T>(res)
 }
 
-const get = <T>(path: string, opts?: RequestOptions) => request<T>('GET', path, undefined, opts)
+export const get = <T>(path: string, opts?: RequestOptions) => request<T>('GET', path, undefined, opts)
 
 /* ----------------------------------------------------------------------------
    The descriptor cache: ETag revalidation, persisted in localStorage
@@ -249,7 +288,7 @@ export async function cachedGet<T>(path: string, opts: RequestOptions = {}): Pro
   if (res.status === 304 && cached) return cached.body
   if (!res.ok) {
     if (cached && res.status >= 500) return cached.body
-    return fail(res, trace)
+    return fail(res, trace, path)
   }
   const body = await parseBody<T>(res)
   writeCache(path, { etag: res.headers.get('ETag'), body, at: Date.now() })
@@ -257,12 +296,13 @@ export async function cachedGet<T>(path: string, opts: RequestOptions = {}): Pro
 }
 
 /* ----------------------------------------------------------------------------
-   Paging (P-05): `limit` and `after`; the body is the rows, the next cursor rides the Link header
+   Paging (P-05): `limit` and `after`; the body is the rows, or {items, next}; the next cursor
+   may also ride the Link header
    ------------------------------------------------------------------------- */
 
 export async function page<T>(path: string, params?: QueryParams, opts: RequestOptions = {}): Promise<Page<T>> {
   const { res, trace } = await send('GET', `${path}${qs(params)}`, undefined, opts)
-  if (!res.ok) return fail(res, trace)
+  if (!res.ok) return fail(res, trace, path)
   const body = await parseBody<T[] | { items?: T[]; next?: string | null } | undefined>(res)
   const items = Array.isArray(body) ? body : (body?.items ?? [])
   const fromBody = !Array.isArray(body) && typeof body?.next === 'string' && body.next ? body.next : null
@@ -270,7 +310,7 @@ export async function page<T>(path: string, params?: QueryParams, opts: RequestO
 }
 
 /* ----------------------------------------------------------------------------
-   The client
+   The platform client (/api/v1): what the BFF does not serve yet
    ------------------------------------------------------------------------- */
 
 export interface ListParams extends QueryParams {
@@ -279,7 +319,7 @@ export interface ListParams extends QueryParams {
 }
 
 export const api = {
-  /* identity */
+  /* the platform's own identity call: who the X-User header names */
   me: () => get<Me>('/me'),
 
   /* descriptors, cached by ETag */

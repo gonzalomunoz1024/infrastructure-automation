@@ -1,11 +1,17 @@
-import type { JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
+import { serviceOf } from '../lib/descriptors'
+import type { Session } from '../lib/session'
+import type { AccessKey, AccessRequest, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
+import { DirectoryError, accessKeyOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, isMember, membershipsOf, personOf, quotasOf, removeGroup, removeUser, revokeAccessKey, rotateAccessKey, updateGroup, updateUser, userOf, usersOf, type Decision } from './directory'
 
 /*
- * The platform's read endpoints answered from the dataset, as a pure function of the request so
- * the unit tests can call it and the browser can serve it through a fetch interceptor. It speaks
- * the contracts the console codes against: ETags on the descriptors (304 on If-None-Match),
- * cursor paging with a Link header (P-05), regions (P-07), the events log (section 11).
+ * The backends answered from the dataset, as a pure function of the request so the unit tests
+ * can call it and the browser can serve it through a fetch interceptor. It speaks two contracts:
+ * the platform's read endpoints under /api/v1 (ETags on the descriptors, cursor paging with a
+ * Link header, regions, the events log) and the BFF's under /auth and /console/v1 (the session
+ * behind a cookie the mock keeps in its session store, the CSRF token on every write, the
+ * accounts and regions, the types with their decisions, the identity service's resources under
+ * /console/v1/iam, and access requests). A refusal answers 403 with the Denial block.
  */
 
 export interface MockRequest {
@@ -14,6 +20,8 @@ export interface MockRequest {
   url: string
   /** header names in lower case */
   headers: Record<string, string>
+  /** a write's JSON body */
+  body?: unknown
 }
 
 export interface MockResponse {
@@ -22,10 +30,37 @@ export interface MockResponse {
   headers?: Record<string, string>
 }
 
+/** What the BFF keeps behind the console_session cookie. */
+export interface MockSession {
+  userId: string
+  accountId: string
+  region: string
+  authTime: string
+}
+
+export interface MockSessionStore {
+  get: () => MockSession | null
+  set: (next: MockSession | null) => void
+}
+
+export function memorySessionStore(initial: MockSession | null = null): MockSessionStore {
+  let current = initial
+  return {
+    get: () => current,
+    set: (next) => {
+      current = next
+    },
+  }
+}
+
 export interface MockServer {
   data: MockData
+  sessions: MockSessionStore
   handle: (req: MockRequest) => MockResponse
 }
+
+export const SESSION_TTL_MS = 8 * 3_600_000
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 function hash(s: string): string {
   let h = 5381
@@ -46,6 +81,10 @@ export function cursorOf(index: number): string {
   return `c${index}`
 }
 
+export function csrfTokenOf(userId: string): string {
+  return `mock-csrf-${userId}`
+}
+
 function paged<T>(items: T[], path: string, params: URLSearchParams): MockResponse {
   const limit = Math.min(500, Math.max(1, Number(params.get('limit') ?? 50) || 50))
   const start = parseCursor(params.get('after'))
@@ -57,6 +96,14 @@ function paged<T>(items: T[], path: string, params: URLSearchParams): MockRespon
     headers.Link = `<${path}?${next.toString()}>; rel="next"`
   }
   return { status: 200, body: items.slice(start, start + limit), headers }
+}
+
+/** The BFF's page shape: { items, next }. */
+function pagedBody<T>(items: T[], params: URLSearchParams): MockResponse {
+  const limit = Math.min(200, Math.max(1, Number(params.get('limit') ?? 50) || 50))
+  const start = parseCursor(params.get('after'))
+  const slice = items.slice(start, start + limit)
+  return { status: 200, body: { items: slice, next: start + limit < items.length ? cursorOf(start + limit) : null }, headers: { 'X-Total-Count': String(items.length) } }
 }
 
 function notFound(what: string): MockResponse {
@@ -134,15 +181,319 @@ export function stepsOf(job: JobSummary): JobStep[] {
   return steps
 }
 
-export function createMockServer(data: MockData = buildMockData()): MockServer {
+function bodyOf(req: MockRequest): Record<string, unknown> {
+  const b = req.body
+  if (b && typeof b === 'object') return b as Record<string, unknown>
+  if (typeof b === 'string' && b.trim()) {
+    try {
+      const parsed = JSON.parse(b) as unknown
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function strings(v: unknown): string[] | undefined {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+
+/** A refusal as the BFF answers it: 403 with the Denial block. */
+function refused(decision: Decision): MockResponse {
+  return { status: 403, body: { error: decision.denied?.reason ?? 'Forbidden', denied: decision.denied, correlationId: `mock-${hash(JSON.stringify(decision.denied ?? {}))}` } }
+}
+
+export function createMockServer(data: MockData = buildMockData(), sessions: MockSessionStore = memorySessionStore(), now: () => number = Date.now): MockServer {
   const plurals = new Map(data.resourceTypes.map((t) => [t.plural, t.name]))
+  const dir = data.directory
+
+  const currentSession = (): MockSession | null => {
+    const s = sessions.get()
+    if (!s) return null
+    if (now() - Date.parse(s.authTime) > SESSION_TTL_MS || !personOf(dir, s.userId) || !isMember(dir, s.accountId, s.userId)) {
+      sessions.set(null)
+      return null
+    }
+    return s
+  }
+
+  const sessionBody = (s: MockSession): Session => {
+    const person = personOf(dir, s.userId)!
+    const account = accountSummaryFor(dir, s.accountId, s.userId)
+    return {
+      user: { userId: person.id, email: person.email, name: person.name, groups: account.groups },
+      account,
+      region: s.region,
+      csrfToken: csrfTokenOf(person.id),
+      expiresAt: new Date(Date.parse(s.authTime) + SESSION_TTL_MS).toISOString(),
+      authTime: s.authTime,
+    }
+  }
+
+  const login = (params: URLSearchParams): MockResponse => {
+    const hint = params.get('login_hint')
+    if (!hint) return { status: 400, body: { error: 'login_hint.required', detail: 'The mock identity provider signs a known person in: add login_hint=<person>; GET /demo-idp/people lists them.' } }
+    const person = personOf(dir, hint)
+    if (!person) return { status: 400, body: { error: `The identity provider knows nobody called ${hint}` } }
+    const memberships = membershipsOf(dir, person.id)
+    if (!memberships.length) return { status: 403, body: { error: `${person.name} belongs to no account` } }
+    const previous = sessions.get()
+    const keep = previous && previous.userId === person.id && memberships.some((m) => m.accountId === previous.accountId) ? previous.accountId : memberships[0].accountId
+    sessions.set({ userId: person.id, accountId: keep, region: data.regionName, authTime: new Date(now()).toISOString() })
+    return { status: 200, body: { returnTo: params.get('returnTo') ?? '/' } }
+  }
+
+  /** Every type with the decision for each of its verbs, for this person in this account and region. */
+  const consoleTypes = (s: MockSession): BffConsoleType[] => {
+    const ctx = { accountId: s.accountId, userId: s.userId }
+    return data.resourceTypes.map((rt) => {
+      const service = serviceOf(rt)
+      const pattern = `wfrn:${data.partition}:${service}:${s.region}:${s.accountId}:${rt.name}/*`
+      const entries = data.catalog.filter((e) => e.noun === rt.name)
+      const fromCatalog: BffConsoleAction[] = entries.map((e) => ({ verb: e.verb, title: e.title, description: e.description, method: e.method, destructive: e.destructive ?? e.verb === 'delete', approval: typeof e.approval === 'object' ? !!e.approval.required : !!e.approval, bulk: !!e.batchPath, preview: !!e.previewPath, effect: e.verb === 'create' ? 'create' : e.verb === 'delete' ? 'delete' : 'change', workflow: e.workflow, version: e.version }))
+      const noun = (rt.console?.title ?? rt.plural).replace(/s$/, '').toLowerCase()
+      const standard: BffConsoleAction[] = [
+        { verb: 'list', title: `List ${rt.plural}`, method: 'GET', effect: 'read', destructive: false, approval: false, bulk: false, preview: false },
+        { verb: 'get', title: `View a ${noun}`, method: 'GET', effect: 'read', destructive: false, approval: false, bulk: false, preview: false },
+        { verb: 'create', title: `Create ${noun}`, method: 'POST', effect: 'create', destructive: false, approval: false, bulk: false, preview: false },
+        { verb: 'update', title: `Update ${noun}`, method: 'PATCH', effect: 'change', destructive: false, approval: false, bulk: false, preview: false },
+        { verb: 'delete', title: `Delete ${noun}`, method: 'DELETE', effect: 'delete', destructive: true, approval: false, bulk: false, preview: false },
+      ]
+      const actions = [...standard.filter((a) => !fromCatalog.some((c) => c.verb === a.verb)), ...fromCatalog].map((a) => {
+        const d = authorize(dir, ctx, `${service}:${a.verb}`, pattern)
+        return { ...a, allowed: d.allowed, denied: d.denied }
+      })
+      const type: BffConsoleType = { key: `${service}/${rt.name}`, type: rt.name, service, plural: rt.plural, title: rt.console?.title ?? rt.plural, actions, etag: '' }
+      type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId })
+      return type
+    })
+  }
+
+  const iamPattern = (accountId: string, kind: string) => `wfrn:${data.partition}:iam:${data.regionName}:${accountId}:${kind}/*`
+
+  const consoleRoutes = (req: MockRequest, s: MockSession, path: string, params: URLSearchParams, method: string): MockResponse => {
+    const ctx = { accountId: s.accountId, userId: s.userId }
+    const can = (action: string, resource: string) => authorize(dir, ctx, action, resource)
+    const body = bodyOf(req)
+    const ifMatch = req.headers['if-match'] ? Number(req.headers['if-match']) : undefined
+    const me = userOf(dir, s.accountId, s.userId)!
+
+    if (path === '/console/v1/session') {
+      if (method === 'GET') return { status: 200, body: sessionBody(s) }
+      if (method === 'PUT') {
+        const accountId = str(body.accountId)
+        const region = str(body.region)
+        if (accountId && !isMember(dir, accountId, s.userId)) return { status: 404, body: { error: `You are not a member of account ${accountId}` } }
+        if (region && region !== data.regionName) return { status: 400, body: { error: `No region ${region}; the platform serves ${data.regionName}` } }
+        const next: MockSession = { ...s, accountId: accountId ?? s.accountId, region: region ?? s.region }
+        sessions.set(next)
+        return { status: 200, body: sessionBody(next) }
+      }
+      return { status: 405, body: { error: `${method} is not allowed on the session` } }
+    }
+    if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId), next: null } }
+    if (path === '/console/v1/regions') return { status: 200, body: { items: [{ name: data.regionName, title: 'Global', status: 'available', environments: ['dev', 'test', 'prod'], types: data.resourceTypes.map((t) => t.name) }], next: null } }
+
+    if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, consoleTypes(s), req)
+    let m = /^\/console\/v1\/types\/([^/]+)$/.exec(path)
+    if (m) {
+      const key = decodeURIComponent(m[1])
+      const t = consoleTypes(s).find((x) => x.key === key || x.type === key)
+      return t ? { status: 200, body: t, headers: { ETag: t.etag ?? '' } } : notFound(`Type ${key}`)
+    }
+
+    /* identity and access */
+    const q = params.get('q')?.toLowerCase()
+    if (path === '/console/v1/iam/users') {
+      if (method === 'GET') {
+        const d = can('iam:list', iamPattern(s.accountId, 'user'))
+        if (!d.allowed) return refused(d)
+        return pagedBody(
+          usersOf(dir, s.accountId).filter((u) => !q || `${u.userId} ${u.email} ${u.name ?? ''} ${(u.groups ?? []).join(' ')}`.toLowerCase().includes(q)),
+          params,
+        )
+      }
+      if (method === 'POST') {
+        const d = can('iam:create', iamPattern(s.accountId, 'user'))
+        if (!d.allowed) return refused(d)
+        return { status: 201, body: addUser(dir, s.accountId, { userId: str(body.userId), email: str(body.email), name: str(body.name), groups: strings(body.groups) }) }
+      }
+    }
+    m = /^\/console\/v1\/iam\/users\/([^/]+)$/.exec(path)
+    if (m) {
+      const userId = decodeURIComponent(m[1])
+      if (method === 'GET') {
+        const u = userOf(dir, s.accountId, userId)
+        return u ? { status: 200, body: u, headers: { ETag: String(u.version) } } : notFound(`User ${userId}`)
+      }
+      if (method === 'PATCH') {
+        const d = can('iam:update', iamPattern(s.accountId, 'user'))
+        if (!d.allowed) return refused(d)
+        return { status: 200, body: updateUser(dir, s.accountId, userId, { groups: strings(body.groups) }, ifMatch) }
+      }
+      if (method === 'DELETE') {
+        const d = can('iam:delete', iamPattern(s.accountId, 'user'))
+        if (!d.allowed) return refused(d)
+        removeUser(dir, s.accountId, userId)
+        return { status: 204 }
+      }
+    }
+    if (path === '/console/v1/iam/groups') {
+      if (method === 'GET') return pagedBody((dir.groups[s.accountId] ?? []).filter((g) => !q || `${g.name} ${g.description ?? ''} ${(g.roles ?? []).join(' ')}`.toLowerCase().includes(q)), params)
+      if (method === 'POST') {
+        const d = can('iam:create', iamPattern(s.accountId, 'group'))
+        if (!d.allowed) return refused(d)
+        return { status: 201, body: createGroup(dir, s.accountId, body as IamGroupInput) }
+      }
+    }
+    m = /^\/console\/v1\/iam\/groups\/([^/]+)$/.exec(path)
+    if (m) {
+      const groupId = decodeURIComponent(m[1])
+      const g = (dir.groups[s.accountId] ?? []).find((x) => x.groupId === groupId || x.name === groupId)
+      if (method === 'GET') return g ? { status: 200, body: g, headers: { ETag: String(g.version) } } : notFound(`Group ${groupId}`)
+      if (method === 'PATCH') {
+        const d = can('iam:update', iamPattern(s.accountId, 'group'))
+        if (!d.allowed) return refused(d)
+        return { status: 200, body: updateGroup(dir, s.accountId, groupId, body as IamGroupInput, ifMatch) }
+      }
+      if (method === 'DELETE') {
+        const d = can('iam:delete', iamPattern(s.accountId, 'group'))
+        if (!d.allowed) return refused(d)
+        removeGroup(dir, s.accountId, groupId)
+        return { status: 204 }
+      }
+    }
+    if (path === '/console/v1/iam/roles' && method === 'GET') return pagedBody(dir.roles, params)
+    m = /^\/console\/v1\/iam\/roles\/([^/]+)$/.exec(path)
+    if (m && method === 'GET') {
+      const id = decodeURIComponent(m[1])
+      const r = dir.roles.find((x) => x.roleId === id || x.name === id)
+      return r ? { status: 200, body: r } : notFound(`Role ${id}`)
+    }
+    if (path === '/console/v1/iam/policies' && method === 'GET') return pagedBody(dir.policies, params)
+    m = /^\/console\/v1\/iam\/policies\/([^/]+)$/.exec(path)
+    if (m && method === 'GET') {
+      const id = decodeURIComponent(m[1])
+      const p = dir.policies.find((x) => x.policyId === id || x.name === id)
+      return p ? { status: 200, body: p } : notFound(`Policy ${id}`)
+    }
+    if (path === '/console/v1/iam/access-keys') {
+      const manageAll = can('iam:update', iamPattern(s.accountId, 'access-key')).allowed
+      if (method === 'GET') {
+        const wanted = params.get('userId')
+        const keys = (dir.accessKeys[s.accountId] ?? []).filter((k) => (manageAll ? !wanted || k.userId === wanted : k.userId === s.userId))
+        return pagedBody(keys, params)
+      }
+      if (method === 'POST') {
+        const forUser = str(body.userId) ?? s.userId
+        const d = forUser === s.userId ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:create', iamPattern(s.accountId, 'access-key'))
+        if (!d.allowed) return refused(d)
+        return { status: 201, body: createAccessKey(dir, s.accountId, forUser, { description: str(body.description), expiresAt: str(body.expiresAt) }, now()) }
+      }
+    }
+    m = /^\/console\/v1\/iam\/access-keys\/([^/:]+)(?::(rotate))?$/.exec(path)
+    if (m) {
+      const keyId = decodeURIComponent(m[1])
+      const key: AccessKey | undefined = accessKeyOf(dir, s.accountId, keyId)
+      if (!key) return notFound(`Access key ${keyId}`)
+      const own = key.userId === s.userId
+      if (method === 'GET' && !m[2]) {
+        if (!own && !can('iam:update', iamPattern(s.accountId, 'access-key')).allowed) return notFound(`Access key ${keyId}`)
+        return { status: 200, body: key }
+      }
+      if (method === 'DELETE' && !m[2]) {
+        const d = own ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:delete', iamPattern(s.accountId, 'access-key'))
+        if (!d.allowed) return refused(d)
+        revokeAccessKey(dir, s.accountId, keyId)
+        return { status: 204 }
+      }
+      if (method === 'POST' && m[2] === 'rotate') {
+        const d = own ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:update', iamPattern(s.accountId, 'access-key'))
+        if (!d.allowed) return refused(d)
+        return { status: 200, body: rotateAccessKey(dir, s.accountId, keyId, now()) }
+      }
+    }
+    if (path === '/console/v1/iam/quotas' && method === 'GET') {
+      const counts: Record<string, number> = {}
+      for (const rt of data.resourceTypes) counts[rt.name] = data.resources.filter((r) => r.type === rt.name && (!r.accountId || r.accountId === s.accountId)).length
+      return pagedBody(quotasOf(dir, s.accountId, counts), params)
+    }
+
+    /* access requests */
+    if (path === '/console/v1/access-requests') {
+      const all = accessRequestsOf(dir, s.accountId)
+      const status = params.get('status')
+      if (method === 'GET') {
+        const scope = params.get('scope') ?? 'mine'
+        let items: AccessRequest[]
+        if (scope === 'account') {
+          const d = can('iam:decide', iamPattern(s.accountId, 'access-request'))
+          if (!d.allowed) return refused(d)
+          items = all
+        } else {
+          items = all.filter((r) => r.requester.userId === s.userId)
+        }
+        return pagedBody(items.filter((r) => !status || r.status === status), params)
+      }
+      if (method === 'POST') {
+        const input: AccessRequestInput = { action: str(body.action) ?? '', resource: str(body.resource), role: str(body.role), reason: str(body.reason) ?? '', layer: body.layer === 'platform' ? 'platform' : 'console-iam' }
+        return { status: 202, body: createAccessRequest(dir, s.accountId, me, input, now()) }
+      }
+    }
+    m = /^\/console\/v1\/access-requests\/([^/:]+)(?::(decide))?$/.exec(path)
+    if (m) {
+      const requestId = decodeURIComponent(m[1])
+      const request = accessRequestsOf(dir, s.accountId).find((r) => r.requestId === requestId)
+      if (!request) return notFound(`Access request ${requestId}`)
+      if (method === 'GET' && !m[2]) {
+        if (request.requester.userId !== s.userId && !can('iam:decide', iamPattern(s.accountId, 'access-request')).allowed) return notFound(`Access request ${requestId}`)
+        return { status: 200, body: request }
+      }
+      if (method === 'POST' && m[2] === 'decide') {
+        const d = can('iam:decide', iamPattern(s.accountId, 'access-request'))
+        if (!d.allowed) return refused(d)
+        const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' ? 'reject' : null
+        if (!decision) return { status: 400, body: { error: 'decision is approve or reject' } }
+        return { status: 202, body: decideAccessRequest(dir, s.accountId, requestId, decision, s.userId, str(body.comment), now()) }
+      }
+    }
+
+    if (path.startsWith('/console/v1/r/') || path === '/console/v1/jobs' || path.startsWith('/console/v1/jobs/')) return { status: 404, body: { error: `${path} is not served by the mock yet: the console reads resources and jobs from /api/v1 until phase 3` } }
+    return notFound(`Path ${path}`)
+  }
 
   const handle = (req: MockRequest): MockResponse => {
     const url = new URL(req.url, 'http://mock.local')
     const path = url.pathname.replace(/\/+$/, '') || '/'
     const params = url.searchParams
     const method = req.method.toUpperCase()
-    if (method !== 'GET' && method !== 'HEAD') return { status: 405, body: { error: `${method} is not served by the mock; write operations arrive with phase 3` } }
+
+    /* the demo identity provider and the BFF */
+    if (path === '/demo-idp/people' && method === 'GET') return { status: 200, body: { items: demoPeople(dir), next: null } }
+    if (path === '/auth/login' && method === 'GET') return login(params)
+    if (path === '/auth/logout' && method === 'POST') {
+      sessions.set(null)
+      return { status: 204 }
+    }
+    if (path.startsWith('/console/')) {
+      const s = currentSession()
+      if (!s) return { status: 401, body: { error: 'Not signed in' } }
+      if (!SAFE_METHODS.has(method) && req.headers['x-csrf-token'] !== csrfTokenOf(s.userId)) return { status: 403, body: { error: 'csrf.missing', detail: 'Every write carries the session\'s csrfToken as X-Csrf-Token' } }
+      try {
+        return consoleRoutes(req, s, path, params, method)
+      } catch (e) {
+        if (e instanceof DirectoryError) return { status: e.status, body: { error: e.message } }
+        throw e
+      }
+    }
+
+    /* the platform */
+    if (method !== 'GET' && method !== 'HEAD') return { status: 405, body: { error: `${method} is not served by the mock on the platform's endpoints; changes go through the BFF from phase 3` } }
 
     if (path === '/actuator/health') return { status: 200, body: { status: 'UP', components: { db: { status: 'UP' }, events: { status: 'UP' } } } }
     if (path === '/actuator/info') return { status: 200, body: { build: { version: 'platform-fake', commit: 'c9529d5' } } }
@@ -215,8 +566,8 @@ export function createMockServer(data: MockData = buildMockData()): MockServer {
     return notFound(`Path ${path}`)
   }
 
-  return { data, handle }
+  return { data, sessions, handle }
 }
 
 export { nextMockEvent }
-export type { PlatformEvent }
+export type { PlatformEvent, IamUser }

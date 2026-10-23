@@ -24,6 +24,11 @@ export function Search({ onClose }: { onClose: () => void }) {
       { id: 'page-home', group: 'Pages', label: 'Console home', icon: 'home', run: () => navigate(pathFor('home')) },
       { id: 'page-requests', group: 'Pages', label: 'Requests', icon: 'job', keywords: 'jobs runs', run: () => navigate(pathFor('requests')) },
       { id: 'page-iam', group: 'Pages', label: 'Identity and access', icon: 'shield', keywords: 'iam roles permissions', run: () => navigate(pathFor('iam')) },
+      { id: 'page-iam-users', group: 'Pages', label: 'Users', icon: 'users', keywords: 'iam people members', run: () => navigate(pathFor('iam-users')) },
+      { id: 'page-iam-groups', group: 'Pages', label: 'Groups', icon: 'users', keywords: 'iam teams roles', run: () => navigate(pathFor('iam-groups')) },
+      { id: 'page-iam-roles', group: 'Pages', label: 'Roles', icon: 'shield', keywords: 'iam managed policies statements', run: () => navigate(pathFor('iam-roles')) },
+      { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
+      { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'appearance theme identity', run: () => navigate(pathFor('settings')) },
     )
     return out

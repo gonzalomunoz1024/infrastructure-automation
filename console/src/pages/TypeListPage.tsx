@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button, EmptyState, Icon, IconButton, PageHeader, cx, plural } from '@iaf/ui'
 import { CursorPager, DEFAULT_OPERATORS, ErrorState, LifecycleBadge, NUMERIC_OPERATORS, PropertyFilterBar, VirtualTable, WfrnText, applyFilters, formatField, useCursorPaging, type CellValue, type FilterProperty, type FilterToken, type VirtualColumn, type VirtualSort } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
-import { LaterButton } from '../app/Phase'
+import { ActionButton } from '../app/Refusal'
 import { navigate, pathFor, resourcePath, type PageProps } from '../app/router'
 import { api } from '../lib/api'
 import { capitalise, purposeOf, singularOf, wfrnOf, type ConsoleType, type WfrnContext } from '../lib/descriptors'
+import type { Decision } from '../lib/permissions'
 import { useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
 import type { Resource, Schema } from '../lib/types'
@@ -120,19 +121,19 @@ function fieldValue(row: Row, property: string | null): unknown {
 }
 
 export default function TypeListPage({ route }: PageProps) {
-  const { loading, error, refetch, wfrnContext } = useConsole()
+  const { loading, error, refetch, wfrnContext, decide, account } = useConsole()
   const type = useRouteType(route.params.service, route.params.type)
   if (!type) return <MissingType name={route.params.type} service={route.params.service} loading={loading} error={error} refetch={refetch} />
-  return <TypeList key={`${type.service}/${type.name}`} type={type} wfrnContext={wfrnContext} />
+  return <TypeList key={`${type.service}/${type.name}/${account.id}`} type={type} wfrnContext={wfrnContext} create={decide(type, 'create')} accountId={account.id} />
 }
 
-function TypeList({ type, wfrnContext }: { type: ConsoleType; wfrnContext: WfrnContext }) {
+function TypeList({ type, wfrnContext, create, accountId }: { type: ConsoleType; wfrnContext: WfrnContext; create: Decision; accountId: string }) {
   const paging = useCursorPaging()
   const [pageSize, setPageSize] = useState(50)
   const [tokens, setTokens] = useState<FilterToken[]>([])
   const [sort, setSort] = useState<VirtualSort>({ key: type.defaultSort, dir: type.defaultSortDir })
   const server = useMemo(() => serverParamsOf(tokens), [tokens])
-  const list = useQuery(['resources', type.plural, { limit: pageSize, after: paging.after ?? null, ...server }], () => api.resourcesOf(type.plural, { limit: pageSize, after: paging.after, ...server }))
+  const list = useQuery(['resources', type.plural, { limit: pageSize, after: paging.after ?? null, accountId, ...server }], () => api.resourcesOf(type.plural, { limit: pageSize, after: paging.after, accountId, ...server }))
 
   useEffect(() => {
     pushRecent({ kind: 'type', href: pathFor('type', { service: type.service, type: type.name }), label: type.title, hint: `${capitalise(type.service)} · resource type` })
@@ -152,6 +153,7 @@ function TypeList({ type, wfrnContext }: { type: ConsoleType; wfrnContext: WfrnC
   const anyDerived = rows.some((r) => r.derived)
   const lower = type.title.toLowerCase()
   const noun = singularOf(type.title).toLowerCase()
+  const createTitle = type.create?.title ?? `Create ${noun}`
 
   const onTokens = (next: FilterToken[]) => {
     setTokens(next)
@@ -179,9 +181,9 @@ function TypeList({ type, wfrnContext }: { type: ConsoleType; wfrnContext: WfrnC
       title={`No ${lower} yet`}
       message={purposeOf(type)}
       action={
-        <LaterButton phase={3} size="sm" variant="primary" icon="plus">
+        <ActionButton decision={create} what={createTitle} phase={3} size="sm" variant="primary" icon="plus">
           Create your first one
-        </LaterButton>
+        </ActionButton>
       }
     />
   )
@@ -197,9 +199,9 @@ function TypeList({ type, wfrnContext }: { type: ConsoleType; wfrnContext: WfrnC
             <IconButton label="Refresh the list" onClick={() => void list.refetch()}>
               <Icon name="refresh" size={16} className={cx(list.fetching && 'animate-spin')} />
             </IconButton>
-            <LaterButton phase={3} variant="primary" icon="plus">
-              {type.create?.title ?? `Create ${noun}`}
-            </LaterButton>
+            <ActionButton decision={create} what={createTitle} phase={3} variant="primary" icon="plus">
+              {createTitle}
+            </ActionButton>
           </>
         }
       />

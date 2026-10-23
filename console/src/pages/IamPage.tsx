@@ -1,69 +1,115 @@
-import { Card, Icon, PageHeader, Tag, type IconName } from '@iaf/ui'
-import { Facts } from '@iaf/console-kit'
+import { useMemo } from 'react'
+import { Card, Icon, PageHeader, Stat, type IconName } from '@iaf/ui'
+import { DotTag, Facts } from '@iaf/console-kit'
+import { usePendingAccessRequests } from '../app/access'
 import { useConsole } from '../app/console'
 import { PHASES } from '../app/Phase'
-import type { PageProps } from '../app/router'
+import { Link, pathFor, type PageProps, type RouteName } from '../app/router'
+import { formatAccountId } from '../lib/accounts'
+import { bff } from '../lib/bff'
+import { layerDescription } from '../lib/permissions'
+import { useQuery } from '../lib/queries'
+import { MANAGED_ROLES, ROLE_SUMMARY, roleTone } from '../lib/session'
+import { GroupLinks, RoleTags, personLabel, rolesFromGroups } from './iam/common'
 
 /*
- * Identity and access: who you are to the console, and the managed roles phase 2 brings. The
- * roles are listed now so teams can plan around them; nothing here grants anything yet.
+ * Identity and access, the overview: who you are in this account, what is in it (people, groups,
+ * keys, requests), the four managed roles, and how a decision is made, so the refusal dialog's
+ * words have a home.
  */
 
-const ROLES: { name: string; icon: IconName; summary: string; can: string[] }[] = [
-  { name: 'Viewer', icon: 'eye', summary: 'Sees every resource and request of the account.', can: ['Browse services, types and resources', 'Read request histories and step details', 'Export what is on screen'] },
-  { name: 'Operator', icon: 'play', summary: 'Everything a viewer sees, plus the day-to-day changes.', can: ['Start the workflows of the catalog', 'Approve requests within their team', 'Restart, resize and patch resources'] },
-  { name: 'Admin', icon: 'shield', summary: 'Runs the account: people, roles and destructive actions.', can: ['Grant and revoke roles', 'Delete resources and cancel requests', 'Change account-wide settings'] },
-  { name: 'Auditor', icon: 'audit', summary: 'Read-only, including the records others cannot see.', can: ['Read every request, including denied ones', 'Read the audit trail and policy decisions', 'Export evidence for reviews'] },
-]
+const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', admin: 'shield', auditor: 'audit' }
 
 export default function IamPage(_props: PageProps) {
-  const { me, account } = useConsole()
+  const { me, account, admin, session } = useConsole()
+  const users = useQuery(['iam', 'users', account.id], () => bff.iam.users.list({ limit: 200 }))
+  const groups = useQuery(['iam', 'groups', account.id], () => bff.iam.groups.list({ limit: 200 }))
+  const keys = useQuery(['iam', 'keys', account.id, 'all'], () => bff.iam.accessKeys.list({ limit: 200 }))
+  const pending = usePendingAccessRequests(account.id, admin)
+  const mine = useQuery(['access-requests', 'list', account.id, 'mine'], () => bff.accessRequests.list({ scope: 'mine', limit: 50 }))
+  const all = useMemo(() => groups.data?.items ?? [], [groups.data])
+  const admins = useMemo(() => (users.data?.items ?? []).filter((u) => rolesFromGroups(u.groups, all).includes('admin')), [users.data, all])
+  const activeKeys = (keys.data?.items ?? []).filter((k) => k.status === 'active' || k.status === 'rotating').length
+  const myPending = (mine.data?.items ?? []).filter((r) => r.status === 'pending').length
+
+  const tiles: { route: RouteName; label: string; icon: IconName; value: number | undefined; hint: string }[] = [
+    { route: 'iam-users', label: 'Users', icon: 'users', value: users.data?.items.length, hint: 'members of this account' },
+    { route: 'iam-groups', label: 'Groups', icon: 'grid', value: groups.data?.items.length, hint: 'grant the roles' },
+    { route: 'iam-keys', label: 'Access keys', icon: 'key', value: keys.data ? activeKeys : undefined, hint: admin ? 'active, across the account' : 'active, yours' },
+    { route: 'iam-requests', label: 'Access requests', icon: 'approval', value: admin ? pending.data?.items.length : mine.data ? myPending : undefined, hint: admin ? 'waiting for an admin' : 'of yours still waiting' },
+  ]
+
   return (
     <>
-      <PageHeader title="Identity and access" subtitle="Who you are to the console, and what the managed roles will let people do." />
+      <PageHeader title="Identity and access" subtitle={`Who may do what in ${account.name}: people, the groups they are in, the managed roles those groups grant, and the keys for the API.`} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card title="You" subtitle="From the platform's identity call" className="lg:col-span-1">
-          {me ? (
-            <Facts
-              columns={2}
-              items={[
-                { label: 'Name', value: me.name },
-                { label: 'Id', value: <span className="font-mono">{me.id}</span> },
-                { label: 'Email', value: me.email ?? 'Not set' },
-                { label: 'Roles', value: me.roles?.length ? me.roles.join(', ') : 'None' },
-                { label: 'Teams', value: me.teams?.length ? me.teams.join(', ') : 'None', wide: true },
-                { label: 'Account', value: `${account.name} (${account.id})`, wide: true },
-              ]}
-            />
-          ) : (
-            <p className="text-sm text-secondary">The platform has not answered the identity call yet.</p>
-          )}
+        <Card title="You" subtitle="From the firm’s identity provider, through the console’s session" className="lg:col-span-1">
+          <Facts
+            columns={2}
+            items={[
+              { label: 'Name', value: me.name },
+              { label: 'Id', value: <span className="font-mono">{me.id}</span> },
+              { label: 'Email', value: me.email ?? 'Not set', wide: true },
+              { label: 'Roles here', value: <RoleTags roles={me.roles} link empty="none yet" />, wide: true },
+              { label: 'Groups', value: <GroupLinks groups={session.account.groups} all={all} />, wide: true },
+              { label: 'Account', value: `${account.name} (${formatAccountId(account.id)})`, wide: true },
+            ]}
+          />
         </Card>
-        <Card title="Managed roles" subtitle={`Arrive with ${PHASES[2]}. Listed now so teams can plan.`} className="lg:col-span-2">
+
+        <div className="grid grid-cols-2 gap-4 lg:col-span-2">
+          {tiles.map((t) => (
+            <Link key={t.route} to={pathFor(t.route)} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              <Card interactive className="h-full">
+                <Stat label={t.label} icon={t.icon} value={t.value ?? '…'} hint={t.hint} />
+              </Card>
+            </Link>
+          ))}
+        </div>
+
+        <Card title="Managed roles" subtitle="Every account has these four. Groups grant them." className="lg:col-span-2">
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {ROLES.map((r) => (
-              <li key={r.name} className="rounded-md bg-surface-secondary p-4">
-                <div className="flex items-center gap-2">
-                  <span className="flex size-7 items-center justify-center rounded-md bg-accent-tint text-accent">
-                    <Icon name={r.icon} size={15} />
+            {MANAGED_ROLES.map((r) => (
+              <li key={r}>
+                <Link to={pathFor('iam-role', { id: r })} className="flex h-full items-start gap-3 rounded-md bg-surface-secondary p-4 transition-colors hover:bg-stroke-light/60">
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint text-accent">
+                    <Icon name={ROLE_ICON[r] ?? 'shield'} size={15} />
                   </span>
-                  <span className="text-sm font-semibold text-primary">{r.name}</span>
-                  <Tag size="sm" outline className="ml-auto">
-                    phase 2
-                  </Tag>
-                </div>
-                <p className="mt-2 text-caption text-secondary">{r.summary}</p>
-                <ul className="mt-2 space-y-1 text-caption text-secondary">
-                  {r.can.map((c) => (
-                    <li key={c} className="flex items-start gap-1.5">
-                      <Icon name="check" size={12} className="mt-0.5 shrink-0 text-tertiary" />
-                      {c}
-                    </li>
-                  ))}
-                </ul>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-primary">{r}</span>
+                      {(me.roles ?? []).includes(r) && (
+                        <DotTag size="sm" tone={roleTone(r)}>
+                          you
+                        </DotTag>
+                      )}
+                    </span>
+                    <span className="mt-1 block text-caption text-secondary">{ROLE_SUMMARY[r]}</span>
+                  </span>
+                  <Icon name="chevron-right" size={14} className="mt-1 shrink-0 text-tertiary" />
+                </Link>
               </li>
             ))}
           </ul>
+          <p className="mt-4 text-caption text-tertiary">Custom roles and policies arrive with {PHASES[7]}.</p>
+        </Card>
+
+        <Card title="How a decision is made" subtitle="Two layers, in this order" className="lg:col-span-1">
+          <ol className="space-y-4 text-sm">
+            <li className="flex gap-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent-tint font-mono text-caption font-semibold text-accent">1</span>
+              <span>
+                <span className="font-medium text-primary">Console IAM.</span> <span className="text-secondary">{layerDescription('console-iam', account.name)}</span>
+              </span>
+            </li>
+            <li className="flex gap-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent-tint font-mono text-caption font-semibold text-accent">2</span>
+              <span>
+                <span className="font-medium text-primary">The platform.</span> <span className="text-secondary">{layerDescription('platform', account.name)}</span>
+              </span>
+            </li>
+          </ol>
+          <p className="mt-4 text-caption text-secondary">When something is refused, the console names the layer that decided and the statement. Request access sends an approval to the account’s admins{admins.length ? `: ${admins.map(personLabel).join(', ')}` : ''}.</p>
         </Card>
       </div>
     </>

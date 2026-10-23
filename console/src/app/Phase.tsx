@@ -6,9 +6,9 @@ import { Button, Tooltip, type ButtonSize, type ButtonVariant, type IconName } f
  */
 
 export const PHASES: Record<number, string> = {
-  1: 'phase 1 (sign-in and identity)',
-  2: 'phase 2 (accounts, permissions and notifications)',
+  2: 'phase 2 (notifications, favourites and tags)',
   3: 'phase 3 (creating and changing resources)',
+  7: 'phase 7 (custom roles and policies)',
 }
 
 export function phaseNote(phase: number): string {

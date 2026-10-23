@@ -1,10 +1,10 @@
-import { createStore } from './store'
 import type { Region } from './types'
 
 /*
- * Regions (P-07): GET /api/v1/regions lists them; phase 0 platforms answer one, "global", and
- * the header then shows it without a menu. The response is read tolerantly: a list or {items},
- * each either flat or a file with metadata and spec.
+ * Regions (P-07): the platform lists them (GET /api/v1/regions, and the BFF's /console/v1/regions);
+ * phase 1 platforms answer one, "global", and the header then shows it without a menu. The
+ * chosen region lives in the session. The answer is read tolerantly: a list or {items}, each
+ * either flat or a file with metadata and spec.
  */
 
 export const GLOBAL_REGION: Region = { name: 'global', title: 'Global', partition: 'wf', status: 'available' }
@@ -31,21 +31,6 @@ export function parseRegions(body: unknown): Region[] {
   const regions = list.map(asRegion).filter((r): r is Region => r !== null)
   return regions.length ? regions : [GLOBAL_REGION]
 }
-
-export const REGION_STORAGE_KEY = 'console-region'
-
-const store = createStore<string>(REGION_STORAGE_KEY, GLOBAL_REGION.name, (raw) => (typeof raw === 'string' && raw ? raw : null))
-
-export function getRegionName(): string {
-  return store.get()
-}
-
-export function setRegionName(name: string) {
-  store.set(name)
-}
-
-/** The chosen region's name, reactive. The caller resolves it against the list the platform answered. */
-export const useRegionName = store.use
 
 export function regionOf(name: string, regions: Region[]): Region {
   return regions.find((r) => r.name === name) ?? regions[0] ?? GLOBAL_REGION

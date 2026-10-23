@@ -17,6 +17,7 @@ export interface Crumb {
 
 export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => string; typeTitle: (service: string, type: string) => string }): Crumb[] {
   const home: Crumb = { label: 'Console home', href: pathFor('home') }
+  const iam: Crumb = { label: 'Identity and access', href: pathFor('iam') }
   switch (route.name) {
     case 'home':
       return [{ label: 'Console home' }]
@@ -37,6 +38,20 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, { label: 'Requests', href: pathFor('requests') }, { label: route.params.id, mono: true }]
     case 'iam':
       return [home, { label: 'Identity and access' }]
+    case 'iam-users':
+    case 'iam-groups':
+    case 'iam-roles':
+    case 'iam-keys':
+    case 'iam-requests':
+      return [home, iam, { label: route.def?.title ?? 'Identity and access' }]
+    case 'iam-user':
+      return [home, iam, { label: 'Users', href: pathFor('iam-users') }, { label: route.params.id, mono: true }]
+    case 'iam-group':
+      return [home, iam, { label: 'Groups', href: pathFor('iam-groups') }, { label: route.params.id, mono: true }]
+    case 'iam-role':
+      return [home, iam, { label: 'Roles', href: pathFor('iam-roles') }, { label: route.params.id, mono: true }]
+    case 'iam-request':
+      return [home, iam, { label: 'Access requests', href: pathFor('iam-requests') }, { label: route.params.id, mono: true }]
     case 'settings':
       return [home, { label: 'Settings' }]
     default:

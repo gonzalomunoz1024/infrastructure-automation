@@ -34,12 +34,13 @@ describe('the dataset', () => {
 })
 
 describe('identity', () => {
-  it('needs the X-User header and knows the dev identities', () => {
+  it('needs the X-User header and answers the platform view of each person: their first account', () => {
     expect(get('/api/v1/me').status).toBe(401)
     expect(get('/api/v1/me', { 'x-user': 'nobody' }).status).toBe(401)
     const res = get('/api/v1/me', { 'x-user': 'ana' })
     expect(res.status).toBe(200)
-    expect(body<Me>(res)).toMatchObject({ id: 'ana', roles: ['viewer'] })
+    expect(body<Me>(res)).toMatchObject({ id: 'ana', roles: ['operator', 'viewer'], teams: expect.arrayContaining(['team-data', 'developer']) as string[] })
+    expect(body<Me>(get('/api/v1/me', { 'x-user': 'mia' }))).toMatchObject({ id: 'mia', roles: ['viewer'] })
   })
 })
 
@@ -147,5 +148,198 @@ describe('events and the rest', () => {
     expect(body<{ status: string }>(get('/actuator/health')).status).toBe('UP')
     expect(server.handle({ method: 'POST', url: '/api/v1/vms', headers: {} } as MockRequest).status).toBe(405)
     expect(get('/api/v2/anything').status).toBe(404)
+  })
+})
+
+/* ---------------------------------------------------------------- the BFF */
+
+import { csrfTokenOf, memorySessionStore } from './server'
+import type { AccessKey, AccessKeyCreated, AccessRequest, BffConsoleType, IamGroup, IamUser } from '../lib/types'
+import type { Session } from '../lib/session'
+
+function bff() {
+  const sessions = memorySessionStore()
+  const srv = createMockServer(buildMockData(), sessions, () => Date.parse('2026-10-23T10:00:00Z'))
+  let who = ''
+  const call = (method: string, url: string, body?: unknown, headers: Record<string, string> = {}) => srv.handle({ method, url, headers: { ...(who && method !== 'GET' ? { 'x-csrf-token': csrfTokenOf(who) } : {}), ...headers }, body })
+  const signIn = (person: string, returnTo = '/#/') => {
+    const res = srv.handle({ method: 'GET', url: `/auth/login?returnTo=${encodeURIComponent(returnTo)}&login_hint=${person}`, headers: {} })
+    expect(res.status).toBe(200)
+    who = person
+    return res
+  }
+  const session = () => body<Session>(call('GET', '/console/v1/session'))
+  const vmType = () => body<BffConsoleType[]>(call('GET', '/console/v1/types')).find((t) => t.key === 'compute/vm')!
+  const verb = (name: string) => vmType().actions.find((a) => a.verb === name)!
+  return { srv, sessions, call, signIn, session, vmType, verb }
+}
+
+describe('the BFF: session and sign-in', () => {
+  it('answers 401 without a session, signs a known person in with login_hint and keeps the account', () => {
+    const b = bff()
+    expect(b.call('GET', '/console/v1/session')).toMatchObject({ status: 401, body: { error: 'Not signed in' } })
+    expect(b.call('GET', '/console/v1/types').status).toBe(401)
+    expect(b.srv.handle({ method: 'GET', url: '/auth/login?returnTo=%2F', headers: {} })).toMatchObject({ status: 400, body: { error: 'login_hint.required' } })
+    expect(b.srv.handle({ method: 'GET', url: '/auth/login?login_hint=nobody', headers: {} }).status).toBe(400)
+    expect(b.signIn('mia', '/#/requests').body).toEqual({ returnTo: '/#/requests' })
+    const s = b.session()
+    expect(s).toMatchObject({ user: { userId: 'mia', email: expect.stringContaining('@') as string }, account: { accountId: '123456789012', roles: ['viewer'] }, region: 'global', csrfToken: 'mock-csrf-mia' })
+    expect(Date.parse(s.expiresAt) - Date.parse(s.authTime ?? '')).toBe(8 * 3_600_000)
+    expect(body<{ items: unknown[] }>(b.call('GET', '/console/v1/accounts')).items).toHaveLength(1)
+    expect(body<{ items: { name: string }[] }>(b.call('GET', '/console/v1/regions')).items.map((r) => r.name)).toEqual(['global'])
+    expect(body<{ items: { id: string }[] }>(b.srv.handle({ method: 'GET', url: '/demo-idp/people', headers: {} })).items.map((p) => p.id)).toEqual(expect.arrayContaining(['gonzalo', 'dana', 'mateo', 'raj', 'ana', 'mia']))
+  })
+
+  it('needs the CSRF token on writes, switches account for a member only, and signs out', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    expect(b.srv.handle({ method: 'PUT', url: '/console/v1/session', headers: {}, body: { accountId: '210987654321' } })).toMatchObject({ status: 403, body: { error: 'csrf.missing' } })
+    expect(b.srv.handle({ method: 'PUT', url: '/console/v1/session', headers: { 'x-csrf-token': 'wrong' }, body: {} }).status).toBe(403)
+    expect(b.call('PUT', '/console/v1/session', { region: 'mars' })).toMatchObject({ status: 400 })
+    const switched = body<Session>(b.call('PUT', '/console/v1/session', { accountId: '210987654321' }))
+    expect(switched.account).toMatchObject({ accountId: '210987654321', roles: expect.arrayContaining(['admin']) as string[] })
+    expect(b.session().account.accountId).toBe('210987654321')
+    // signing in again as the same person keeps the account; another person starts in theirs
+    b.signIn('gonzalo')
+    expect(b.session().account.accountId).toBe('210987654321')
+    b.signIn('mia')
+    expect(b.call('PUT', '/console/v1/session', { accountId: '210987654321' }).status).toBe(404)
+    expect(b.call('POST', '/auth/logout').status).toBe(204)
+    expect(b.call('GET', '/console/v1/session').status).toBe(401)
+  })
+
+  it('expires the session after eight hours', () => {
+    const sessions = memorySessionStore()
+    let now = Date.parse('2026-10-23T10:00:00Z')
+    const srv = createMockServer(buildMockData(), sessions, () => now)
+    expect(srv.handle({ method: 'GET', url: '/auth/login?login_hint=dana', headers: {} }).status).toBe(200)
+    expect(srv.handle({ method: 'GET', url: '/console/v1/session', headers: {} }).status).toBe(200)
+    now += 8 * 3_600_000 + 1
+    expect(srv.handle({ method: 'GET', url: '/console/v1/session', headers: {} }).status).toBe(401)
+    expect(sessions.get()).toBeNull()
+  })
+})
+
+describe('the BFF: types with decisions', () => {
+  it('decides every verb for the person, the account and the region, with the layer and the statement', () => {
+    const b = bff()
+    b.signIn('mia')
+    const type = b.vmType()
+    expect(type).toMatchObject({ type: 'vm', service: 'compute', plural: 'vms' })
+    expect(type.actions.map((a) => a.verb)).toEqual(expect.arrayContaining(['list', 'get', 'create', 'update', 'delete']))
+    expect(b.verb('list').allowed).toBe(true)
+    const create = b.verb('create')
+    expect(create.allowed).toBe(false)
+    expect(create.denied).toMatchObject({ layer: 'console-iam', action: 'compute:create', resource: 'wfrn:wf:compute:global:123456789012:vm/*', role: 'viewer', requestable: true, suggestedRole: 'operator' })
+
+    b.signIn('dana')
+    expect(b.verb('create').allowed).toBe(true)
+    expect(b.verb('delete').denied).toMatchObject({ layer: 'console-iam', policyId: 'managed-operator', statement: 'DenyDestructive', suggestedRole: 'admin' })
+
+    b.signIn('gonzalo')
+    expect(b.verb('delete').allowed).toBe(true)
+
+    b.signIn('raj')
+    expect(b.session().account.accountId).toBe('210987654321')
+    expect(b.verb('list').allowed).toBe(true)
+    expect(b.verb('create').denied).toMatchObject({ layer: 'platform', scope: 'compute:write', requestable: true })
+  })
+
+  it('carries an ETag per person and account and answers 304', () => {
+    const b = bff()
+    b.signIn('mia')
+    const first = b.call('GET', '/console/v1/types')
+    const etag = first.headers?.ETag
+    expect(etag).toMatch(/^W\//)
+    expect(b.call('GET', '/console/v1/types', undefined, { 'if-none-match': etag ?? '' }).status).toBe(304)
+    b.signIn('gonzalo')
+    expect(b.call('GET', '/console/v1/types', undefined, { 'if-none-match': etag ?? '' }).status).toBe(200)
+    expect(b.call('GET', '/console/v1/types/compute%2Fvm').status).toBe(200)
+    expect(b.call('GET', '/console/v1/types/nope').status).toBe(404)
+  })
+})
+
+describe('the BFF: identity and access', () => {
+  it('lets everyone read, refuses writes with the Denial, and lets admins write', () => {
+    const b = bff()
+    b.signIn('mia')
+    expect(body<{ items: IamUser[] }>(b.call('GET', '/console/v1/iam/users')).items.map((u) => u.userId)).toContain('gonzalo')
+    expect(body<{ items: IamUser[] }>(b.call('GET', '/console/v1/iam/users?q=gonz')).items.map((u) => u.userId)).toEqual(['gonzalo'])
+    expect(body<{ items: IamGroup[] }>(b.call('GET', '/console/v1/iam/groups')).items.length).toBeGreaterThan(2)
+    expect(body<{ items: { roleId: string }[] }>(b.call('GET', '/console/v1/iam/roles')).items.map((r) => r.roleId)).toEqual(['viewer', 'operator', 'admin', 'auditor'])
+    expect(b.call('GET', '/console/v1/iam/roles/operator').status).toBe(200)
+    expect(b.call('GET', '/console/v1/iam/policies/managed-operator').status).toBe(200)
+    const refused = b.call('POST', '/console/v1/iam/groups', { name: 'team-x', roles: ['viewer'] })
+    expect(refused.status).toBe(403)
+    expect(refused.body).toMatchObject({ denied: { layer: 'console-iam', action: 'iam:create', role: 'viewer', suggestedRole: 'admin' }, correlationId: expect.stringMatching(/^mock-/) as string })
+
+    b.signIn('gonzalo')
+    const created = b.call('POST', '/console/v1/iam/groups', { name: 'team-x', roles: ['viewer'] })
+    expect(created.status).toBe(201)
+    const group = body<IamGroup>(created)
+    expect(b.call('PATCH', `/console/v1/iam/groups/${group.groupId}`, { members: ['mia'] }, { 'if-match': '99' }).status).toBe(409)
+    expect(body<IamGroup>(b.call('PATCH', `/console/v1/iam/groups/${group.groupId}`, { members: ['mia'] }, { 'if-match': String(group.version) })).members).toEqual(['mia'])
+    expect(b.call('GET', '/console/v1/iam/users/mia').headers?.ETag).toBeDefined()
+    expect(b.call('POST', '/console/v1/iam/users', { email: 'new.person@example.com', groups: [group.groupId] }).status).toBe(201)
+    expect(b.call('DELETE', `/console/v1/iam/groups/${group.groupId}`).status).toBe(204)
+    expect(b.call('GET', `/console/v1/iam/groups/${group.groupId}`).status).toBe(404)
+    expect(b.call('POST', '/console/v1/iam/users', { name: 'no email' }).status).toBe(400)
+  })
+
+  it('serves a person their own access keys, admins everyone’s, and the quotas', () => {
+    const b = bff()
+    b.signIn('mia')
+    const created = b.call('POST', '/console/v1/iam/access-keys', { description: 'laptop' })
+    expect(created.status).toBe(201)
+    const key = body<AccessKeyCreated>(created)
+    expect(key.secretPart).toMatch(/^cs_/)
+    expect(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys')).items.every((k) => k.userId === 'mia')).toBe(true)
+    expect(b.call('POST', '/console/v1/iam/access-keys', { userId: 'dana' }).status).toBe(403)
+    const rotated = body<AccessKeyCreated>(b.call('POST', `/console/v1/iam/access-keys/${key.keyId}:rotate`))
+    expect(rotated.secretPart).not.toBe(key.secretPart)
+    expect(b.call('DELETE', `/console/v1/iam/access-keys/${key.keyId}`).status).toBe(204)
+    expect(body<AccessKey>(b.call('GET', `/console/v1/iam/access-keys/${key.keyId}`)).status).toBe('revoked')
+
+    b.signIn('gonzalo')
+    const all = body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys')).items
+    expect(new Set(all.map((k) => k.userId)).size).toBeGreaterThan(1)
+    expect(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys?userId=mia')).items.every((k) => k.userId === 'mia')).toBe(true)
+    expect(b.call('POST', '/console/v1/iam/access-keys', { userId: 'dana', description: 'for dana' }).status).toBe(201)
+    const quotas = body<{ items: { key: string; used: number; limit: number }[] }>(b.call('GET', '/console/v1/iam/quotas')).items
+    expect(quotas.find((q) => q.key === 'access-keys')).toMatchObject({ limit: 25 })
+  })
+})
+
+describe('the BFF: access requests', () => {
+  it('goes from a refusal to an approval that unlocks the action', () => {
+    const b = bff()
+    b.signIn('mia')
+    expect(b.verb('create').allowed).toBe(false)
+    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'short' }).status).toBe(400)
+    const sent = b.call('POST', '/console/v1/access-requests', { action: 'compute:create', resource: 'wfrn:wf:compute:global:123456789012:vm/*', reason: 'I build the team machines', layer: 'console-iam' })
+    expect(sent.status).toBe(202)
+    const request = body<AccessRequest>(sent)
+    expect(request).toMatchObject({ requester: { userId: 'mia' }, role: 'operator', status: 'pending', approvers: ['gonzalo'] })
+    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'I build the team machines' }).status).toBe(409)
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => r.requestId)).toContain(request.requestId)
+    expect(b.call('GET', '/console/v1/access-requests?scope=account').status).toBe(403)
+    expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`).status).toBe(200)
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' }).status).toBe(403)
+
+    b.signIn('dana')
+    expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`).status).toBe(404)
+
+    b.signIn('gonzalo')
+    const pending = body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?scope=account&status=pending')).items
+    expect(pending.map((r) => r.requestId)).toEqual([request.requestId])
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'maybe' }).status).toBe(400)
+    const decided = b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve', comment: 'Go ahead' })
+    expect(decided.status).toBe(202)
+    expect(body<AccessRequest>(decided)).toMatchObject({ status: 'approved', decidedBy: 'gonzalo', comment: 'Go ahead' })
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?scope=account&status=pending')).items).toEqual([])
+
+    b.signIn('mia')
+    expect(b.session().account.roles).toContain('operator')
+    expect(b.verb('create').allowed).toBe(true)
   })
 })
