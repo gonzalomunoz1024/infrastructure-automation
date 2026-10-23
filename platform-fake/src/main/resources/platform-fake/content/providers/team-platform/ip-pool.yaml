@@ -1,0 +1,173 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: ip-pool
+  title: IP address pools
+  owner: team-platform
+  version: 1.0.0
+  description: Reserves and releases IP addresses from named pools. Example provider of the Go SDK.
+spec:
+  type: sdk
+  worker:
+    taskQueue: provider-ip-pool
+    heartbeatTimeout: 30s
+  actions:
+    - id: pool.get
+      title: Get a pool
+      effect: read
+      input:
+        type: object
+        properties:
+          pool:
+            type: string
+            description: The pool, like office
+        required:
+          - pool
+      output:
+        type: object
+        properties:
+          name:
+            type: string
+          cidr:
+            type: string
+          free:
+            type: integer
+          reserved:
+            type: integer
+        required:
+          - name
+          - cidr
+          - free
+          - reserved
+      sample:
+        cidr: 10.20.0.0/28
+        free: 12
+        name: '{{ $input.pool }}'
+        reserved: 2
+    - id: address.preview
+      title: Preview a reservation
+      effect: read
+      input:
+        type: object
+        properties:
+          pool:
+            type: string
+            description: The pool to take the address from
+          hostname:
+            type: string
+            description: The host the address is for, like web-01
+        required:
+          - pool
+          - hostname
+      output:
+        type: object
+        properties:
+          action:
+            type: string
+            enum:
+              - reserve
+              - none
+          address:
+            type: string
+          summary:
+            type: string
+        required:
+          - action
+          - summary
+      sample:
+        action: reserve
+        address: 10.20.0.3
+        summary: Reserves 10.20.0.3 in {{ $input.pool }} for {{ $input.hostname }}
+    - id: address.reserve
+      title: Reserve an address
+      effect: create
+      plan: address.preview
+      input:
+        type: object
+        properties:
+          pool:
+            type: string
+            description: The pool to take the address from
+          hostname:
+            type: string
+            description: The host the address is for, like web-01
+        required:
+          - pool
+          - hostname
+      output:
+        type: object
+        properties:
+          address:
+            type: string
+          pool:
+            type: string
+          hostname:
+            type: string
+          state:
+            type: string
+            enum:
+              - reserved
+              - released
+        required:
+          - address
+          - pool
+          - hostname
+          - state
+      sample:
+        address: 10.20.0.{{ $job.seq }}
+        hostname: '{{ $input.hostname }}'
+        pool: '{{ $input.pool }}'
+        state: reserved
+    - id: address.release
+      title: Release an address
+      effect: delete
+      input:
+        type: object
+        properties:
+          address:
+            type: string
+            description: The address to give back
+        required:
+          - address
+      output:
+        type: object
+        properties:
+          address:
+            type: string
+          pool:
+            type: string
+          hostname:
+            type: string
+          state:
+            type: string
+            enum:
+              - reserved
+              - released
+        required:
+          - address
+          - pool
+          - hostname
+          - state
+      sample:
+        address: '{{ $input.address }}'
+        hostname: web-01
+        pool: office
+        state: released
+  errors:
+    - class: pool_not_found
+      retry: false
+      description: No pool has that name
+    - class: pool_exhausted
+      retry: false
+      description: The pool has no free address
+    - class: hostname_taken
+      retry: false
+      description: The host already holds an address in the pool
+    - class: address_not_found
+      retry: false
+      description: The address is not reserved
+    - class: pool_busy
+      retry: true
+      description: Another reservation holds the pool; a retry succeeds
+  alerts:
+    channel: '#platform-alerts'

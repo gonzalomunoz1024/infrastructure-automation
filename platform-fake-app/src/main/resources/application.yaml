@@ -1,0 +1,25 @@
+# The fake platform as an application. Every setting under console.platform-fake has a default;
+# the port and the step delay are the ones a demo changes most.
+server:
+  port: 18090
+
+spring:
+  application:
+    name: platform-fake
+
+console:
+  platform-fake:
+    enabled: true
+    default-user: gonzalo
+    step-delay: 250ms
+    demo: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+
+logging:
+  level:
+    com.iaf.console.fake: info

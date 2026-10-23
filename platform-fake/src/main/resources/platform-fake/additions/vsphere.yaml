@@ -1,0 +1,30 @@
+# Actions the pinned sample content lacks and a platform change adds: P-15 gives vSphere a
+# vm.update action for the update-vm sample. The fake merges these into the provider at start,
+# so the copied provider file stays identical to the hub's pinned copy.
+apiVersion: iaf.console/v1
+kind: ProviderAdditions
+metadata:
+  name: vsphere
+spec:
+  actions:
+    - id: vm.update
+      title: Resize VM
+      operation: updateVm
+      effect: change
+      retry: unsafe
+      plan: vm.get
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+          cpu: { type: integer }
+          memoryGb: { type: integer }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          cpu: { type: integer }
+          memoryGb: { type: integer }
+          task: { type: string }
+      sample: { id: "{{ $input.id }}", cpu: "{{ $input.cpu }}", memoryGb: "{{ $input.memoryGb }}", task: "task-{{ $job.seq }}" }
