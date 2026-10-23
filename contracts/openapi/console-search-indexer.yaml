@@ -103,7 +103,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/SearchHit' }
                   next: { $ref: '#/components/schemas/Cursor' }
-                  total: { type: integer, description: The number of hits when it is cheap to count, absent otherwise }
+                  total: { type: integer, description: "The number of hits when it is cheap to count, absent otherwise" }
                   tookMs: { type: integer }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -433,7 +433,7 @@ components:
       type: object
       required: [documents, lagSeconds, lastEventAt]
       properties:
-        documents: { type: integer, description: The caller's account's documents, or the whole index's for the console-internal principal }
+        documents: { type: integer, description: "The caller's account's documents, or the whole index's for the console-internal principal" }
         lagSeconds: { type: number, description: How far the newest applied event is behind now; it grows while nothing changes }
         lastEventAt: { type: [string, 'null'], format: date-time, description: The newest applied event; null before the first }
         rebuilding: { type: boolean }
@@ -453,7 +453,7 @@ components:
             deleting: { type: integer }
             deleted: { type: integer }
             failed: { type: integer }
-        drift: { type: integer, description: Of total, the resources with an open drift finding }
+        drift: { type: integer, description: "Of total, the resources with an open drift finding" }
         cappedAt: { type: [integer, 'null'], description: The cap a count stopped at; null when the counts are exact }
     SourceStatus:
       type: object
