@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -11,8 +13,11 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import com.fasterxml.jackson.databind.JsonNode;
+
+import com.iaf.console.bff.platform.application.PlatformClients;
 
 /**
  * Search through the search indexer (here the demo stand-in over the demo state service):
@@ -22,6 +27,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 class SearchEndpointTest extends DemoApp {
 
     private static final String VM = "/console/v1/r/vm";
+
+    @Autowired
+    PlatformClients clients;
 
     @Test
     void globalSearchFindsAResourceByNameWithTheMatchHighlighted() {
@@ -146,6 +154,37 @@ class SearchEndpointTest extends DemoApp {
         Console.Reply wrongState = console.getAt(VM + "?q={q}&state=failed", gonzalo, Map.of(), name);
         assertFalse(stream(wrongState.json().path("items")).anyMatch(i -> wfrn.equals(i.path("wfrn").asText()) && !"failed".equals(vm.path("state").asText())),
                 wrongState.body());
+    }
+
+    @Test
+    void createdAndUpdatedTermsKeepWhatTheirTimesKeep() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        Instant before = Instant.now();
+        String name = "timed-" + (System.nanoTime() % 1_000_000);
+        String wfrn = ResourceFixtures.createVm(console, clients, gonzalo, name);
+        Instant created = Instant.parse(console.getAt(VM + "/{wfrn}", gonzalo, Map.of(), wfrn).json().path("createdAt").asText());
+        String day = created.atZone(ZoneOffset.UTC).toLocalDate().toString();
+
+        for (String kept : List.of("created:>=" + before, "created:10m", "created:" + day, "created:<=" + day, "created:>=" + day + " created:>=10m",
+                "updated:>=" + before, "created:" + before + ".." + Instant.now())) {
+            assertTrue(listed(gonzalo, name + " " + kept).contains(wfrn), kept);
+        }
+        for (String left : List.of("created:<" + before, "created:<10m", "created:<" + day, "created:>" + day, "updated:<" + before,
+                "created:>=" + day + " created:<" + before)) {
+            assertFalse(listed(gonzalo, name + " " + left).contains(wfrn), left);
+        }
+        Console.Reply counted = console.getAt(VM + ":counts?q={q}", gonzalo, Map.of(), name + " created:>=" + before);
+        assertEquals(1, counted.json().path("total").asLong(), counted.body());
+        Console.Reply alone = console.getAt(VM + ":counts?q={q}", gonzalo, Map.of(), "created:" + before);
+        assertEquals(400, alone.status(), "a time alone needs a comparison: " + alone.body());
+        assertEquals(400, console.getAt("/console/v1/search?q={q}", gonzalo, Map.of(), "created:yesterday").status());
+    }
+
+    /** The wfrns of the VM list's rows for the query. */
+    private static List<String> listed(Console.Signed as, String q) {
+        Console.Reply list = console.getAt(VM + "?q={q}&limit=50", as, Map.of(), q);
+        assertEquals(200, list.status(), q + ": " + list.body());
+        return stream(list.json().path("items")).map(i -> i.path("wfrn").asText()).toList();
     }
 
     private static JsonNode firstVm(Console.Signed as) {

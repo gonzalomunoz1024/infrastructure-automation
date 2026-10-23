@@ -1,5 +1,7 @@
 package com.iaf.console.bff.demo.search.application;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -33,7 +35,8 @@ import com.iaf.console.wfrn.Wfrn;
  * HTML-escaped around them. Without a state filter only live resources match; the counts give
  * every state whatever the state filter, tombstones under {@code deleted}, and are exact, over one
  * account or, for the console-internal principal, several added up, and per type, service, state,
- * region, account or tag value when grouped.
+ * region, account or tag value when grouped. The ages of {@code created:} and {@code updated:}
+ * terms count back from the clock's present; a tag filter with an empty value keeps any value.
  */
 public class DemoSearchIndex {
 
@@ -45,9 +48,11 @@ public class DemoSearchIndex {
     private static final int MAX_GROUPS = 100;
 
     private final DemoStateStore store;
+    private final Clock clock;
 
-    public DemoSearchIndex(DemoStateStore store) {
+    public DemoSearchIndex(DemoStateStore store, Clock clock) {
         this.store = store;
+        this.clock = clock;
     }
 
     /** The filters a request adds to its query's terms: the parameters win where both name one. */
@@ -73,7 +78,7 @@ public class DemoSearchIndex {
             throw invalid("range", "/limit", "limit is 1 to " + MAX_LIMIT);
         }
         int from = offset(after);
-        DemoQuery query = DemoQuery.parse(q);
+        DemoQuery query = DemoQuery.parse(q, clock.instant());
         String state = filters.state() != null ? filters.state() : query.state();
         List<Scored> found = new ArrayList<>();
         for (StateResource r : store.snapshot(accountId, region(filters, query))) {
@@ -160,7 +165,7 @@ public class DemoSearchIndex {
         if (grouping != null && !GROUP_BY.matcher(grouping).matches()) {
             throw invalid("pattern", "/groupBy", "groupBy is type, service, state, region, account or tag:<name>");
         }
-        DemoQuery query = DemoQuery.parse(q == null ? "" : q);
+        DemoQuery query = DemoQuery.parse(q == null ? "" : q, clock.instant());
         String state = filters.state() != null ? filters.state() : query.state();
         Tally all = new Tally();
         Map<String, Tally> groups = new LinkedHashMap<>();
@@ -249,7 +254,7 @@ public class DemoSearchIndex {
         return filters.region() != null ? filters.region() : query.region();
     }
 
-    /** Every filter but the state and the free words. */
+    /** Every filter but the state and the free words; a tag asked for with an empty value is there with any value. */
     private static boolean matches(StateResource r, DemoQuery query, Filters filters) {
         String type = filters.type() != null ? filters.type() : query.type();
         if (type != null && !type.equals(r.type())) {
@@ -262,7 +267,8 @@ public class DemoSearchIndex {
         Map<String, String> tags = new LinkedHashMap<>(query.tags());
         tags.putAll(filters.tags());
         for (Map.Entry<String, String> tag : tags.entrySet()) {
-            if (!tag.getValue().equals(r.tags().get(tag.getKey()))) {
+            String value = r.tags().get(tag.getKey());
+            if (value == null || !(tag.getValue().isEmpty() || tag.getValue().equals(value))) {
                 return false;
             }
         }
@@ -273,6 +279,16 @@ public class DemoSearchIndex {
         }
         for (String pattern : query.wfrns()) {
             if (!(pattern.contains("*") ? Wfrn.matches(pattern, r.wfrn()) : pattern.equals(r.wfrn()))) {
+                return false;
+            }
+        }
+        return within(query.created(), r.createdAt()) && within(query.updated(), r.updatedAt());
+    }
+
+    /** Whether the time is in every range: two terms on one field keep what both keep. */
+    private static boolean within(List<DemoQuery.TimeRange> ranges, Instant time) {
+        for (DemoQuery.TimeRange range : ranges) {
+            if (!range.keeps(time)) {
                 return false;
             }
         }

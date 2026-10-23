@@ -614,6 +614,8 @@ public class DemoStateStore implements FeedListener {
         row.changes = null;
         row.lastJobId = jobId != null ? jobId : row.lastJobId;
         bump(row);
+        // a tombstone's updatedAt is its deletion time, to the instant
+        row.updatedAt = now;
         ObjectNode data = json.createObjectNode();
         data.put("tombstoneUntil", row.tombstoneUntil.toString());
         event(row, "Deleted", PLATFORM, jobId, requestId, data);

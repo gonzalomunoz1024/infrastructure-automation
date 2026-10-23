@@ -1,5 +1,7 @@
 package com.iaf.console.bff.demo.search.application;
 
+import java.time.Clock;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -12,7 +14,7 @@ import com.iaf.console.bff.demo.state.application.DemoStateStore;
 public class DemoSearchConfiguration {
 
     @Bean
-    public DemoSearchIndex demoSearchIndex(DemoStateStore store) {
-        return new DemoSearchIndex(store);
+    public DemoSearchIndex demoSearchIndex(DemoStateStore store, Clock clock) {
+        return new DemoSearchIndex(store, clock);
     }
 }
