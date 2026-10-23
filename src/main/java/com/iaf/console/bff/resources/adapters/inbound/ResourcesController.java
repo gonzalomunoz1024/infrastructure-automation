@@ -28,7 +28,6 @@ import com.iaf.console.bff.resources.domain.BlastRadius;
 import com.iaf.console.bff.resources.domain.CloneDraft;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
-import com.iaf.console.bff.resources.domain.FindingView;
 import com.iaf.console.bff.resources.domain.LineageView;
 import com.iaf.console.bff.resources.domain.PreviewView;
 import com.iaf.console.bff.resources.domain.ResourceView;
@@ -40,7 +39,9 @@ import reactor.core.publisher.Mono;
 
 /**
  * {@code /console/v1/r/{type}}: the account's resources of a type, one resource, its activity,
- * finding, lineage and tags, and the commands (create, update, a verb, their previews, a batch).
+ * lineage and tags, and the commands (create, update, a verb, their previews, a batch). The Drift
+ * tab ({@code /drift}) and the Monitoring tab ({@code /metrics}, {@code /alarms}) are the drift
+ * slice's, through the drift service.
  * The wfrn travels percent-encoded in the path; a type name is {@code [a-z0-9-]}, so {@code :preview}
  * and {@code :batch} on the collection never read as a type.
  */
@@ -148,11 +149,6 @@ public class ResourcesController {
         return CurrentSession.required(exchange).flatMap(session -> resources.activity(session, type, wfrn, limit, after));
     }
 
-    @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/drift", produces = "application/json")
-    public Mono<FindingView> drift(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn, ServerWebExchange exchange) {
-        return CurrentSession.required(exchange).flatMap(session -> resources.drift(session, type, wfrn));
-    }
-
     @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/lineage", produces = "application/json")
     public Mono<LineageView> lineage(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn, ServerWebExchange exchange) {
         return CurrentSession.required(exchange).flatMap(session -> resources.lineage(session, type, wfrn));
@@ -187,6 +183,6 @@ public class ResourcesController {
     public static List<String> contractPaths() {
         return List.of("/console/v1/r/{type}", "/console/v1/r/{type}:preview", "/console/v1/r/{type}:batch", "/console/v1/r/{type}/{wfrn}",
                 "/console/v1/r/{type}/{wfrn}:{verb}", "/console/v1/r/{type}/{wfrn}:{verb}:preview", "/console/v1/r/{type}/{wfrn}/activity",
-                "/console/v1/r/{type}/{wfrn}/drift", "/console/v1/r/{type}/{wfrn}/lineage", "/console/v1/r/{type}/{wfrn}/tags");
+                "/console/v1/r/{type}/{wfrn}/lineage", "/console/v1/r/{type}/{wfrn}/tags");
     }
 }

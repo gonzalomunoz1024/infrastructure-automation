@@ -429,6 +429,123 @@ public class DemoStateStore implements FeedListener {
         return remember(key, new Answer(row.resource(), false));
     }
 
+    // ---- the drift service's commands (the demo's drift stand-in sends them, as the drift service would)
+
+    /** Who the drift service's commands are recorded as. */
+    public static final String DRIFT_SERVICE = "console-drift-service";
+
+    /**
+     * A finding opened on the resource: it carries the finding (and the provider's values of the
+     * drifted fields) until the finding closes, as {@code :record-drift} records {@code DriftDetected}.
+     */
+    public synchronized Answer recordDrift(String accountId, String wfrn, String findingId, String severity, JsonNode fields, Instant since) {
+        Row row = live(accountId, wfrn);
+        if (row.drift != null && findingId.equals(row.drift.findingId())) {
+            return new Answer(row.resource(), true);
+        }
+        JsonNode copied = fields == null || !fields.isArray() ? json.createArrayNode() : fields.deepCopy();
+        row.drift = new StateResource.Drift(findingId, since == null ? clock.instant() : since, severity, copied);
+        ObjectNode observed = row.observed == null ? row.attributes.deepCopy() : row.observed;
+        for (JsonNode field : copied) {
+            String name = topLevel(field.path("path").asText(""));
+            if (name != null) {
+                observed.set(name, field.path("observed").deepCopy());
+            }
+        }
+        row.observed = observed;
+        row.observedAt = clock.instant();
+        row.observedStatus = "found";
+        bump(row);
+        ObjectNode data = json.createObjectNode();
+        data.put("findingId", findingId);
+        data.set("fields", copied.deepCopy());
+        event(row, "DriftDetected", DRIFT_SERVICE, null, null, data);
+        return new Answer(row.resource(), false);
+    }
+
+    /**
+     * The resource's finding closed, as {@code :resolve-drift} records {@code DriftResolved}: an
+     * accepted finding makes the provider's values the desired ones, a reverted one the other way
+     * round; a finding the resource no longer carries changes nothing.
+     */
+    public synchronized Answer resolveDrift(String accountId, String wfrn, String findingId, String resolution, String actor) {
+        Row row = live(accountId, wfrn);
+        if (row.drift == null || !findingId.equals(row.drift.findingId())) {
+            return new Answer(row.resource(), true);
+        }
+        JsonNode fields = row.drift.fields() == null ? json.createArrayNode() : row.drift.fields();
+        for (JsonNode field : fields) {
+            String name = topLevel(field.path("path").asText(""));
+            if (name == null) {
+                continue;
+            }
+            if ("accepted".equals(resolution)) {
+                row.attributes.set(name, field.path("observed").deepCopy());
+            } else if ("reverted".equals(resolution) && row.observed != null) {
+                row.observed.set(name, field.path("expected").deepCopy());
+            }
+        }
+        row.drift = null;
+        bump(row);
+        ObjectNode data = json.createObjectNode();
+        data.put("findingId", findingId);
+        data.put("resolution", resolution);
+        event(row, "DriftResolved", actor == null ? DRIFT_SERVICE : actor, null, null, data);
+        return new Answer(row.resource(), false);
+    }
+
+    /**
+     * A discovered object the account claims, taken under management as {@code /v1/resources:import}
+     * records {@code Imported} (source {@code discover}): active at once, the provider id standing
+     * in for the registry id the platform never gave it.
+     */
+    public Mono<Answer> importDiscovered(String accountId, String region, String type, String providerId, String name, JsonNode attributes,
+            String actor, String key, String requestId) {
+        return serviceOf(type).map(service -> {
+            synchronized (this) {
+                Answer replay = replay(key);
+                if (replay != null) {
+                    return replay;
+                }
+                Instant now = clock.instant();
+                Row row = new Row();
+                row.wfrn = freshName(service, region, accountId, type, name == null ? providerId : name);
+                row.accountId = accountId;
+                row.region = region;
+                row.type = type;
+                row.service = service;
+                row.name = name == null ? providerId : name;
+                row.state = StateResource.ACTIVE;
+                row.version = 0;
+                row.registryId = providerId;
+                row.providerId = providerId;
+                row.attributes = attributes != null && attributes.isObject() ? ((ObjectNode) attributes).deepCopy() : json.createObjectNode();
+                row.observed = row.attributes.deepCopy();
+                row.observedAt = now;
+                row.observedStatus = "found";
+                row.source = "discover";
+                row.requestedBy = actor;
+                row.createdAt = now;
+                row.updatedAt = now;
+                rows.put(row.wfrn, row);
+                bump(row);
+                ObjectNode data = json.createObjectNode();
+                data.put("registryId", providerId);
+                data.put("source", "discover");
+                event(row, "Imported", actor == null ? DRIFT_SERVICE : actor, null, requestId, data);
+                return remember(key, new Answer(row.resource(), false));
+            }
+        });
+    }
+
+    /** The attribute a top-level JSON pointer names ({@code /cpu}), or null for a deeper one. */
+    private static String topLevel(String pointer) {
+        if (pointer == null || pointer.length() < 2 || pointer.charAt(0) != '/' || pointer.indexOf('/', 1) >= 0) {
+            return null;
+        }
+        return pointer.substring(1).replace("~1", "/").replace("~0", "~");
+    }
+
     // ---- the platform's feed
 
     @Override

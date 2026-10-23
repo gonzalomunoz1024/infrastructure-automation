@@ -51,8 +51,8 @@ console:
         service-account: ""         # <namespace>:<name> of its Kubernetes service account
         jwks: ""                    # or the public keys it signs its own assertions with (a JWKS or one JWK, JSON)
         jwks-uri: ""                # or where to read them
-      console-drift-service:
-        audiences: [console-state-service, console-identity-service]
+      console-drift-service:           # the drift service also asks the cost service for monthly costs
+        audiences: [console-state-service, console-identity-service, console-cost-service]
         service-account: ""
         jwks: ""
         jwks-uri: ""
@@ -94,6 +94,10 @@ console:
     url: http://localhost:18085     # the search indexer; empty means the in-process demo stand-in under /demo-search (demo profile)
     service-name: console-search-indexer
     timeout: 5s
+  drift:
+    url: http://localhost:18084     # the drift service; empty means the in-process demo stand-in under /demo-drift (demo profile)
+    service-name: console-drift-service
+    timeout: 5s                     # a metrics read goes to the provider through the platform; the web app shows a retry past this
   platform:
     base-url: http://localhost:18090
     internal-token: ""              # the console-internal service account's token (feed and content reads)
@@ -111,6 +115,7 @@ console:
     cache-size: 100000
   types:
     cache-ttl: 60s                  # descriptors are kept this long unless a content event evicts them
+    demo-metrics: []                # types whose descriptor says observe.metrics although their content has no metrics read (the demo's vm)
   live:
     ring-capacity: 10000            # events kept per account for Last-Event-ID replay
     heartbeat: 15s

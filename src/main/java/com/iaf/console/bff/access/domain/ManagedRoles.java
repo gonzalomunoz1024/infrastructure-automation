@@ -36,7 +36,8 @@ public final class ManagedRoles {
         };
     }
 
-    private static final List<String> READS = List.of("*:list", "*:get", "*:read", "*:describe", "*:search", "*:preview");
+    /** The reads every role allows; {@code observe} (a resource's metrics, a discovery run) reads the provider, as the identity service's managed policies have it. */
+    private static final List<String> READS = List.of("*:list", "*:get", "*:read", "*:describe", "*:search", "*:preview", "*:observe");
     private static final List<String> DESTRUCTIVE = List.of("*:delete", "*:destroy", "*:purge", "*:terminate");
     private static final List<String> IAM_WRITES = List.of("iam:create", "iam:update", "iam:delete", "iam:rotate", "iam:decide", "iam:set",
             "access-request:decide");

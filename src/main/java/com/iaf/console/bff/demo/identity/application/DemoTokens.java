@@ -30,6 +30,11 @@ public class DemoTokens {
     }
 
     public Optional<DemoCaller> verify(String authorization) {
+        return verify(authorization, identity.serviceName());
+    }
+
+    /** The caller of a stand-in that answers as {@code audience}: a token for that service, or for every console service. */
+    public Optional<DemoCaller> verify(String authorization, String audience) {
         if (authorization == null || !authorization.regionMatches(true, 0, "Bearer ", 0, 7)) {
             return Optional.empty();
         }
@@ -43,8 +48,8 @@ public class DemoTokens {
             if (!trust.issuer().equals(claims.getIssuer())) {
                 return Optional.empty();
             }
-            List<String> audience = claims.getAudience() == null ? List.of() : claims.getAudience();
-            if (!audience.contains(identity.serviceName()) && !audience.contains(Trust.CONSOLE_AUDIENCE)) {
+            List<String> audiences = claims.getAudience() == null ? List.of() : claims.getAudience();
+            if (!audiences.contains(audience) && !audiences.contains(Trust.CONSOLE_AUDIENCE)) {
                 return Optional.empty();
             }
             Date exp = claims.getExpirationTime();
