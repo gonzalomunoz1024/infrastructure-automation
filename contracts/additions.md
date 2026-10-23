@@ -287,6 +287,35 @@ ResourceGroup:
 `Session.account` carries `roles` (the managed roles the person holds in the account) and
 `groups`.
 
+`Session.decisions` (phase 4) decides the account's own console actions for the person, so the
+console greys a control without inferring it from role names. `GET` and `PUT
+/console/v1/session` carry it; it is left out when the identity service could not answer (the
+session still loads, and a refused call still explains itself).
+
+```yaml
+decisions:
+  type: object
+  description: keyed <kind>:<verb>, always these keys in this order
+  additionalProperties:
+    required: [allowed]
+    properties:
+      allowed: { type: boolean }
+      denied: Denial          # only when refused: layer, action, resource, reason, role, requestable, suggestedRole
+```
+
+| Keys | Decided as |
+| --- | --- |
+| `user:create`, `user:update`, `user:delete`, the same for `group`, `role`, `policy` and `access-key` | `iam:<verb>` on `wfrn:wf:iam::<account>:<kind>/*` |
+| `quota:request-increase` | itself, on `wfrn:wf:iam::<account>:quota/*` |
+| `access-request:create`, `access-request:list`, `access-request:decide` | themselves, on `wfrn:wf:iam::<account>:access-request/*` |
+
+Each is decided on every record of its kind, so a policy that allows one record only is not
+reflected here; the identity service still decides each call. `access-request:list` is reading
+the account's queue (admins, auditors and the groups given it, such as the approver groups);
+`access-request:decide` is approving or rejecting (admins and the approver groups), never one's
+own request. A person always manages their own access keys and sees their own access requests,
+whatever these say.
+
 ## Denial on every 403
 
 Every 403 but a missing CSRF token carries `denied`:
