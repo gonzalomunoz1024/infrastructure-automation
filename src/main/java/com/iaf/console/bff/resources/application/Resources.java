@@ -24,6 +24,7 @@ import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
 import com.iaf.console.bff.jobs.domain.JobNotFailedException;
 import com.iaf.console.bff.jobs.domain.JobView;
+import com.iaf.console.bff.platform.application.PausedJobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.ActivityEntry;
@@ -948,7 +949,7 @@ public class Resources {
             }
             Map<String, Object> input = fix.input().isEmpty() ? null : fix.input();
             if (job.status() == JobStatus.NEEDS_ATTENTION) {
-                return p.retryJob(job.id(), new RetryRequest(fix.fromStep(), input), chosen);
+                return Mono.defer(() -> p.retryJob(job.id(), new RetryRequest(fix.fromStep(), input), chosen)).retryWhen(PausedJobs.NOT_YET_WAITING);
             }
             String from = fix.fromStep() != null ? fix.fromStep() : JobRetries.rerunFrom(job)
                     .orElseThrow(() -> new ConflictException("the job ran no step to run again from", Map.of("jobId", job.id())));
