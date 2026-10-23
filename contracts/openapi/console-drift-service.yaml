@@ -49,6 +49,40 @@ info:
     **Internal operations.** `/internal/*` answers the console-internal principal only (a service
     token, no `acct`); a person's token gets 404. They show the watch list and run a read, a scan,
     an inventory sync or a revert-follower pass now, for operators and the other services.
+
+    **Unmanaged objects and their owners (the shadow-infrastructure finder).** A discovery run
+    lists what the provider has for a type and keeps, for the account that ran it, every object no
+    account manages. Each object carries a guess at its owning account: a tag naming an account's
+    owning team or id is a `high` guess, the account's name in the object's name is `medium`,
+    sharing a placement value (a folder, network, cluster or pool) with one account's resources and
+    no other's is `low`, and so, failing that, is being the only account that manages resources of
+    the type in the region; `reasons` say which in plain words. The guesses read the fields the
+    type's `observe.map` gives the object (P-09): a map that names the object's name, tags and
+    folder gives the best guesses. Each carries an estimated monthly cost from the console's list
+    prices (the cost service's `POST /v1/cost:estimate`). `POST /v1/unmanaged:assign` hands an object to another
+    team: it then also shows in that account's list, with the assignment, until either account
+    imports it; an import by either removes it from both.
+
+    **Monitoring.** `GET /v1/metrics` reads a resource's CPU, memory, disk and similar series
+    through the platform's metrics read (P-09's `observe.metrics`, `POST /api/v1/resources/{id}:metrics`),
+    under the same observe budget as the scans; a type without a metrics read answers 404
+    `metrics.notSupported`. An alarm watches one series of one resource: it fires when the series'
+    average over its window is above (or below) its threshold, and returns to `ok` when it is not;
+    `insufficient` means the provider gave no points. Alarms are evaluated every minute.
+
+    **Rightsizing.** Once a day the service reads the last 14 days of every resource whose type
+    has a metrics read and keeps the 95th percentiles of CPU and memory. A resource whose CPU and
+    memory both stay under the idle thresholds is `idle` (the recommendation is to delete it); one
+    that stays under the oversized thresholds is `oversized` (the recommendation is the smallest
+    size the type allows that keeps the 95th percentile under 60%). Each recommendation carries
+    the monthly cost now and the estimated saving. `:apply` runs the type's update workflow with
+    the proposed size, or its delete workflow, on behalf of the person who asks, exactly as a
+    revert does; nothing is ever applied on its own. A dismissed recommendation stays dismissed
+    until its `until`, or until the utilisation changes kind.
+
+    **Numbers for the executive home.** `GET /v1/findings/stats` counts the findings opened and
+    closed in a window, by resolution and severity, with the mean time to close; the internal
+    principal may leave out `accountId` for every account.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -57,6 +91,10 @@ tags:
   - name: Findings
   - name: Discovery
   - name: Webhooks
+  - name: Monitoring
+    description: Metric series and alarms from the provider's metrics read
+  - name: Rightsizing
+    description: Idle and oversized resources, with one-click resize or delete
   - name: Internal
     description: For console services and operators (the console-internal principal)
   - name: Health
@@ -140,6 +178,28 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FindingsSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/findings/stats:
+    get:
+      operationId: getFindingStats
+      summary: Findings opened and closed in a window
+      description: The drift numbers of the executive home (WP 9.5). Without `since`, the last 30 days; without `until`, now. The internal principal may leave out `accountId` for every account.
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FindingStats' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/findings/{findingId}:
     parameters:
@@ -310,13 +370,17 @@ paths:
     get:
       operationId: listUnmanaged
       summary: Objects the provider has that the console does not manage
+      description: The objects this account's discovery runs found, and the ones another account assigned to it; every type when `type` is left out.
       tags: [Discovery]
       parameters:
         - $ref: '#/components/parameters/AccountId'
         - name: type
           in: query
-          required: true
           schema: { type: string }
+        - name: owner
+          in: query
+          description: '`mine` for the objects guessed to be or assigned to this account, `unknown` for the ones with no guess; every object by default'
+          schema: { type: string, enum: [any, mine, unknown] }
         - name: region
           in: query
           schema: { $ref: '#/components/schemas/RegionName' }
@@ -341,7 +405,7 @@ paths:
     post:
       operationId: importUnmanaged
       summary: Take a discovered object under management
-      description: Mints a wfrn through the state service (`POST /v1/resources:import`, source `discover`) and removes the object from the unmanaged list. A discovered object has no registry record, so the import sends the provider id as its `registryId`, which the state contract requires; the resource is watched from then on and read through the type's `discover` pages.
+      description: Mints a wfrn through the state service (`POST /v1/resources:import`, source `discover`) and removes the object from the unmanaged list, and from the list of the account it was assigned to or by. A discovered object has no registry record, so the import sends the provider id as its `registryId`, which the state contract requires; the resource is watched from then on and read through the type's `discover` pages.
       tags: [Discovery]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -372,6 +436,294 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/unmanaged:assign:
+    post:
+      operationId: assignUnmanaged
+      summary: Hand a discovered object to another team
+      description: The object stays in this account's list with its `assignment` and shows in the named account's list too, until either imports it. Assigning it again moves the assignment.
+      tags: [Discovery]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, region, providerId, accountId]
+              properties:
+                type: { type: string }
+                region: { $ref: '#/components/schemas/RegionName' }
+                providerId: { type: string }
+                accountId: { $ref: '#/components/schemas/AccountId' }
+                note: { type: string, maxLength: 500 }
+                actor: { type: string, description: 'The console user, when the BFF sends it for one' }
+      responses:
+        '200':
+          description: The object, with its assignment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UnmanagedObject' }
+        '400':
+          description: '`unmanaged.unknownAccount` when no active account has that id, or the account is this one'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/metrics:
+    get:
+      operationId: getResourceMetrics
+      summary: A resource's metric series
+      description: Through the platform's metrics read for the resource (P-09). Without `from`, the last 24 hours; without `step`, one point per twelfth of an hour for a day or less, else per hour. Draws from the provider's observe budget.
+      tags: [Monitoring]
+      parameters:
+        - name: wfrn
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: step
+          in: query
+          description: An ISO-8601 duration, at least PT1M
+          schema: { type: string }
+      responses:
+        '200':
+          description: The series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceMetrics' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Unknown or another account's, or `metrics.notSupported` when the type has no metrics read
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /v1/alarms:
+    get:
+      operationId: listAlarms
+      summary: The account's alarms
+      tags: [Monitoring]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: state
+          in: query
+          schema: { type: string, enum: [ok, alarm, insufficient] }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page, firing alarms first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Alarm' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/alarms/{alarmId}:
+    parameters:
+      - $ref: '#/components/parameters/AlarmId'
+    get:
+      operationId: getAlarm
+      summary: One alarm
+      tags: [Monitoring]
+      responses:
+        '200':
+          description: The alarm
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarm' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putAlarm
+      summary: Create or change an alarm
+      description: The caller names the alarm id (the BFF mints one, so a retried create is the same alarm). A change keeps the alarm's state until the next evaluation.
+      tags: [Monitoring]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlarmInput' }
+      responses:
+        '200':
+          description: Changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarm' }
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alarm' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: The resource is unknown or another account's, or `metrics.notSupported`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      operationId: deleteAlarm
+      summary: Delete an alarm
+      tags: [Monitoring]
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/recommendations:
+    get:
+      operationId: listRecommendations
+      summary: Idle and oversized resources
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [idle, oversized] }
+        - name: status
+          in: query
+          description: open by default
+          schema: { type: string, enum: [open, applied, dismissed, superseded] }
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page, the largest saving first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Recommendation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/recommendations/summary:
+    get:
+      operationId: getRecommendationsSummary
+      summary: Open recommendations and what they would save
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecommendationsSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/recommendations/{recommendationId}:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationId'
+    get:
+      operationId: getRecommendation
+      summary: One recommendation
+      tags: [Rightsizing]
+      responses:
+        '200':
+          description: The recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recommendation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/recommendations/{recommendationId}:apply:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationId'
+    post:
+      operationId: applyRecommendation
+      summary: Resize or delete the resource as recommended
+      description: Records the change at the state service, then starts the type's update workflow with the proposed size (or its delete workflow) on behalf of the person who asks, with the job label `drift-recommendation`. The recommendation is `applied` once the job is started; the next utilisation pass judges the new size.
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+        - $ref: '#/components/parameters/OnBehalfOf'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Decision' }
+      responses:
+        '202':
+          description: The job is started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recommendationId, jobId]
+                properties:
+                  recommendationId: { type: string }
+                  jobId: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`recommendation.closed` (applied, dismissed or superseded), `recommendation.notApplicable` (the type has no update or delete workflow, or the size field is not one its update sets), `recommendation.changing` (a change is in flight on the resource) or `revert.needsPerson`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /v1/recommendations/{recommendationId}:dismiss:
+    parameters:
+      - $ref: '#/components/parameters/RecommendationId'
+    post:
+      operationId: dismissRecommendation
+      summary: Set a recommendation aside
+      tags: [Rightsizing]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Decision'
+                - type: object
+                  properties:
+                    until: { type: string, format: date-time, description: Until when; for good when left out }
+      responses:
+        '200':
+          description: Dismissed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recommendation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`recommendation.closed`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /v1/webhooks/{provider}:
     parameters:
       - name: provider
@@ -542,6 +894,35 @@ paths:
                   ended: { type: integer }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /internal/alarms:evaluate:
+    post:
+      operationId: evaluateAlarmsNow
+      summary: Evaluate every alarm now
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the pass did
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmsReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/utilisation:
+    post:
+      operationId: readUtilisationNow
+      summary: Run the daily utilisation pass now
+      description: Reads the last 14 days of every resource whose type has a metrics read, and opens, updates or supersedes its recommendation.
+      tags: [Internal]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '200':
+          description: What the pass did
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UtilisationReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     consoleJwt:
@@ -561,6 +942,22 @@ components:
       required: true
       description: The resource's wfrn, percent-encoded
       schema: { $ref: '#/components/schemas/Wfrn' }
+    AlarmId:
+      name: alarmId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+    RecommendationId:
+      name: recommendationId
+      in: path
+      required: true
+      schema: { type: string }
+    OnBehalfOf:
+      name: X-On-Behalf-Of
+      in: header
+      required: false
+      description: The BFF's signed assertion for the person who asked (P-02), relayed onto the platform job. Without it, and without a person the service may sign for itself (the demo), the answer is 409 `revert.needsPerson`.
+      schema: { type: string }
     AccountId:
       name: accountId
       in: query
@@ -734,6 +1131,9 @@ components:
         observed: { type: object, additionalProperties: true }
         seenAt: { type: string, format: date-time }
         firstSeenAt: { type: string, format: date-time }
+        ownerGuess: { $ref: '#/components/schemas/OwnerGuess' }
+        monthlyCost: { $ref: '#/components/schemas/Money' }
+        assignment: { $ref: '#/components/schemas/Assignment' }
     IgnoredField:
       type: object
       required: [path, desiredDigest, by, since]
@@ -797,3 +1197,179 @@ components:
         added: { type: integer }
         changed: { type: integer }
         removed: { type: integer }
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, description: Per month }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        basis: { type: string, description: The price list the figure comes from }
+    OwnerGuess:
+      type: object
+      description: The account an unmanaged object most likely belongs to, and why
+      required: [accountId, confidence, reasons]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        team: { type: string, description: The account's owning team }
+        confidence: { type: string, enum: [high, medium, low] }
+        reasons:
+          type: array
+          items: { type: string }
+    Assignment:
+      type: object
+      description: An unmanaged object handed to another team's account
+      required: [accountId, fromAccountId, by, at]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        fromAccountId: { $ref: '#/components/schemas/AccountId' }
+        by: { type: string }
+        note: { type: string }
+        at: { type: string, format: date-time }
+    FindingStats:
+      type: object
+      required: [since, until, opened, closed, open, bySeverity]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        opened: { type: integer, description: Findings opened in the window }
+        closed:
+          type: object
+          description: Findings closed in the window, by resolution
+          required: [total, reverted, accepted, ignored, vanished]
+          properties:
+            total: { type: integer }
+            reverted: { type: integer }
+            accepted: { type: integer }
+            ignored: { type: integer }
+            vanished: { type: integer }
+        open: { type: integer, description: Findings open now }
+        bySeverity:
+          type: object
+          description: Findings opened in the window, by severity
+          additionalProperties: { type: integer }
+        meanMinutesToClose: { type: [number, 'null'], description: Over the findings closed in the window }
+    MetricSeries:
+      type: object
+      required: [name, points]
+      properties:
+        name: { type: string, description: 'The series name the type''s metrics read maps, such as cpuPercent' }
+        unit: { type: string }
+        points:
+          type: array
+          items:
+            type: object
+            required: [at, value]
+            properties:
+              at: { type: string, format: date-time }
+              value: { type: [number, 'null'] }
+    ResourceMetrics:
+      type: object
+      required: [wfrn, from, to, step, series]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        step: { type: string, description: An ISO-8601 duration }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/MetricSeries' }
+        provider: { type: string }
+        action: { type: string }
+    AlarmInput:
+      type: object
+      required: [wfrn, metric, comparison, threshold]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        name: { type: string, maxLength: 128 }
+        metric: { type: string, description: A series name of the type's metrics read }
+        comparison: { type: string, enum: [above, below] }
+        threshold: { type: number }
+        windowMinutes: { type: integer, minimum: 1, maximum: 1440, default: 10, description: The average over this window is compared }
+        actor: { type: string, description: 'The console user, when the BFF sends it for one' }
+    Alarm:
+      type: object
+      required: [alarmId, wfrn, accountId, type, metric, comparison, threshold, windowMinutes, state, createdAt, updatedAt]
+      properties:
+        alarmId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        name: { type: string }
+        metric: { type: string }
+        comparison: { type: string, enum: [above, below] }
+        threshold: { type: number }
+        windowMinutes: { type: integer }
+        state: { type: string, enum: [ok, alarm, insufficient] }
+        stateSince: { type: string, format: date-time }
+        lastValue: { type: [number, 'null'], description: The window's average at the last evaluation }
+        lastEvaluatedAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Utilisation:
+      type: object
+      required: [from, to, samples]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        samples: { type: integer }
+        cpuP95: { type: number, description: Percent }
+        cpuMax: { type: number }
+        memoryP95: { type: number, description: Percent }
+        memoryMax: { type: number }
+    Recommendation:
+      type: object
+      required: [recommendationId, wfrn, accountId, region, type, kind, action, status, utilisation, createdAt, updatedAt]
+      properties:
+        recommendationId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [idle, oversized] }
+        action: { type: string, enum: [delete, resize] }
+        status: { type: string, enum: [open, applied, dismissed, superseded] }
+        current: { type: object, additionalProperties: true, description: 'The size fields as they are, such as cpu and memoryGb' }
+        proposed: { type: object, additionalProperties: true, description: 'The size fields a resize sets; absent for a delete' }
+        utilisation: { $ref: '#/components/schemas/Utilisation' }
+        monthlyCost: { $ref: '#/components/schemas/Money' }
+        monthlySaving: { $ref: '#/components/schemas/Money' }
+        jobId: { type: string, description: 'The resize or delete job, once applied' }
+        decidedBy: { type: string }
+        reason: { type: string }
+        dismissedUntil: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RecommendationsSummary:
+      type: object
+      required: [open, byKind, monthlySaving]
+      properties:
+        open: { type: integer }
+        byKind:
+          type: object
+          additionalProperties: { type: integer }
+        monthlySaving: { $ref: '#/components/schemas/Money' }
+        lastPassAt: { type: string, format: date-time }
+    AlarmsReport:
+      type: object
+      required: [evaluated, fired, cleared, insufficient, errors]
+      properties:
+        evaluated: { type: integer }
+        fired: { type: integer }
+        cleared: { type: integer }
+        insufficient: { type: integer }
+        errors: { type: integer }
+    UtilisationReport:
+      type: object
+      required: [read, skipped, opened, updated, superseded, errors]
+      properties:
+        read: { type: integer }
+        skipped: { type: integer, description: 'No metrics read for the type, a change in flight, or too few points' }
+        opened: { type: integer }
+        updated: { type: integer }
+        superseded: { type: integer }
+        errors: { type: integer }
