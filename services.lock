@@ -1,0 +1,14 @@
+# The commits console-e2e runs, one line per image: the image, the branch, the full commit and why.
+# scripts/checkout.sh checks each out as a worktree under .work/src/<image>; scripts/build.sh builds
+# the console-e2e/<image>:local images from them. Re-pin by changing a line and running ./e2e.sh.
+#
+# image                     branch                                        commit                                    reason
+platform-fake-app           console-libs--phase-0                         6861ed541f14cd78fa3fdaefef1009cdaea3d6bc  the libraries every service builds with and platform-fake-app; the branch's tip
+console-identity-service    console-identity-service--phase-7             04e560ff9ecf7416161edab03d8d2eb1c9a83c61  last commit before 73b371e, which refuses the harness's service token unless console-e2e is listed in console.identity.auth.internal-services (see README, "Pins held back")
+console-state-service       console-state-service--phase-9                0d6164a0da0cb4dbbde9c8bca92a16e1b0ab7c3f  the branch's tip
+console-bff                 console-bff--drift                            1096484eb4fd148d4568346b3b9952c491b4a0dd  the tip with the drift routes the revert needs; no BFF commit has the cost routes too (F-4)
+console-search-indexer      console-search-indexer--transfers             200dba42dff436a1970cc2f23fa6814df7bdd3e8  the branch's tip (--load on top of it only adds the load test)
+console-drift-service       console-drift-service--finder-and-monitoring  cb3106dcad0848770251e628314e6e329a0f2c14  last commit before 5a01b4c, which refuses the harness's check-now call unless console-e2e is listed in console.auth.service-callers (see README, "Pins held back")
+console-cost-service        console-cost-service--phase-7                 3664b57fd30b68001f33638fe68b50dae57d9f0d  the branch's tip, with F-10 fixed
+console-web                 console-web--phase-5                          3950f17c4239767a1194edc43096410e84248e82  the tip with F-9 fixed; the create wizard, the resource page, the drift tab and approvals
+console-web-cost            console-web--phase-9-cost                     1bb59eceb6c7c5844ee92cfba9a8b3e301102cf4  the newest web with a cost panel on the resource page (step 5), served on :3001
