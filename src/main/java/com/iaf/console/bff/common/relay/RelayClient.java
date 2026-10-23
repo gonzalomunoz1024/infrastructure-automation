@@ -59,7 +59,7 @@ public final class RelayClient {
     /** The call as the person, in the scope's account and region. */
     public Mono<Relayed> asPerson(AccountScope scope, StateCaller caller, RelayCall call) {
         return Mono.defer(() -> exchange(call, "Bearer " + trust.mint(InternalToken.user(audience, caller.userId(), scope.accountId(), scope.region(),
-                caller.groups(), caller.roles()))));
+                caller.groups(), caller.roles(), caller.rolesUntil()))));
     }
 
     /** The call as the BFF itself: a service token, which may name any account. */

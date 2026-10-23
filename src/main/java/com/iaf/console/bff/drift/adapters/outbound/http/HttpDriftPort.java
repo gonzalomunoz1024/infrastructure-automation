@@ -473,7 +473,7 @@ public class HttpDriftPort implements DriftPort {
     private String bearer(AccountScope scope, DriftCaller caller) {
         InternalToken token = caller == null || caller.isInternal()
                 ? InternalToken.service(properties.serviceName(), trust.issuer())
-                : InternalToken.user(properties.serviceName(), caller.userId(), scope.accountId(), scope.region(), caller.groups(), caller.roles());
+                : InternalToken.user(properties.serviceName(), caller.userId(), scope.accountId(), scope.region(), caller.groups(), caller.roles(), caller.rolesUntil());
         return "Bearer " + trust.mint(token);
     }
 

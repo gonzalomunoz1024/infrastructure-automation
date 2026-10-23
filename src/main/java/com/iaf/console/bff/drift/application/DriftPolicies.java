@@ -165,7 +165,7 @@ public class DriftPolicies {
 
     /** The person behind the session, as the drift service hears them. */
     public static DriftCaller caller(Session session) {
-        return DriftCaller.person(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles());
+        return DriftCaller.person(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles(), session.rolesUntil());
     }
 
     static Wfrn parse(String wfrn) {

@@ -9,6 +9,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * The session cookie and its lifetime: an absolute {@code ttl}, an {@code idle-timeout} after
  * which an unused session ends, the cookie flags, and the base64 {@code secret} the CSRF tokens and
  * the login tickets are derived from (generated at boot when empty, which only suits one instance).
+ * {@code roles-refresh-interval} is how long the memberships read from the identity service are
+ * used before a request reads them again (identity changes and the end of a time-boxed role make
+ * it sooner).
  */
 @ConfigurationProperties(prefix = "console.session")
 public record SessionProperties(
@@ -20,5 +23,6 @@ public record SessionProperties(
         @DefaultValue("true") boolean secure,
         @DefaultValue("Lax") String sameSite,
         @DefaultValue("/") String cookiePath,
-        String secret) {
+        String secret,
+        @DefaultValue("5m") Duration rolesRefreshInterval) {
 }

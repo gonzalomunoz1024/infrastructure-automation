@@ -27,6 +27,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.console.bff.demo.drift.application.DemoScorecards;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
+import com.iaf.console.bff.drift.application.DriftProperties;
 import com.iaf.console.bff.scorecards.application.ScorecardsConfiguration;
 import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.errors.InvalidInputException;
@@ -48,8 +49,10 @@ public class DemoScorecardsRoutes {
     private final DemoScorecards scorecards;
     private final DemoTokens tokens;
     private final ObjectMapper json;
+    private final DriftProperties properties;
 
-    public DemoScorecardsRoutes(DemoScorecards scorecards, DemoTokens tokens, ObjectMapper json) {
+    public DemoScorecardsRoutes(DemoScorecards scorecards, DemoTokens tokens, ObjectMapper json, DriftProperties properties) {
+        this.properties = properties;
         this.scorecards = scorecards;
         this.tokens = tokens;
         this.json = json;
@@ -100,7 +103,7 @@ public class DemoScorecardsRoutes {
     }
 
     private Mono<ServerResponse> answer(ServerRequest request, Function<DemoCaller, Mono<ServerResponse>> work) {
-        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), properties.serviceName());
         if (caller.isEmpty()) {
             return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
         }

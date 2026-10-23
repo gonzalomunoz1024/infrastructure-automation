@@ -28,6 +28,7 @@ import org.springframework.web.reactive.function.server.ServerResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.iaf.console.bff.cost.application.CostProperties;
 import com.iaf.console.bff.cost.application.CostConfiguration;
 import com.iaf.console.bff.demo.cost.application.DemoCostLedger;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
@@ -56,8 +57,10 @@ public class DemoCostRoutes {
     private final DemoCostLedger ledger;
     private final DemoTokens tokens;
     private final ObjectMapper json;
+    private final CostProperties properties;
 
-    public DemoCostRoutes(DemoCostLedger ledger, DemoTokens tokens, ObjectMapper json) {
+    public DemoCostRoutes(DemoCostLedger ledger, DemoTokens tokens, ObjectMapper json, CostProperties properties) {
+        this.properties = properties;
         this.ledger = ledger;
         this.tokens = tokens;
         this.json = json;
@@ -179,7 +182,7 @@ public class DemoCostRoutes {
     }
 
     private Mono<ServerResponse> answer(ServerRequest request, Function<DemoCaller, Mono<ServerResponse>> work) {
-        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), properties.serviceName());
         if (caller.isEmpty()) {
             return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
         }

@@ -67,11 +67,14 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.oidc.issuer`, `client-id`, `client-secret`, `redirect-uri`, `scopes`, `groups-claim` | The enterprise identity provider; discovery is read from `<issuer>/.well-known/openid-configuration` |
 | `console.session.secret` | Base64, at least 32 bytes; seals the login ticket and signs CSRF tokens. Generated at boot when empty, which only suits one replica |
 | `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
+| `console.session.roles-refresh-interval` | How long a session uses the memberships `principals:resolve` answered before its next request reads them again (5 minutes); never past the earliest `accounts[].elevations[].until`, and sooner after an identity change |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
 | `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
 | `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
+| `console.trust.kubernetes.max-token-lifetime`, `single-use` | A cluster's service-account token may live 1 hour at most (from its `iat`, or from now without one); with `single-use` (on) each is redeemed once, by its `jti` or else its hash, until it expires |
+| `console.trust.rate-limit.burst`, `per-minute` | A token bucket per client of `POST /internal/v1/token`: 10 at once, 30 a minute; over it is 429 `slow_down` with `Retry-After` |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.cost.url`, `service-name`, `timeout`, `check-timeout` | The cost service (`http://localhost:18086`; empty: `/demo-cost`), its token audience, and how long a create waits for the budget check and estimate (2 s; past it the create goes on without them) |
 | `console.drift.url`, `service-name`, `timeout` | The drift service (`http://localhost:18084` by default), the audience of the internal tokens it gets (`console-drift-service`) and how long a call may take (5s); an empty URL means the stand-in under `/demo-drift` |
@@ -83,6 +86,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.live.ring-capacity`, `heartbeat`, `relay.enabled` | The replay ring per account, the SSE heartbeat, and whether this instance follows the platform feed |
 | `console.platform.fake.*` | Demo only: the embedded platform's port, step delay and seed |
 | `console.kafka.*` | With the `kafka` profile: bootstrap servers, group id, topics |
+| `console.kafka.sessions.topic`, `group-prefix` | With the `kafka` profile: the identity changes the sessions follow (`identity.changes`), each instance in a consumer group of its own (`console-bff-sessions-<random>`) |
 
 ## Security model
 
@@ -92,9 +96,18 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
   replica. The ID token is verified against the provider's JWKS (issuer, audience, expiry, nonce).
 * **The principal** is resolved by the identity service (`POST /v1/principals:resolve`): who the
   person is in the console and which accounts they belong to, with their managed roles. No account
-  means 403 at sign-in.
+  means 403 at sign-in. A session reads them again on its first request after
+  `roles-refresh-interval`, after the earliest time-boxed role (elevation or break glass) ends,
+  after an IAM write made through this instance, and (with the `kafka` profile) after an
+  `identity.changes` event that concerns the person or the account (`ElevationChanged`,
+  `UserChanged` updated or deleted, `GroupChanged`, `RoleChanged`, `PolicyChanged`,
+  `AccountChanged` closed or suspended). A person no longer in the session's account, or in none,
+  loses the session (401); a re-read that fails answers 503. No internal token outlives the roles
+  it carries.
 * **The session** is an opaque random id in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie; the
-  server keeps the memberships, the current account and region, and `authTime`. Switching account
+  server keeps the memberships, the current account and region, and `authTime`, under the
+  SHA-256 of the id (the id itself is never stored); only the sign-in inserts a session, so a
+  request in flight never brings back one that was logged out. Switching account
   or region is `PUT /console/v1/session`.
 * **CSRF**: every write under `/console/` and the logout need `X-Csrf-Token`, an HMAC of the
   session id, which `GET /console/v1/session` hands out; when the browser sends an `Origin` it
@@ -103,9 +116,11 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 * **Step-up**: destructive actions within the configured max age need a fresh authentication:
   the API answers 403 with `detail.stepUp` and a login path; `/auth/login?stepUp=true` re-runs the
   provider with `prompt=login&max_age=0` and refreshes the same session's `authTime`.
-* **Downstream calls** carry a 60-second ES256 JWT minted here (`iss` console-bff, `aud` the
-  target service, `sub`, `acct`, `region`, `groups`) that the identity and state services verify
-  against `/.well-known/jwks.json`. Platform commands carry the account's service-account token and
+* **Downstream calls** carry a 60-second ES256 JWT minted here (`iss` console-bff, `aud` exactly
+  the target service and nothing else, hub decision 35, `sub`, `acct`, `region`, `groups`, `roles`)
+  that the identity, state and search services verify against `/.well-known/jwks.json`; the BFF's
+  own calls as the console-internal principal carry `sub` and `svc` `console-bff` and no `acct`.
+  The demo stand-ins verify the same way. Platform commands carry the account's service-account token and
   a P-02 on-behalf-of assertion signed with the same key.
 * **Service tokens** (hub decision 23): a console service that calls another on its own gets a
   token from `POST /internal/v1/token`, never a copy of the signing key or a static token. See
@@ -352,13 +367,15 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=client_credentials
 &client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
 &client_assertion=<the assertion>
-&audience=console-state-service&audience=console-identity-service
+&audience=console-state-service
 ```
 
-The answer is `{ access_token, token_type: "Bearer", expires_in: 300, audience }` with
-`Cache-Control: no-store`: an ES256 token with `iss` console-bff, `aud` only the services asked
-for (every registered one when none is), `sub` and `svc` the service id, and no `acct`, which the
-other services treat as the console-internal principal. Refusals are RFC 6749 bodies,
+`audience` is required and names exactly one service (hub decision 35): a client calling two
+services holds two tokens, and none or several is 400 `invalid_target`. The answer is
+`{ access_token, token_type: "Bearer", expires_in: 300, audience }` (`audience` a string) with
+`Cache-Control: no-store`: an ES256 token with `iss` console-bff, `aud` exactly that service,
+`sub` and `svc` the service id, and no `acct`, which a service accepts only from the service
+principals it lists as allowed to call it as themselves. Refusals are RFC 6749 bodies,
 `{ error, error_description }`: 400 `invalid_request`, `unsupported_grant_type` or
 `invalid_target`, 401 `invalid_client`.
 
@@ -369,12 +386,15 @@ The assertion proves who asks, in one of two ways:
   against the cluster's service-account issuer (`console.trust.kubernetes.*`) and maps
   `system:serviceaccount:<namespace>:<name>` to the client registered with that
   `service-account`. No secret exists anywhere. The chart turns this on and mounts a token for
-  the API server and the cluster's CA, so the BFF can read the issuer's keys.
+  the API server and the cluster's CA, so the BFF can read the issuer's keys. The token may live an hour at
+  most and, with `console.trust.kubernetes.single-use`, is redeemed once (by `jti`, else by its
+  hash) until it expires, so a client needs a fresh service-account token for every service token.
 * **Anywhere else** (a laptop, CI, a VM), a JWT the service signs with its own EC or RSA key: `iss`
-  and `sub` its service id, `aud` `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
+  and `sub` its service id, `aud` exactly `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
   is plenty) and a `jti` used once; the BFF holds the service's public keys
-  (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Replays are refused per replica, so
-  keep assertions short.
+  (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Used `jti`s are kept until they
+  expire, in memory, or with the `mongo` profile in `service_token_assertions` (a TTL index), so
+  an assertion is redeemed once across every replica.
 
 Only asymmetric algorithms are accepted (ES256, ES384, RS256, PS256). A new client is a new entry
 under `console.trust.clients` (in the chart, `config.serviceTokens.clients`) with the audiences it

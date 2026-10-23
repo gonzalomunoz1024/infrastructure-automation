@@ -55,7 +55,7 @@ public class IdentityClient {
     /** A request as a session's user in the session's account and region. */
     public WebClient.RequestBodyUriSpec asUser(org.springframework.http.HttpMethod method, Session session) {
         String token = trust.mint(InternalToken.user(properties.serviceName(), session.user().userId(), session.accountId(), session.region(),
-                session.currentAccount().groups(), session.currentAccount().roles()));
+                session.currentAccount().groups(), session.currentAccount().roles(), session.rolesUntil()));
         WebClient.RequestBodyUriSpec spec = client().method(method);
         spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
         return spec;

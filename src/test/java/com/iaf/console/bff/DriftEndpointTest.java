@@ -193,7 +193,7 @@ class DriftEndpointTest extends DemoApp {
                 "since comes before until");
         assertEquals(401, console.get(STAND_IN_STATS, null).status(), "no token, no answer");
         Map<String, String> person = Map.of("Authorization",
-                "Bearer " + trust.mint(InternalToken.user("console-drift-service", "user_gonzalo", COMPUTE, "global", List.of(), List.of())));
+                "Bearer " + trust.mint(InternalToken.user("console-drift-service", "user_gonzalo", COMPUTE, "global", List.of(), List.of(), null)));
         assertEquals(404, console.get(STAND_IN_STATS + "?accountId=" + DATA, null, person).status(), "a person names no other account");
     }
 
@@ -424,8 +424,9 @@ class DriftEndpointTest extends DemoApp {
     private Console.Signed aged(Console.Signed signed) {
         Session session = sessions.find(signed.cookie()).block();
         assertNotNull(session, "the session behind the cookie");
-        sessions.save(new Session(session.id(), session.user(), session.accounts(), session.accountId(), session.region(), session.createdAt(),
-                session.authTime().minus(Duration.ofHours(1)), session.lastSeenAt(), session.expiresAt(), session.issuer(), session.subject())).block();
+        sessions.update(new Session(session.id(), session.user(), session.accounts(), session.accountId(), session.region(), session.createdAt(),
+                session.authTime().minus(Duration.ofHours(1)), session.lastSeenAt(), session.expiresAt(), session.issuer(), session.subject(),
+                session.idpGroups(), session.rolesResolvedAt(), session.rolesUntil())).block();
         return signed;
     }
 

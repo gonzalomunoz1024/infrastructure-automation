@@ -50,6 +50,18 @@ class IamProxyTest extends DemoApp {
     }
 
     @Test
+    void aPathThatCouldClimbOutOfTheAccountIs400() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        for (String path : List.of("/console/v1/iam/users/../../222222222222/users", "/console/v1/iam/users/%2e%2e/%2E%2E/222222222222/users",
+                "/console/v1/iam/users/a%2fb", "/console/v1/iam/users/a%5Cb", "/console/v1/iam/users//user_mia", "/console/v1/access-requests/../x")) {
+            Console.Reply reply = console.call(org.springframework.web.reactive.function.client.WebClient.create().get().uri(java.net.URI.create(BASE + path))
+                    .cookie(Console.SESSION_COOKIE, gonzalo.cookie()));
+            assertEquals(400, reply.status(), path + ": " + reply.body());
+        }
+        assertEquals(200, console.get("/console/v1/iam/users/user_mia", gonzalo).status());
+    }
+
+    @Test
     void aViewerReadsButEveryWriteIsRefusedWithTheDenial() {
         Console.Signed mia = console.signIn("mia");
         assertEquals(200, console.get("/console/v1/iam/users", mia).status());

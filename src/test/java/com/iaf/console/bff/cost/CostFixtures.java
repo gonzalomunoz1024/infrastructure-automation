@@ -74,13 +74,13 @@ public final class CostFixtures {
     }
 
     public static Sessions sessions() {
-        return new Sessions(null, null, new StepUpPolicy(Duration.ofMinutes(10), List.of("*:delete")), null, null, CLOCK);
+        return new Sessions(null, null, new StepUpPolicy(Duration.ofMinutes(10), List.of("*:delete")), null, null, null, null, CLOCK);
     }
 
     public static Trust trust() {
         ECKey signing = OnBehalfOfAssertions.generateKey("console-bff-test");
         TrustProperties properties = new TrustProperties("console-bff", "platform", Duration.ofSeconds(60), Duration.ofSeconds(30), null, null,
-                Duration.ofMinutes(5), Duration.ofMinutes(5), new TrustProperties.Kubernetes(null, null, null, null, null), Map.of());
+                Duration.ofMinutes(5), Duration.ofMinutes(5), new TrustProperties.Kubernetes(null, null, null, null, null, Duration.ofHours(1), true), Map.of(), null);
         SigningKeyPort keys = new SigningKeyPort() {
             @Override
             public ECKey currentKey() {

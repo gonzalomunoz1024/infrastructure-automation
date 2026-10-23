@@ -81,7 +81,7 @@ class HttpDriftPortTest {
     private final Deque<Answer> answers = new ArrayDeque<>();
     private final ECKey key = OnBehalfOfAssertions.generateKey("console-bff-test");
     private final Trust trust = new Trust(() -> key, new TrustProperties("console-bff", "platform", Duration.ofSeconds(60), Duration.ofSeconds(30), null,
-            null, Duration.ofMinutes(5), Duration.ofMinutes(5), null, null), Clock.systemUTC());
+            null, Duration.ofMinutes(5), Duration.ofMinutes(5), null, null, null), Clock.systemUTC());
     private HttpServer server;
     private HttpDriftPort port;
 

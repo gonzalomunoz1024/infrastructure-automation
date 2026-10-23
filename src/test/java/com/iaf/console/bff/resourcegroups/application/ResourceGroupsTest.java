@@ -287,7 +287,7 @@ class ResourceGroupsTest {
     }
 
     private Sessions sessions() {
-        return new Sessions(null, null, new StepUpPolicy(Duration.ofMinutes(10), List.of("*:delete")), null, null, clock);
+        return new Sessions(null, null, new StepUpPolicy(Duration.ofMinutes(10), List.of("*:delete")), null, null, null, null, clock);
     }
 
     private Resources stateRows() {

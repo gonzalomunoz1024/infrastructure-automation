@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 
 import com.iaf.console.bff.trust.ports.outbound.ClientKeysPort;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
+import com.iaf.console.bff.trust.ports.outbound.UsedAssertionsPort;
 
 /** Wires the trust service and the service tokens; the clock is shared by every slice so tests can move time. */
 @Configuration(proxyBeanMethods = false)
@@ -25,7 +26,8 @@ public class TrustConfiguration {
     }
 
     @Bean
-    public ServiceTokens serviceTokens(Trust trust, TrustProperties properties, ClientKeysPort clientKeys, Clock clock) {
-        return new ServiceTokens(trust, properties, clientKeys, clock);
+    public ServiceTokens serviceTokens(Trust trust, TrustProperties properties, ClientKeysPort clientKeys, UsedAssertionsPort usedAssertions,
+            Clock clock) {
+        return new ServiceTokens(trust, properties, clientKeys, usedAssertions, clock);
     }
 }

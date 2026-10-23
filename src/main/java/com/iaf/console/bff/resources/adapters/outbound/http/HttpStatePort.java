@@ -280,7 +280,7 @@ public class HttpStatePort implements StatePort {
 
     private String bearer(AccountScope scope, StateCaller caller) {
         return "Bearer " + trust.mint(InternalToken.user(properties.serviceName(), caller.userId(), scope.accountId(), scope.region(), caller.groups(),
-                caller.roles()));
+                caller.roles(), caller.rolesUntil()));
     }
 
     private WebClient client() {

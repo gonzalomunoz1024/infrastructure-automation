@@ -41,6 +41,7 @@ import com.iaf.console.bff.demo.directory.domain.DemoPerson;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.identity.application.IdentityConfiguration;
+import com.iaf.console.bff.identity.application.IdentityProperties;
 import com.iaf.console.bff.platform.domain.DemoPlatformSeed;
 import com.iaf.console.bff.session.domain.RoleConventions;
 import com.iaf.console.wfrn.Ulid;
@@ -67,14 +68,17 @@ public class DemoIdentityRoutes {
     private final DemoTokens tokens;
     private final ObjectProvider<DemoPlatformSeed> platformSeed;
     private final ObjectProvider<Access> access;
+    private final String audience;
     private final Map<String, Map<String, Object>> accessKeys = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> customGroups = new ConcurrentHashMap<>();
     private final Map<String, Integer> quotaOverrides = new ConcurrentHashMap<>();
     private final Map<String, QuotaRequest> quotaRequests = new ConcurrentHashMap<>();
     private final Object quotaLock = new Object();
 
-    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access) {
+    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access,
+            IdentityProperties identity) {
         this.directory = directory;
+        this.audience = identity.serviceName();
         this.tokens = tokens;
         this.platformSeed = platformSeed;
         this.access = access;
@@ -123,7 +127,7 @@ public class DemoIdentityRoutes {
     // ---- authentication and scoping
 
     private Optional<DemoCaller> caller(ServerRequest request) {
-        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), audience);
     }
 
     private interface Scoped {
@@ -232,6 +236,16 @@ public class DemoIdentityRoutes {
                 Map<String, Object> d = new LinkedHashMap<>();
                 boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || APPROVER_ACTIONS.contains(action)
                         && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false));
+                Optional<DemoDirectory.DenyStatement> deny = directory.deniedBy(accountId, action, check.path("resource").asText(null));
+                if (deny.isPresent()) {
+                    d.put("allowed", false);
+                    d.put("reason", "Explicitly denied: " + action + " on " + deny.get().resourcePattern());
+                    d.put("role", strongest);
+                    d.put("policyId", "demo/deny");
+                    d.put("statement", "deny " + action + " " + deny.get().resourcePattern());
+                    decisions.add(d);
+                    continue;
+                }
                 d.put("allowed", allowed);
                 if (!allowed) {
                     d.put("reason", roles.isEmpty() ? "The user is not a member of account " + accountId

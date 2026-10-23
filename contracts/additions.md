@@ -37,6 +37,12 @@ service, with these details the contract does not spell out yet:
   (400 `confirm.required` otherwise) and a fresh sign-in (`console.auth.step-up`).
 - `POST /r/{type}:batch` answers 400 `bulk.unsupported` for a verb without a batch route and
   400 `required` for a row without `wfrn` on a verb other than create.
+- A batch on existing resources decides `<service>:<verb>` on every row's own wfrn, as the single
+  verb does, before anything starts (a create batch decides `<service>:create` on the type's
+  pattern, as a single create does). One refused row refuses the whole batch and nothing starts:
+  403 with the first refused row's `denied` (its `resource` that row's wfrn) and `deniedRows`, every
+  refused row as `{ index, wfrn }` in batch order. A row naming another type, account or region is a
+  404, as on the single verb.
 
 ## Changing resources safely (phase 4)
 
@@ -481,7 +487,9 @@ names it) and `DELETE` withdraws it; the decision is the platform team's, intern
 forwarded; the status, `ETag` and body come back as they were; a 403 without a `denied` block gets
 one, named as the identity service names it (`quota:request-increase`, `quota:set`,
 `access-request:<verb>`, else `iam:<verb>`, on `wfrn:wf:iam::<account>:<kind>/<id or *>`). Writes
-need `X-Csrf-Token` like every other write.
+need `X-Csrf-Token` like every other write. A path with a segment that is empty, `.` or `..`, or that holds `%2e`,
+`%2f`, `%5c` or `\` (any case), is a 400 (`path.segment`) and never reaches the identity
+service; every other segment is decoded once and encoded again before it is forwarded.
 
 The quota keys are the identity service's: `jobs-per-minute` (the platform's bucket, `source:
 platform`, with `burst`), `access-keys` (`used` counts the account's active keys) and
@@ -549,3 +557,12 @@ and `stepUp=true`.
 
 `GET /.well-known/jwks.json`: the public keys other console services verify this service's
 internal tokens and on-behalf-of assertions with.
+
+## Service tokens (hub decision 35)
+
+`POST /internal/v1/token` follows decision 35 rather than the pinned text: `audience` is required
+and names exactly one service (none, or more than one, whether as repeated fields or separated by
+spaces, is 400 `invalid_target`), the answer's `audience` is that service as a string, and the
+token's `aud` is that one service. The client's own assertion must name exactly `console-bff` as
+its audience. Every internal token the BFF mints names exactly its callee; `console` is never
+minted.
