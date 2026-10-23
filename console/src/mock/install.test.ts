@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDirectory, decideAccessRequest, createAccessRequest, rolesOf, userOf } from './directory'
+import { buildDirectory, decideAccessRequest, createAccessRequest, quotaOf, requestQuotaIncrease, rolesOf, userOf } from './directory'
 import { MOCK_DIRECTORY_KEY, restoreDirectory, saveDirectory } from './install'
 
 /* A storage for node. */
@@ -15,15 +15,17 @@ describe('the directory the browser keeps', () => {
     const mia = userOf(dir, '123456789012', 'mia')!
     const request = createAccessRequest(dir, '123456789012', mia, { action: 'compute:create', reason: 'I build the team machines' })
     decideAccessRequest(dir, '123456789012', request.requestId, 'approve', 'gonzalo')
+    requestQuotaIncrease(dir, '123456789012', 'access-keys', 'mia', { limit: 60, reason: 'the build farm grows' }, quotaOf(dir, '123456789012', 'access-keys', {}))
     saveDirectory(dir, store)
     expect(store.map.has(MOCK_DIRECTORY_KEY)).toBe(true)
 
     const fresh = buildDirectory()
-    expect(rolesOf(fresh, '123456789012', 'mia')).toEqual(['viewer'])
+    expect(rolesOf(fresh, '123456789012', 'mia')).toEqual(['viewer', 'approver'])
     expect(restoreDirectory(fresh, store)).toBe(true)
     expect(rolesOf(fresh, '123456789012', 'mia')).toContain('operator')
     expect(fresh.accessRequests['123456789012'].map((r) => r.status)).toContain('approved')
     expect(fresh.counters.requests).toBe(dir.counters.requests)
+    expect(fresh.quotaRequests['123456789012'].map((r) => r.status)).toEqual(['open'])
   })
 
   it('ignores nothing kept, or something that is not a directory', () => {
@@ -32,6 +34,10 @@ describe('the directory the browser keeps', () => {
     const broken = storage()
     broken.setItem(MOCK_DIRECTORY_KEY, '{"people": "no"}')
     expect(restoreDirectory(buildDirectory(), broken)).toBe(false)
+    // the first directory's shape, with the policies as one list
+    const older = storage()
+    older.setItem(MOCK_DIRECTORY_KEY, '{"people": [], "groups": {}, "policies": []}')
+    expect(restoreDirectory(buildDirectory(), older)).toBe(false)
     const garbage = storage()
     garbage.setItem(MOCK_DIRECTORY_KEY, 'not json')
     expect(restoreDirectory(buildDirectory(), garbage)).toBe(false)

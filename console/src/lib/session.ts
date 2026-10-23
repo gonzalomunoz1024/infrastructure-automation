@@ -83,16 +83,41 @@ export function useSession(): Session | null {
    Roles: the managed roles a user holds in the account, from the groups they are in
    ------------------------------------------------------------------------- */
 
-export const MANAGED_ROLES = ['viewer', 'operator', 'admin', 'auditor'] as const
+/** The four managed roles of every account (hub decision 21), the weakest first. */
+export const MANAGED_ROLES = ['viewer', 'operator', 'account-admin', 'auditor'] as const
 export type ManagedRole = (typeof MANAGED_ROLES)[number]
 
-const RANK: Record<string, number> = { admin: 4, operator: 3, auditor: 2, viewer: 1 }
+/** The role that runs an account; services decide admin-only things on it, never on a group name. */
+export const ADMIN_ROLE: ManagedRole = 'account-admin'
+/** the managed group that holds the account's admins: it keeps its name, the Admin role and at least one member, and cannot be deleted */
+export const OWNERS_GROUP = 'owners'
 
+const RANK: Record<string, number> = { 'account-admin': 4, operator: 3, auditor: 2, viewer: 1 }
+
+/** How a managed role is shown; a custom role is shown by its name. */
+export const ROLE_LABEL: Record<ManagedRole, string> = {
+  viewer: 'Viewer',
+  operator: 'Operator',
+  'account-admin': 'Admin',
+  auditor: 'Auditor',
+}
+
+/** What each managed role allows, in the identity service's words. */
 export const ROLE_SUMMARY: Record<ManagedRole, string> = {
-  viewer: 'Sees every resource and request of the account.',
-  operator: 'Everything a viewer sees, plus every change that is not destructive.',
-  admin: 'Runs the account: people, groups, access keys, deletions and approvals.',
-  auditor: 'Read-only, including the audit trail and the policy decisions.',
+  viewer: 'Reads everything in the account.',
+  operator: 'Reads, and every change that is not a delete. No IAM.',
+  'account-admin': 'Everything in the account, IAM and deletes included.',
+  auditor: 'Reads everything, and the audit trail.',
+}
+
+export function isManagedRole(role: string | null | undefined): role is ManagedRole {
+  return !!role && (MANAGED_ROLES as readonly string[]).includes(role)
+}
+
+/** 'account-admin' → 'Admin'; a custom role keeps its name. */
+export function roleLabel(role: string | null | undefined): string {
+  if (!role) return 'no role'
+  return isManagedRole(role) ? ROLE_LABEL[role] : role
 }
 
 /** The strongest of the roles: admin, then operator, auditor, viewer; a custom role last. */
@@ -110,13 +135,13 @@ export function hasRole(session: Session | null | undefined, role: string): bool
 }
 
 export function isAdmin(session: Session | null | undefined): boolean {
-  return hasRole(session, 'admin')
+  return hasRole(session, ADMIN_ROLE)
 }
 
-/** The colour a role is drawn in: admin warns, operator is the accent, auditor is calm, viewer neutral. */
+/** The colour a role is drawn in: admin warns, operator is the accent, auditor is calm, viewer and custom roles neutral. */
 export function roleTone(role: string | null | undefined): Tone {
   switch (role) {
-    case 'admin':
+    case 'account-admin':
       return 'warning'
     case 'operator':
       return 'accent'
@@ -136,7 +161,7 @@ export function meOf(session: Session): Me {
     email: session.user.email,
     roles,
     teams: session.account.groups ?? session.user.groups,
-    admin: roles.includes('admin'),
+    admin: roles.includes(ADMIN_ROLE),
   }
 }
 

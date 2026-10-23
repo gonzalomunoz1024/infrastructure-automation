@@ -6,6 +6,7 @@ import { ActionButton } from '../../app/Refusal'
 import { Link, href, navigate, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
+import { ADMIN_ROLE, OWNERS_GROUP } from '../../lib/session'
 import type { IamGroup, IamUser } from '../../lib/types'
 import { RolePicker, RoleTags, UserStatusTag, personLabel, useAdminDecision, useIamWrite } from './common'
 
@@ -257,8 +258,8 @@ export function IamGroupPage({ route }: PageProps) {
         }
         subtitle={g.description ?? 'No description.'}
         actions={
-          g.builtIn ? (
-            <Button variant="danger" icon="trash" disabled title="Built-in groups stay; change their members instead.">
+          g.name === OWNERS_GROUP ? (
+            <Button variant="danger" icon="trash" disabled title="The owners group stays; change its members instead.">
               Delete group
             </Button>
           ) : (
@@ -298,7 +299,7 @@ export function IamGroupPage({ route }: PageProps) {
             ) : undefined
           }
         >
-          {admin ? <RolePicker value={roles} onChange={setRolesDraft} legend="Grants" hint={inGroup && g.roles?.includes('admin') ? 'Careful: dropping admin here may take your own admin role away.' : undefined} /> : <RoleTags roles={g.roles} link size="md" empty="nothing yet" />}
+          {admin ? <RolePicker value={roles} onChange={setRolesDraft} legend="Grants" locked={g.name === OWNERS_GROUP ? [ADMIN_ROLE] : []} hint={g.name === OWNERS_GROUP ? 'The owners group always grants Admin: the account keeps its administrators.' : inGroup && g.roles?.includes(ADMIN_ROLE) ? 'Careful: dropping Admin here may take your own Admin role away.' : undefined} /> : <RoleTags roles={g.roles} link size="md" empty="nothing yet" />}
         </Section>
 
         <Section

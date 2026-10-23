@@ -191,6 +191,8 @@ export interface IamStatement {
   effect: 'allow' | 'deny'
   /** '<service>:<verb>' with `*` allowed */
   actions: string[]
+  /** actions carved out of an allow (the identity service's extension), so a role can grant everything but deletes without a deny that would also override the person's other roles */
+  notActions?: string[]
   /** wfrn patterns */
   resources: string[]
   conditions?: Record<string, unknown>
@@ -230,7 +232,35 @@ export interface Quota {
   burst?: number
   used: number
   source?: 'default' | 'override' | 'platform'
+  /** an open increase request, followed with GET /console/v1/iam/quota-requests/{requestId} */
   pendingRequestId?: string
+}
+
+export type QuotaRequestStatus = 'open' | 'approved' | 'rejected' | 'withdrawn'
+
+/** An ask for a higher limit, which the platform team decides (never the account's own admins). */
+export interface QuotaRequest {
+  requestId: string
+  accountId: string
+  quotaKey: string
+  currentLimit: number
+  requestedLimit: number
+  reason: string
+  status: QuotaRequestStatus
+  /** the limit granted, on approval: the ask by default, possibly less or more */
+  grantedLimit?: number
+  requestedBy: string
+  requestedAt: string
+  decidedAt?: string
+  decidedBy?: string
+  comment?: string
+}
+
+export interface QuotaRequestInput {
+  /** at least 1, above the current limit */
+  limit: number
+  /** 10 to 1000 characters */
+  reason: string
 }
 
 export type AccessRequestStatus = 'pending' | 'approved' | 'rejected' | 'expired'
@@ -249,7 +279,7 @@ export interface AccessRequest {
   decidedAt?: string
   decidedBy?: string
   comment?: string
-  /** who can decide: the account's admins */
+  /** who may decide it, sorted: the account's admins and the members of groups granted access-request:decide */
   approvers?: string[]
   /** which layer refused, when the request came from a refusal */
   layer?: DenialLayer

@@ -4,10 +4,12 @@ import { expectNoHorizontalOverflow, expectNoSeriousA11y } from './support'
 
 /*
  * Gate 1, in mock mode: sign in through the (mock) identity provider, pick an account, meet a
- * refusal that names the deciding layer and the deciding statement, request access from it, have
- * the account admin approve it from the bell, and find the action unlocked. Then the platform
- * layer refusing an account that lacks the scope, the admin switching accounts from the header,
- * and the identity and access pages, with axe on each.
+ * refusal that names the deciding layer and what decided, request access from it, have an
+ * approver of the account approve it from the bell, and find the action unlocked. Then an
+ * operator refused a delete that no statement allows (the managed policies carve deletes out of
+ * the operator's allow), the platform layer refusing an account that lacks the scope, the admin
+ * switching accounts from the header, and the identity and access pages, with axe on each. The
+ * people, roles and groups are the identity service's demo seed.
  */
 
 const shots = fileURLToPath(new URL('./screenshots/', import.meta.url))
@@ -38,7 +40,7 @@ test.describe('identity and access in mock mode', () => {
     await page.screenshot({ path: shot('signin-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'sign-in page')
 
-    // mia holds viewer in Compute
+    // mia holds viewer in Compute (and is one of its approvers)
     await signInAs(page, /Continue as Mia Chen/, '/console/compute/vm')
     await expect(page.getByRole('heading', { name: 'Virtual machines', level: 1 })).toBeVisible()
     await expect(page.locator('header [data-role="viewer"]')).toBeVisible()
@@ -63,7 +65,8 @@ test.describe('identity and access in mock mode', () => {
     await refusal.getByRole('button', { name: 'Send request' }).click()
     const sent = refusal.locator('[data-request-sent]')
     await expect(sent).toBeVisible()
-    await expect(sent).toContainText('Request sent to Gonzalo Munoz')
+    // the account's approvers, but never the requester: the admins and the compute-approvers group
+    await expect(sent).toContainText('Request sent to Dana Reyes, Gonzalo Munoz')
     const requestId = await sent.getAttribute('data-request-sent')
     expect(requestId).toMatch(/^areq_/)
     await page.screenshot({ path: shot('refusal-request-sent-desktop'), fullPage: true })
@@ -78,22 +81,22 @@ test.describe('identity and access in mock mode', () => {
     await signOut(page)
     await signInAs(page, /Continue as Gonzalo Munoz/)
     await expect(page.getByRole('heading', { name: 'Console home', level: 1 })).toBeVisible()
-    await expect(page.locator('header [data-role="admin"]')).toBeVisible()
+    await expect(page.locator('header [data-role="account-admin"]')).toBeVisible()
     const bell = page.getByRole('button', { name: 'Notifications, 1 to decide' })
     await expect(bell).toBeVisible()
     await bell.click()
     const panel = page.getByRole('dialog', { name: 'Notifications, 1 to decide' })
     await expect(panel).toBeVisible()
     await page.screenshot({ path: shot('bell-desktop') })
-    await panel.getByRole('link', { name: /Mia Chen asks for operator/ }).click()
+    await panel.getByRole('link', { name: /Mia Chen asks for Operator/ }).click()
     await expect(page).toHaveURL(new RegExp(`#/iam/access-requests/${requestId}$`))
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Mia Chen asks for')
     await expect(page.locator('[data-status="pending"]').first()).toBeVisible()
-    await page.getByLabel('Comment').fill('Welcome to the developers group')
+    await page.getByLabel('Comment').fill('Welcome to the members group')
     await expectNoSeriousA11y(page, 'access request')
     await page.locator('[data-decide="approve"]').click()
     await expect(page.locator('[data-status="approved"]').first()).toBeVisible()
-    await expect(page.getByText('Welcome to the developers group')).toBeVisible()
+    await expect(page.getByText('Welcome to the members group')).toBeVisible()
     await page.screenshot({ path: shot('access-request-approved-desktop'), fullPage: true })
     await expect(page.getByRole('button', { name: 'Notifications, 1 to decide' })).toBeHidden()
     await expect(page.getByRole('button', { name: 'Notifications', exact: true })).toBeVisible()
@@ -106,11 +109,11 @@ test.describe('identity and access in mock mode', () => {
     await expect(unlocked).not.toHaveAttribute('data-denied')
     await expect(unlocked).toHaveAttribute('data-phase', '3')
     await page.goto(`/#/iam/access-requests/${requestId}`)
-    await expect(page.getByText(/You now hold operator/)).toBeVisible()
+    await expect(page.getByText(/You now hold Operator/)).toBeVisible()
   })
 
-  test('an operator is refused a destructive action by a named statement', async ({ page }) => {
-    await signInAs(page, /Continue as Dana Whitfield/, '/console/compute/vm')
+  test('an operator is refused a delete that no statement allows, and reads why on the role', async ({ page }) => {
+    await signInAs(page, /Continue as Dana Reyes/, '/console/compute/vm')
     await expect(createButton(page)).toHaveAttribute('data-phase', '3')
     const grid = page.getByRole('grid', { name: 'Virtual machines' })
     const row = grid.getByRole('row').nth(1)
@@ -124,17 +127,17 @@ test.describe('identity and access in mock mode', () => {
     const refusal = page.getByRole('dialog', { name: /You can.t delete VM here/ })
     await expect(refusal).toBeVisible()
     await expect(refusal.getByText('Your role does not allow compute:delete')).toBeVisible()
-    await expect(refusal.getByText(/Statement DenyDestructive of policy managed-operator denies it for the role operator/)).toBeVisible()
-    await expect(refusal.getByText('DenyDestructive', { exact: true })).toBeVisible()
-    await expect(refusal.getByText('managed-operator', { exact: true })).toBeVisible()
+    // the operator's allow carves deletes out, so nothing allows it: a default deny, which names the role
+    await expect(refusal.getByText(/No statement of the role operator allows it, and what no statement allows is denied/)).toBeVisible()
     await expect(refusal.getByRole('link', { name: 'operator' })).toBeVisible()
     await page.screenshot({ path: shot('refusal-statement-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'statement refusal')
-    // the statement, in full, on the role's page
+    // the statements, in full, on the role's page: the allow, and the deletes it leaves out
     await refusal.getByRole('link', { name: 'operator' }).click()
     await expect(page).toHaveURL(/#\/iam\/roles\/operator$/)
-    await expect(page.locator('[data-policy="managed-operator"]')).toContainText('DenyDestructive')
-    await expect(page.locator('[data-policy="managed-operator"]')).toContainText('*:delete')
+    const policy = page.locator('[data-policy="managed-operator"]')
+    await expect(policy).toContainText('changes')
+    await expect(policy.locator('[data-not-actions]').first()).toContainText('*:delete')
     await expectNoSeriousA11y(page, 'role')
   })
 
@@ -157,7 +160,7 @@ test.describe('identity and access in mock mode', () => {
   test('the admin runs identity and access: users, groups, roles, access keys, and switches account', async ({ page }) => {
     await signInAs(page, /Continue as Gonzalo Munoz/, '/iam')
     await expect(page.getByRole('heading', { name: 'Identity and access', level: 1 })).toBeVisible()
-    await expect(page.getByText(/Request access sends an approval to the account’s admins: Gonzalo Munoz/)).toBeVisible()
+    await expect(page.getByText(/Request access sends it to the account’s approvers: its admins \(Gonzalo Munoz\)/)).toBeVisible()
     await page.screenshot({ path: shot('iam-overview-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'IAM overview')
 
@@ -167,7 +170,7 @@ test.describe('identity and access in mock mode', () => {
     const users = page.getByRole('table', { name: /^Users of Compute/ })
     await expect(users.getByRole('link', { name: 'Mia Chen' })).toBeVisible()
     await page.getByLabel('Filter users').fill('dana')
-    await expect(users.getByRole('link', { name: 'Dana Whitfield' })).toBeVisible()
+    await expect(users.getByRole('link', { name: 'Dana Reyes' })).toBeVisible()
     await expect(users.getByRole('link', { name: 'Mia Chen' })).toBeHidden()
     await page.getByLabel('Filter users').fill('')
     await page.screenshot({ path: shot('iam-users-desktop'), fullPage: true })
@@ -178,9 +181,10 @@ test.describe('identity and access in mock mode', () => {
     await expect(page.getByRole('group', { name: 'Member of' })).toBeVisible()
     await expectNoSeriousA11y(page, 'user')
 
-    // groups: create one, see it, delete it
+    // groups: the managed ones and the approvers; create one, see it, delete it
     await page.goto('/#/iam/groups')
-    await expect(page.getByRole('table', { name: /^Groups of/ }).getByRole('link', { name: 'developer' })).toBeVisible()
+    const groups = page.getByRole('table', { name: /^Groups of/ })
+    for (const name of ['owners', 'members', 'viewers', 'auditors', 'compute-approvers']) await expect(groups.getByRole('link', { name, exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Create group' }).click()
     const dialog = page.getByRole('dialog', { name: 'Create a group' })
     await dialog.getByLabel('Name').fill('team-storage')
@@ -208,6 +212,23 @@ test.describe('identity and access in mock mode', () => {
     await page.getByRole('button', { name: 'I have copied it' }).click()
     await expect(page.getByRole('table', { name: /^Access keys of/ }).getByText('Playwright')).toBeVisible()
     await page.screenshot({ path: shot('iam-access-keys-desktop'), fullPage: true })
+
+    // a quota: ask the platform team for more, see it pending, and withdraw it
+    const quotas = page.getByRole('list', { name: 'Quotas' })
+    await quotas.getByRole('button', { name: 'Request an increase of access keys' }).click()
+    const ask = page.getByRole('dialog', { name: 'Request more access keys' })
+    await expect(ask).toBeVisible()
+    await ask.getByLabel(/^New limit/).fill('80')
+    await ask.getByRole('button', { name: 'Send request' }).click()
+    await expect(ask.getByText('Say why in 10 characters or more.')).toBeVisible()
+    await ask.getByLabel(/^Why/).fill('The build farm gets a key per runner next week')
+    await expectNoSeriousA11y(page, 'quota increase')
+    await ask.getByRole('button', { name: 'Send request' }).click()
+    await expect(ask).toBeHidden()
+    const pending = quotas.locator('[data-quota="access-keys"] [data-quota-pending]')
+    await expect(pending).toContainText('80 asked by you')
+    await quotas.getByRole('button', { name: 'Withdraw the request for more access keys' }).click()
+    await expect(quotas.getByRole('button', { name: 'Request an increase of access keys' })).toBeVisible()
 
     // the account picker: gonzalo is also admin of Data
     await page.getByRole('button', { name: /^Account: Compute/ }).click()

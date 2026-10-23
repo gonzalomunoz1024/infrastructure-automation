@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ComponentType } from 'react'
 import { ErrorBoundary, useCommandK, useToast } from '@iaf/ui'
 import { isApiError } from '../lib/api'
 import { findService } from '../lib/descriptors'
-import { usePendingAccessRequests } from './access'
+import { useAccessRequestQueue } from './access'
 import { useConsole } from './console'
 import { Header } from './Header'
 import { RefusalProvider } from './Refusal'
@@ -58,7 +58,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
 }
 
 export function AppShell({ route }: { route: Route }) {
-  const { services, offline, error, account, admin } = useConsole()
+  const { services, offline, error, account } = useConsole()
   const toast = useToast()
   const [palette, setPalette] = useState(false)
   const [feed, setFeed] = useState(false)
@@ -70,8 +70,8 @@ export function AppShell({ route }: { route: Route }) {
 
   const service = route.params.service ? findService(services, route.params.service) : undefined
   const inIam = isIamRoute(route.name)
-  const pending = usePendingAccessRequests(account.id, admin && inIam)
-  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, pending.data?.items.length) : null
+  const queue = useAccessRequestQueue({ enabled: inIam })
+  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, queue.toDecide.length) : null
 
   // the shell works without a platform: say so once, keep drawing
   useEffect(() => {

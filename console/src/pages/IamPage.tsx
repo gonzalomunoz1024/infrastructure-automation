@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Card, Icon, PageHeader, Stat, type IconName } from '@iaf/ui'
 import { DotTag, Facts } from '@iaf/console-kit'
-import { usePendingAccessRequests } from '../app/access'
+import { useAccessRequestQueue } from '../app/access'
 import { useConsole } from '../app/console'
 import { PHASES } from '../app/Phase'
 import { Link, pathFor, type PageProps, type RouteName } from '../app/router'
@@ -9,7 +9,7 @@ import { formatAccountId } from '../lib/accounts'
 import { bff } from '../lib/bff'
 import { layerDescription } from '../lib/permissions'
 import { useQuery } from '../lib/queries'
-import { MANAGED_ROLES, ROLE_SUMMARY, roleTone } from '../lib/session'
+import { ADMIN_ROLE, MANAGED_ROLES, ROLE_SUMMARY, roleLabel, roleTone } from '../lib/session'
 import { GroupLinks, RoleTags, personLabel, rolesFromGroups } from './iam/common'
 
 /*
@@ -18,17 +18,17 @@ import { GroupLinks, RoleTags, personLabel, rolesFromGroups } from './iam/common
  * words have a home.
  */
 
-const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', admin: 'shield', auditor: 'audit' }
+const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', 'account-admin': 'shield', auditor: 'audit' }
 
 export default function IamPage(_props: PageProps) {
   const { me, account, admin, session } = useConsole()
   const users = useQuery(['iam', 'users', account.id], () => bff.iam.users.list({ limit: 200 }))
   const groups = useQuery(['iam', 'groups', account.id], () => bff.iam.groups.list({ limit: 200 }))
   const keys = useQuery(['iam', 'keys', account.id, 'all'], () => bff.iam.accessKeys.list({ limit: 200 }))
-  const pending = usePendingAccessRequests(account.id, admin)
-  const mine = useQuery(['access-requests', 'list', account.id, 'mine'], () => bff.accessRequests.list({ scope: 'mine', limit: 50 }))
+  const queue = useAccessRequestQueue()
+  const mine = useQuery(['access-requests', 'list', account.id, 'mine', me.id], () => bff.accessRequests.list({ requester: me.id, limit: 50 }))
   const all = useMemo(() => groups.data?.items ?? [], [groups.data])
-  const admins = useMemo(() => (users.data?.items ?? []).filter((u) => rolesFromGroups(u.groups, all).includes('admin')), [users.data, all])
+  const admins = useMemo(() => (users.data?.items ?? []).filter((u) => rolesFromGroups(u.groups, all).includes(ADMIN_ROLE)), [users.data, all])
   const activeKeys = (keys.data?.items ?? []).filter((k) => k.status === 'active' || k.status === 'rotating').length
   const myPending = (mine.data?.items ?? []).filter((r) => r.status === 'pending').length
 
@@ -36,7 +36,7 @@ export default function IamPage(_props: PageProps) {
     { route: 'iam-users', label: 'Users', icon: 'users', value: users.data?.items.length, hint: 'members of this account' },
     { route: 'iam-groups', label: 'Groups', icon: 'grid', value: groups.data?.items.length, hint: 'grant the roles' },
     { route: 'iam-keys', label: 'Access keys', icon: 'key', value: keys.data ? activeKeys : undefined, hint: admin ? 'active, across the account' : 'active, yours' },
-    { route: 'iam-requests', label: 'Access requests', icon: 'approval', value: admin ? pending.data?.items.length : mine.data ? myPending : undefined, hint: admin ? 'waiting for an admin' : 'of yours still waiting' },
+    { route: 'iam-requests', label: 'Access requests', icon: 'approval', value: queue.readable ? queue.pending.length : mine.data ? myPending : undefined, hint: queue.readable ? 'waiting for a decision' : 'of yours still waiting' },
   ]
 
   return (
@@ -77,7 +77,8 @@ export default function IamPage(_props: PageProps) {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-primary">{r}</span>
+                      <span className="text-sm font-semibold text-primary">{roleLabel(r)}</span>
+                      {roleLabel(r) !== r && <span className="font-mono text-caption text-tertiary">{r}</span>}
                       {(me.roles ?? []).includes(r) && (
                         <DotTag size="sm" tone={roleTone(r)}>
                           you
@@ -109,7 +110,7 @@ export default function IamPage(_props: PageProps) {
               </span>
             </li>
           </ol>
-          <p className="mt-4 text-caption text-secondary">When something is refused, the console names the layer that decided and the statement. Request access sends an approval to the account’s admins{admins.length ? `: ${admins.map(personLabel).join(', ')}` : ''}.</p>
+          <p className="mt-4 text-caption text-secondary">When something is refused, the console names the layer that decided and the statement. Request access sends it to the account’s approvers: its admins{admins.length ? ` (${admins.map(personLabel).join(', ')})` : ''} and the members of any group they let decide.</p>
         </Card>
       </div>
     </>

@@ -39,8 +39,9 @@ describe('identity', () => {
     expect(get('/api/v1/me', { 'x-user': 'nobody' }).status).toBe(401)
     const res = get('/api/v1/me', { 'x-user': 'ana' })
     expect(res.status).toBe(200)
-    expect(body<Me>(res)).toMatchObject({ id: 'ana', roles: ['operator', 'viewer'], teams: expect.arrayContaining(['team-data', 'developer']) as string[] })
-    expect(body<Me>(get('/api/v1/me', { 'x-user': 'mia' }))).toMatchObject({ id: 'mia', roles: ['viewer'] })
+    expect(body<Me>(res)).toMatchObject({ id: 'ana', roles: ['operator', 'viewer'], teams: ['members', 'viewers'] })
+    expect(body<Me>(get('/api/v1/me', { 'x-user': 'mia' }))).toMatchObject({ id: 'mia', roles: ['viewer', 'approver'] })
+    expect(body<Me>(get('/api/v1/me', { 'x-user': 'gonzalo' }))).toMatchObject({ id: 'gonzalo', roles: ['account-admin'], admin: true })
   })
 })
 
@@ -154,7 +155,7 @@ describe('events and the rest', () => {
 /* ---------------------------------------------------------------- the BFF */
 
 import { csrfTokenOf, memorySessionStore } from './server'
-import type { AccessKey, AccessKeyCreated, AccessRequest, BffConsoleType, IamGroup, IamUser } from '../lib/types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, BffConsoleType, IamGroup, IamPolicy, IamUser, Quota, QuotaRequest } from '../lib/types'
 import type { Session } from '../lib/session'
 
 function bff() {
@@ -183,11 +184,13 @@ describe('the BFF: session and sign-in', () => {
     expect(b.srv.handle({ method: 'GET', url: '/auth/login?login_hint=nobody', headers: {} }).status).toBe(400)
     expect(b.signIn('mia', '/#/requests').body).toEqual({ returnTo: '/#/requests' })
     const s = b.session()
-    expect(s).toMatchObject({ user: { userId: 'mia', email: expect.stringContaining('@') as string }, account: { accountId: '123456789012', roles: ['viewer'] }, region: 'global', csrfToken: 'mock-csrf-mia' })
+    expect(s).toMatchObject({ user: { userId: 'mia', email: 'mia@example.com' }, account: { accountId: '123456789012', roles: ['viewer', 'approver'], groups: ['viewers', 'compute-approvers'] }, region: 'global', csrfToken: 'mock-csrf-mia' })
     expect(Date.parse(s.expiresAt) - Date.parse(s.authTime ?? '')).toBe(8 * 3_600_000)
     expect(body<{ items: unknown[] }>(b.call('GET', '/console/v1/accounts')).items).toHaveLength(1)
     expect(body<{ items: { name: string }[] }>(b.call('GET', '/console/v1/regions')).items.map((r) => r.name)).toEqual(['global'])
-    expect(body<{ items: { id: string }[] }>(b.srv.handle({ method: 'GET', url: '/demo-idp/people', headers: {} })).items.map((p) => p.id)).toEqual(expect.arrayContaining(['gonzalo', 'dana', 'mateo', 'raj', 'ana', 'mia']))
+    expect(body<{ items: { id: string }[] }>(b.srv.handle({ method: 'GET', url: '/demo-idp/people', headers: {} })).items.map((p) => p.id)).toEqual(['gonzalo', 'dana', 'mateo', 'raj', 'ana', 'mia', 'noah'])
+    // noah is known to the identity provider but belongs to no account
+    expect(b.srv.handle({ method: 'GET', url: '/auth/login?login_hint=noah', headers: {} })).toMatchObject({ status: 403, body: { error: 'Noah Berg belongs to no account' } })
   })
 
   it('needs the CSRF token on writes, switches account for a member only, and signs out', () => {
@@ -197,7 +200,7 @@ describe('the BFF: session and sign-in', () => {
     expect(b.srv.handle({ method: 'PUT', url: '/console/v1/session', headers: { 'x-csrf-token': 'wrong' }, body: {} }).status).toBe(403)
     expect(b.call('PUT', '/console/v1/session', { region: 'mars' })).toMatchObject({ status: 400 })
     const switched = body<Session>(b.call('PUT', '/console/v1/session', { accountId: '210987654321' }))
-    expect(switched.account).toMatchObject({ accountId: '210987654321', roles: expect.arrayContaining(['admin']) as string[] })
+    expect(switched.account).toMatchObject({ accountId: '210987654321', roles: ['account-admin'] })
     expect(b.session().account.accountId).toBe('210987654321')
     // signing in again as the same person keeps the account; another person starts in theirs
     b.signIn('gonzalo')
@@ -221,7 +224,7 @@ describe('the BFF: session and sign-in', () => {
 })
 
 describe('the BFF: types with decisions', () => {
-  it('decides every verb for the person, the account and the region, with the layer and the statement', () => {
+  it('decides every verb for the person, the account and the region, with the layer and the role', () => {
     const b = bff()
     b.signIn('mia')
     const type = b.vmType()
@@ -234,7 +237,9 @@ describe('the BFF: types with decisions', () => {
 
     b.signIn('dana')
     expect(b.verb('create').allowed).toBe(true)
-    expect(b.verb('delete').denied).toMatchObject({ layer: 'console-iam', policyId: 'managed-operator', statement: 'DenyDestructive', suggestedRole: 'admin' })
+    // the operator's allow carves deletes out: nothing allows it, which names the role and no statement
+    expect(b.verb('delete').denied).toMatchObject({ layer: 'console-iam', reason: 'no policy allows compute:delete on wfrn:wf:compute:global:123456789012:vm/*', role: 'operator', requestable: true, suggestedRole: 'account-admin' })
+    expect(b.verb('delete').denied?.statement).toBeUndefined()
 
     b.signIn('gonzalo')
     expect(b.verb('delete').allowed).toBe(true)
@@ -260,18 +265,20 @@ describe('the BFF: types with decisions', () => {
 })
 
 describe('the BFF: identity and access', () => {
-  it('lets everyone read, refuses writes with the Denial, and lets admins write', () => {
+  it('lets every managed role read, refuses writes with the Denial, and lets admins write', () => {
     const b = bff()
     b.signIn('mia')
     expect(body<{ items: IamUser[] }>(b.call('GET', '/console/v1/iam/users')).items.map((u) => u.userId)).toContain('gonzalo')
     expect(body<{ items: IamUser[] }>(b.call('GET', '/console/v1/iam/users?q=gonz')).items.map((u) => u.userId)).toEqual(['gonzalo'])
     expect(body<{ items: IamGroup[] }>(b.call('GET', '/console/v1/iam/groups')).items.length).toBeGreaterThan(2)
-    expect(body<{ items: { roleId: string }[] }>(b.call('GET', '/console/v1/iam/roles')).items.map((r) => r.roleId)).toEqual(['viewer', 'operator', 'admin', 'auditor'])
+    expect(body<{ items: { roleId: string }[] }>(b.call('GET', '/console/v1/iam/roles')).items.map((r) => r.roleId)).toEqual(['viewer', 'operator', 'account-admin', 'auditor', 'approver'])
     expect(b.call('GET', '/console/v1/iam/roles/operator').status).toBe(200)
-    expect(b.call('GET', '/console/v1/iam/policies/managed-operator').status).toBe(200)
+    const operator = body<IamPolicy>(b.call('GET', '/console/v1/iam/policies/managed-operator'))
+    expect(operator.statements[0]).toMatchObject({ sid: 'changes', effect: 'allow', actions: ['*:*'], notActions: expect.arrayContaining(['*:delete', 'iam:*']) as string[] })
+    expect(body<{ items: IamPolicy[] }>(b.call('GET', '/console/v1/iam/policies')).items.map((x) => x.policyId)).toEqual(['managed-viewer', 'managed-operator', 'managed-account-admin', 'managed-auditor', 'approver'])
     const refused = b.call('POST', '/console/v1/iam/groups', { name: 'team-x', roles: ['viewer'] })
     expect(refused.status).toBe(403)
-    expect(refused.body).toMatchObject({ denied: { layer: 'console-iam', action: 'iam:create', role: 'viewer', suggestedRole: 'admin' }, correlationId: expect.stringMatching(/^mock-/) as string })
+    expect(refused.body).toMatchObject({ denied: { layer: 'console-iam', action: 'iam:create', resource: 'wfrn:wf:iam::123456789012:group/*', role: 'viewer', suggestedRole: 'account-admin' }, correlationId: expect.stringMatching(/^mock-/) as string })
 
     b.signIn('gonzalo')
     const created = b.call('POST', '/console/v1/iam/groups', { name: 'team-x', roles: ['viewer'] })
@@ -284,62 +291,122 @@ describe('the BFF: identity and access', () => {
     expect(b.call('DELETE', `/console/v1/iam/groups/${group.groupId}`).status).toBe(204)
     expect(b.call('GET', `/console/v1/iam/groups/${group.groupId}`).status).toBe(404)
     expect(b.call('POST', '/console/v1/iam/users', { name: 'no email' }).status).toBe(400)
+    const owners = body<{ items: IamGroup[] }>(b.call('GET', '/console/v1/iam/groups')).items.find((g) => g.name === 'owners')!
+    expect(b.call('DELETE', `/console/v1/iam/groups/${owners.groupId}`)).toMatchObject({ status: 409, body: { error: 'the owners group cannot be deleted' } })
+    expect(b.call('DELETE', '/console/v1/iam/users/gonzalo')).toMatchObject({ status: 409, body: { error: 'the owners group keeps at least one active member' } })
   })
 
-  it('serves a person their own access keys, admins everyone’s, and the quotas', () => {
+  it('lets a person manage their own access keys, two at most, and reads everyone’s with iam:list', () => {
     const b = bff()
     b.signIn('mia')
     const created = b.call('POST', '/console/v1/iam/access-keys', { description: 'laptop' })
     expect(created.status).toBe(201)
     const key = body<AccessKeyCreated>(created)
     expect(key.secretPart).toMatch(/^cs_/)
-    expect(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys')).items.every((k) => k.userId === 'mia')).toBe(true)
+    expect(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys?userId=mia')).items.map((k) => k.keyId)).toEqual([key.keyId])
+    // a viewer's reads include iam:list, so the account's keys (never their secrets)
+    expect(new Set(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys')).items.map((k) => k.userId)).size).toBeGreaterThan(1)
     expect(b.call('POST', '/console/v1/iam/access-keys', { userId: 'dana' }).status).toBe(403)
+    b.call('POST', '/console/v1/iam/access-keys', { description: 'second' })
+    expect(b.call('POST', '/console/v1/iam/access-keys', { description: 'third' })).toMatchObject({ status: 409, body: { error: 'a user has at most 2 active access keys' } })
     const rotated = body<AccessKeyCreated>(b.call('POST', `/console/v1/iam/access-keys/${key.keyId}:rotate`))
     expect(rotated.secretPart).not.toBe(key.secretPart)
     expect(b.call('DELETE', `/console/v1/iam/access-keys/${key.keyId}`).status).toBe(204)
     expect(body<AccessKey>(b.call('GET', `/console/v1/iam/access-keys/${key.keyId}`)).status).toBe('revoked')
+    expect(b.call('POST', `/console/v1/iam/access-keys/${key.keyId}:rotate`)).toMatchObject({ status: 409, body: { error: 'the key is revoked' } })
 
     b.signIn('gonzalo')
     const all = body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys')).items
     expect(new Set(all.map((k) => k.userId)).size).toBeGreaterThan(1)
     expect(body<{ items: AccessKey[] }>(b.call('GET', '/console/v1/iam/access-keys?userId=mia')).items.every((k) => k.userId === 'mia')).toBe(true)
     expect(b.call('POST', '/console/v1/iam/access-keys', { userId: 'dana', description: 'for dana' }).status).toBe(201)
-    const quotas = body<{ items: { key: string; used: number; limit: number }[] }>(b.call('GET', '/console/v1/iam/quotas')).items
-    expect(quotas.find((q) => q.key === 'access-keys')).toMatchObject({ limit: 25 })
+  })
+
+  it('serves the quotas and takes a request for more, which the requester or an admin withdraws', () => {
+    const b = bff()
+    b.signIn('dana')
+    const quotas = body<{ items: Quota[] }>(b.call('GET', '/console/v1/iam/quotas')).items
+    expect(quotas.map((q) => q.key)).toEqual(['jobs-per-minute', 'access-keys', 'resources.compute', 'resources.data', 'resources.platform'])
+    expect(quotas.find((q) => q.key === 'access-keys')).toMatchObject({ limit: 50, used: 2, source: 'default' })
+    const compute = quotas.find((q) => q.key === 'resources.compute')!
+    expect(compute.used).toBeGreaterThan(100)
+    expect(compute).toMatchObject({ source: 'override' })
+    expect(compute.limit).toBeGreaterThan(compute.used)
+    expect(b.call('GET', '/console/v1/iam/quotas/nope').status).toBe(404)
+
+    expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 80, reason: 'more' })).toMatchObject({ status: 400, body: { error: 'reason is 10 to 1000 characters' } })
+    const asked = b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 80, reason: 'the build farm grows next week' })
+    expect(asked.status).toBe(202)
+    const request = body<QuotaRequest>(asked)
+    expect(request).toMatchObject({ quotaKey: 'access-keys', currentLimit: 50, requestedLimit: 80, status: 'open', requestedBy: 'dana' })
+    expect(body<Quota>(b.call('GET', '/console/v1/iam/quotas/access-keys')).pendingRequestId).toBe(request.requestId)
+    expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 90, reason: 'the build farm grows next week' })).toMatchObject({ status: 409, body: { error: 'an increase of access-keys is already requested', detail: { requestId: request.requestId } } })
+    expect(b.call('GET', `/console/v1/iam/quota-requests/${request.requestId}`).status).toBe(200)
+
+    // someone else needs quota:set, which only the admins hold
+    b.signIn('mateo')
+    expect(b.call('DELETE', `/console/v1/iam/quota-requests/${request.requestId}`)).toMatchObject({ status: 403, body: { denied: { action: 'quota:set', role: 'operator' } } })
+    b.signIn('dana')
+    expect(b.call('DELETE', `/console/v1/iam/quota-requests/${request.requestId}`).status).toBe(204)
+    expect(body<QuotaRequest>(b.call('GET', `/console/v1/iam/quota-requests/${request.requestId}`)).status).toBe('withdrawn')
+    expect(b.call('DELETE', `/console/v1/iam/quota-requests/${request.requestId}`)).toMatchObject({ status: 409, body: { error: 'the request is withdrawn' } })
+    expect(body<Quota>(b.call('GET', '/console/v1/iam/quotas/access-keys')).pendingRequestId).toBeUndefined()
   })
 })
 
 describe('the BFF: access requests', () => {
-  it('goes from a refusal to an approval that unlocks the action', () => {
+  it('goes from a refusal to an approval by an approver that unlocks the action', () => {
     const b = bff()
     b.signIn('mia')
     expect(b.verb('create').allowed).toBe(false)
-    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'short' }).status).toBe(400)
+    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: ' ' })).toMatchObject({ status: 400, body: { error: 'reason is 1 to 2000 characters' } })
     const sent = b.call('POST', '/console/v1/access-requests', { action: 'compute:create', resource: 'wfrn:wf:compute:global:123456789012:vm/*', reason: 'I build the team machines', layer: 'console-iam' })
     expect(sent.status).toBe(202)
     const request = body<AccessRequest>(sent)
-    expect(request).toMatchObject({ requester: { userId: 'mia' }, role: 'operator', status: 'pending', approvers: ['gonzalo'] })
-    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'I build the team machines' }).status).toBe(409)
-    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => r.requestId)).toContain(request.requestId)
-    expect(b.call('GET', '/console/v1/access-requests?scope=account').status).toBe(403)
+    expect(request).toMatchObject({ requester: { userId: 'mia', name: 'Mia Chen', email: 'mia@example.com' }, role: 'operator', status: 'pending', approvers: ['dana', 'gonzalo', 'mia'] })
+    // the same role again answers 409 with the pending request as the body
+    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:update', reason: 'and changing them' })).toMatchObject({ status: 409, body: { requestId: request.requestId, status: 'pending' } })
     expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`).status).toBe(200)
-    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' }).status).toBe(403)
+    // an approver never decides their own
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', requestable: false } } })
 
+    // mateo reads only his own, and may not ask for someone else's
+    b.signIn('mateo')
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items).toEqual([])
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => [r.requestId, r.status])).toEqual([['areq_002', 'expired']])
+    expect(b.call('GET', '/console/v1/access-requests?requester=mia')).toMatchObject({ status: 403, body: { denied: { action: 'access-request:list', role: 'operator' } } })
+    expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`)).toMatchObject({ status: 403, body: { denied: { action: 'access-request:get' } } })
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', role: 'operator', suggestedRole: 'account-admin' } } })
+
+    // dana is an approver: she reads the queue and decides
     b.signIn('dana')
-    expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`).status).toBe(404)
-
-    b.signIn('gonzalo')
-    const pending = body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?scope=account&status=pending')).items
+    expect(b.call('GET', '/console/v1/access-requests?status=maybe')).toMatchObject({ status: 400, body: { error: 'status is pending, approved, rejected or expired' } })
+    const pending = body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items
     expect(pending.map((r) => r.requestId)).toEqual([request.requestId])
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?requester=mateo')).items.map((r) => r.requestId)).toEqual(['areq_002'])
     expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'maybe' }).status).toBe(400)
     const decided = b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve', comment: 'Go ahead' })
     expect(decided.status).toBe(202)
-    expect(body<AccessRequest>(decided)).toMatchObject({ status: 'approved', decidedBy: 'gonzalo', comment: 'Go ahead' })
-    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?scope=account&status=pending')).items).toEqual([])
+    expect(body<AccessRequest>(decided)).toMatchObject({ status: 'approved', decidedBy: 'dana', comment: 'Go ahead' })
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items).toEqual([])
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'reject' })).toMatchObject({ status: 409, body: { error: 'the request is approved' } })
+    expect(b.call('POST', '/console/v1/access-requests/areq_002:decide', { decision: 'approve' })).toMatchObject({ status: 409, body: { error: 'the request is expired' } })
 
     b.signIn('mia')
-    expect(b.session().account.roles).toContain('operator')
+    expect(b.session().account.roles).toEqual(['operator', 'viewer', 'approver'])
     expect(b.verb('create').allowed).toBe(true)
+  })
+
+  it('refuses an auditor a request, since the auditor’s reads leave access-request:create out', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const auditors = body<{ items: IamGroup[] }>(b.call('GET', '/console/v1/iam/groups')).items.find((g) => g.name === 'auditors')!
+    b.call('PATCH', `/console/v1/iam/groups/${auditors.groupId}`, { members: ['mateo'] })
+    b.call('PATCH', '/console/v1/iam/users/mateo', { groups: ['auditors'] })
+    b.signIn('mateo')
+    expect(b.session().account.roles).toEqual(['auditor'])
+    expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'on call' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:create', role: 'auditor' } } })
+    // and reads the account's queue
+    expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => r.requestId)).toEqual(['areq_001', 'areq_002'])
   })
 })

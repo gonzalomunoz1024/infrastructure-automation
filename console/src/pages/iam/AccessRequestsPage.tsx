@@ -1,31 +1,48 @@
 import { useMemo, useState } from 'react'
 import { Button, Icon, PageHeader, Skeleton, SkeletonText, Table, Tabs, Tag, Textarea, Field, plural, type TableColumn } from '@iaf/ui'
 import { CopyableId, ErrorState, Facts, Section, When } from '@iaf/console-kit'
-import { usePendingAccessRequests } from '../../app/access'
+import { mayDecide, useAccessRequestQueue } from '../../app/access'
 import { useConsole } from '../../app/console'
 import { Link, href, navigate, pathFor, type PageProps } from '../../app/router'
 import { bff, loadSession } from '../../lib/bff'
 import { layerDescription, layerLabel, splitAction, verbTitle } from '../../lib/permissions'
 import { invalidate, useQuery } from '../../lib/queries'
+import { roleLabel } from '../../lib/session'
 import type { AccessRequest } from '../../lib/types'
 import { RequestStatusTag, RoleTags, personLabel } from './common'
 
 /*
- * Access requests: what Request access sends from a refusal. The requester follows theirs here;
- * an admin of the account decides, and an approval puts the requester in the group that grants
- * the role they asked for.
+ * Access requests: what Request access sends from a refusal. Everyone follows their own here.
+ * Whoever reads the account's queue (admins, auditors, the approver groups: access-request:list)
+ * also sees everything in the account, and what waits for them: a request names its approvers
+ * (the admins and the members of groups granted access-request:decide), and an approval puts the
+ * requester in the group that grants the role they asked for.
  */
 
 type Tab = 'mine' | 'decide' | 'account'
+const TABS: readonly Tab[] = ['decide', 'mine', 'account']
 
 export default function IamAccessRequestsPage({ route }: PageProps) {
-  const { account, admin } = useConsole()
-  const wanted = route.query.tab as Tab | undefined
-  const [tab, setTab] = useState<Tab>(admin && (wanted === 'decide' || wanted === 'account' || !wanted) ? (wanted ?? 'decide') : 'mine')
-  const params = tab === 'mine' ? { scope: 'mine' as const } : tab === 'decide' ? { scope: 'account' as const, status: 'pending' } : { scope: 'account' as const }
-  const list = useQuery(['access-requests', 'list', account.id, tab], () => bff.accessRequests.list({ ...params, limit: 200 }))
-  const pending = usePendingAccessRequests(account.id, admin)
-  const rows = useMemo(() => [...(list.data?.items ?? [])].sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)), [list.data])
+  const { account, me } = useConsole()
+  const queue = useAccessRequestQueue()
+  const wanted = TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : undefined
+  const [picked, setPicked] = useState<Tab | null>(null)
+  // the queue's tabs only for those who read it; everyone else has their own requests. Until the
+  // queue has answered, nothing is asked, so the page does not load one tab and then another
+  const known = queue.readable !== null || !!queue.error
+  // where the page opens, once the queue is known: what waits for this person, else their own
+  const [landing, setLanding] = useState<Tab | null>(null)
+  if (landing === null && known) setLanding(queue.readable && queue.toDecide.length ? 'decide' : 'mine')
+  const tab: Tab = queue.readable ? (picked ?? wanted ?? landing ?? 'decide') : 'mine'
+  const list = useQuery(
+    ['access-requests', 'list', account.id, tab, me.id],
+    () => bff.accessRequests.list(tab === 'mine' ? { requester: me.id, limit: 200 } : tab === 'decide' ? { status: 'pending', limit: 200 } : { limit: 200 }),
+    { enabled: known },
+  )
+  const rows = useMemo(() => {
+    const items = list.data?.items ?? []
+    return [...(tab === 'decide' ? items.filter((r) => mayDecide(r, me.id)) : items)].sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))
+  }, [list.data, tab, me.id])
 
   const columns: TableColumn<AccessRequest>[] = [
     {
@@ -40,7 +57,7 @@ export default function IamAccessRequestsPage({ route }: PageProps) {
         </span>
       ),
     },
-    { key: 'role', header: 'Asks for', sortable: true, accessor: (r) => r.role, render: (r) => <RoleTags roles={[r.role]} link />, width: '7rem' },
+    { key: 'role', header: 'Asks for', sortable: true, accessor: (r) => roleLabel(r.role), render: (r) => <RoleTags roles={[r.role]} link />, width: '7rem' },
     { key: 'action', header: 'To', accessor: (r) => r.action, render: (r) => <span className="font-mono text-caption text-primary">{r.action}</span>, width: '11rem' },
     { key: 'reason', header: 'Reason', accessor: (r) => r.reason ?? '', render: (r) => <span className="line-clamp-2 text-caption text-secondary">{r.reason ?? '—'}</span> },
     { key: 'status', header: 'Status', sortable: true, accessor: (r) => r.status, render: (r) => <RequestStatusTag status={r.status} />, width: '7rem' },
@@ -50,13 +67,13 @@ export default function IamAccessRequestsPage({ route }: PageProps) {
 
   return (
     <>
-      <PageHeader title="Access requests" subtitle={admin ? `What people asked for in ${account.name}, and what is waiting for an admin to decide.` : 'What you asked for from a refusal, and how it was decided.'}>
-        {admin && <Tabs<Tab> ariaLabel="Access requests" value={tab} onChange={setTab} tabs={[{ id: 'decide', label: 'To decide', icon: 'approval', count: pending.data?.items.length }, { id: 'mine', label: 'Mine', icon: 'user' }, { id: 'account', label: 'Everything in the account', icon: 'list' }]} />}
+      <PageHeader title="Access requests" subtitle={queue.readable ? `What people asked for in ${account.name}, and what waits for you to decide.` : 'What you asked for from a refusal, and how it was decided.'}>
+        {queue.readable && <Tabs<Tab> ariaLabel="Access requests" value={tab} onChange={setPicked} tabs={[{ id: 'decide', label: 'To decide', icon: 'approval', count: queue.toDecide.length }, { id: 'mine', label: 'Mine', icon: 'user' }, { id: 'account', label: 'Everything in the account', icon: 'list' }]} />}
       </PageHeader>
       {list.error ? (
         <ErrorState error={list.error} title="Could not load the access requests" onRetry={() => void list.refetch()} />
       ) : (
-        <Table<AccessRequest> caption="Access requests" columns={columns} rows={rows} rowKey={(r) => r.requestId} loading={list.loading} onRowClick={(r) => navigate(pathFor('iam-request', { id: r.requestId }))} emptyIcon="approval" emptyTitle={tab === 'decide' ? 'Nothing to decide' : tab === 'mine' ? 'You have not asked for anything' : 'No access requests yet'} emptyMessage={tab === 'mine' ? 'When an action is refused, Request access in the refusal sends one to the account’s admins.' : 'Requests land here when someone presses Request access in a refusal.'} />
+        <Table<AccessRequest> caption="Access requests" columns={columns} rows={rows} rowKey={(r) => r.requestId} loading={!known || list.loading} onRowClick={(r) => navigate(pathFor('iam-request', { id: r.requestId }))} emptyIcon="approval" emptyTitle={tab === 'decide' ? 'Nothing to decide' : tab === 'mine' ? 'You have not asked for anything' : 'No access requests yet'} emptyMessage={tab === 'mine' ? 'When an action is refused, Request access in the refusal sends one to the account’s approvers.' : tab === 'decide' ? 'Requests that name you among their approvers land here.' : 'Requests land here when someone presses Request access in a refusal.'} />
       )}
     </>
   )
@@ -92,7 +109,8 @@ export function IamAccessRequestPage({ route }: PageProps) {
   }
 
   const mine = r.requester.userId === me.id
-  const canDecide = admin && r.status === 'pending' && !mine
+  const canDecide = mayDecide(r, me.id)
+  const otherApprovers = (r.approvers ?? []).filter((a) => a !== me.id)
   const decide = async (decision: 'approve' | 'reject') => {
     setBusy(decision)
     setFailure(null)
@@ -161,12 +179,12 @@ export function IamAccessRequestPage({ route }: PageProps) {
                 <Icon name="check" size={16} className="text-healthy" />
                 {holdsNow ? (
                   <span>
-                    You now hold <span className="font-medium">{r.role}</span> in {account.name}.
+                    You now hold <span className="font-medium">{roleLabel(r.role)}</span> in {account.name}.
                   </span>
                 ) : (
                   <>
                     <span>
-                      You were put in the group that grants <span className="font-medium">{r.role}</span>. Refresh your session to use it.
+                      You were put in the group that grants <span className="font-medium">{roleLabel(r.role)}</span>. Refresh your session to use it.
                     </span>
                     <Button size="sm" icon="refresh" loading={busy === 'refresh'} onClick={() => void refresh()}>
                       Refresh my roles
@@ -179,10 +197,10 @@ export function IamAccessRequestPage({ route }: PageProps) {
         )}
 
         {canDecide && (
-          <Section title="Decide" description={`Approving puts ${personLabel(r.requester)} in the group that grants ${r.role} in ${account.name}; everything that role allows follows.`}>
+          <Section title="Decide" description={`Approving puts ${personLabel(r.requester)} in the group that grants ${roleLabel(r.role)} in ${account.name}; everything that role allows follows.`}>
             <div className="max-w-xl space-y-4">
               <Field label="Comment" htmlFor="decide-comment" hint="Optional. The requester reads it.">
-                <Textarea id="decide-comment" rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />
+                <Textarea id="decide-comment" rows={3} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
               </Field>
               {failure !== null && (
                 <p role="alert" className="text-sm text-critical">
@@ -200,12 +218,12 @@ export function IamAccessRequestPage({ route }: PageProps) {
             </div>
           </Section>
         )}
-        {admin && r.status === 'pending' && mine && (
+        {r.status === 'pending' && mine && (
           <p className="text-caption text-tertiary">
             <Tag size="sm" outline>
               note
             </Tag>{' '}
-            Another admin decides your own request. {plural(r.approvers?.filter((a) => a !== me.id).length ?? 0, 'other admin')} can.
+            Someone else decides your own request: {otherApprovers.length ? `${plural(otherApprovers.length, 'approver')} can (${otherApprovers.join(', ')}).` : 'nobody else may decide it yet; ask an admin.'}
           </p>
         )}
       </div>

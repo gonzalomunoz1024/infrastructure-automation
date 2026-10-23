@@ -1,8 +1,8 @@
 import { serviceOf } from '../lib/descriptors'
 import type { Session } from '../lib/session'
-import type { AccessKey, AccessRequest, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
+import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
-import { DirectoryError, accessKeyOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, isMember, membershipsOf, personOf, quotasOf, removeGroup, removeUser, revokeAccessKey, rotateAccessKey, updateGroup, updateUser, userOf, usersOf, type Decision } from './directory'
+import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -274,14 +274,27 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     })
   }
 
-  const iamPattern = (accountId: string, kind: string) => `wfrn:${data.partition}:iam:${data.regionName}:${accountId}:${kind}/*`
+  /** The account's resources by service, for the resources quotas: what the state service reports to the identity service. */
+  const services = [...new Set(data.resourceTypes.map((rt) => serviceOf(rt)))]
+  const usedOf = (accountId: string): Record<string, number> => {
+    const byType = new Map(data.resourceTypes.map((rt) => [rt.name, serviceOf(rt)]))
+    const out: Record<string, number> = Object.fromEntries(services.map((sv) => [sv, 0]))
+    for (const r of data.resources) {
+      const sv = byType.get(r.type)
+      if (sv && (!r.accountId || r.accountId === accountId)) out[sv] = (out[sv] ?? 0) + 1
+    }
+    return out
+  }
+  seedQuotaOverrides(dir, Object.fromEntries(dir.accounts.map((a) => [a.accountId, usedOf(a.accountId)])))
 
   const consoleRoutes = (req: MockRequest, s: MockSession, path: string, params: URLSearchParams, method: string): MockResponse => {
     const ctx = { accountId: s.accountId, userId: s.userId }
     const can = (action: string, resource: string) => authorize(dir, ctx, action, resource)
+    const iam = (kind: string, id?: string) => iamResource(s.accountId, kind, id)
     const body = bodyOf(req)
     const ifMatch = req.headers['if-match'] ? Number(req.headers['if-match']) : undefined
     const me = userOf(dir, s.accountId, s.userId)!
+    const at = now()
 
     if (path === '/console/v1/session') {
       if (method === 'GET') return { status: 200, body: sessionBody(s) }
@@ -307,11 +320,11 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       return t ? { status: 200, body: t, headers: { ETag: t.etag ?? '' } } : notFound(`Type ${key}`)
     }
 
-    /* identity and access */
+    /* identity and access, as the identity service guards it: iam:<verb> on the IAM wfrn of the thing */
     const q = params.get('q')?.toLowerCase()
     if (path === '/console/v1/iam/users') {
       if (method === 'GET') {
-        const d = can('iam:list', iamPattern(s.accountId, 'user'))
+        const d = can('iam:list', iam('user'))
         if (!d.allowed) return refused(d)
         return pagedBody(
           usersOf(dir, s.accountId).filter((u) => !q || `${u.userId} ${u.email} ${u.name ?? ''} ${(u.groups ?? []).join(' ')}`.toLowerCase().includes(q)),
@@ -319,7 +332,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         )
       }
       if (method === 'POST') {
-        const d = can('iam:create', iamPattern(s.accountId, 'user'))
+        const d = can('iam:create', iam('user'))
         if (!d.allowed) return refused(d)
         return { status: 201, body: addUser(dir, s.accountId, { userId: str(body.userId), email: str(body.email), name: str(body.name), groups: strings(body.groups) }) }
       }
@@ -328,25 +341,33 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     if (m) {
       const userId = decodeURIComponent(m[1])
       if (method === 'GET') {
+        if (userId !== s.userId) {
+          const d = can('iam:get', iam('user', userId))
+          if (!d.allowed) return refused(d)
+        }
         const u = userOf(dir, s.accountId, userId)
         return u ? { status: 200, body: u, headers: { ETag: String(u.version) } } : notFound(`User ${userId}`)
       }
       if (method === 'PATCH') {
-        const d = can('iam:update', iamPattern(s.accountId, 'user'))
+        const d = can('iam:update', iam('user', userId))
         if (!d.allowed) return refused(d)
         return { status: 200, body: updateUser(dir, s.accountId, userId, { groups: strings(body.groups) }, ifMatch) }
       }
       if (method === 'DELETE') {
-        const d = can('iam:delete', iamPattern(s.accountId, 'user'))
+        const d = can('iam:delete', iam('user', userId))
         if (!d.allowed) return refused(d)
         removeUser(dir, s.accountId, userId)
         return { status: 204 }
       }
     }
     if (path === '/console/v1/iam/groups') {
-      if (method === 'GET') return pagedBody((dir.groups[s.accountId] ?? []).filter((g) => !q || `${g.name} ${g.description ?? ''} ${(g.roles ?? []).join(' ')}`.toLowerCase().includes(q)), params)
+      if (method === 'GET') {
+        const d = can('iam:list', iam('group'))
+        if (!d.allowed) return refused(d)
+        return pagedBody((dir.groups[s.accountId] ?? []).filter((g) => !q || `${g.name} ${g.description ?? ''} ${(g.roles ?? []).join(' ')}`.toLowerCase().includes(q)), params)
+      }
       if (method === 'POST') {
-        const d = can('iam:create', iamPattern(s.accountId, 'group'))
+        const d = can('iam:create', iam('group'))
         if (!d.allowed) return refused(d)
         return { status: 201, body: createGroup(dir, s.accountId, body as IamGroupInput) }
       }
@@ -355,111 +376,179 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     if (m) {
       const groupId = decodeURIComponent(m[1])
       const g = (dir.groups[s.accountId] ?? []).find((x) => x.groupId === groupId || x.name === groupId)
-      if (method === 'GET') return g ? { status: 200, body: g, headers: { ETag: String(g.version) } } : notFound(`Group ${groupId}`)
+      if (method === 'GET') {
+        const d = can('iam:get', iam('group', g?.groupId ?? groupId))
+        if (!d.allowed) return refused(d)
+        return g ? { status: 200, body: g, headers: { ETag: String(g.version) } } : notFound(`Group ${groupId}`)
+      }
       if (method === 'PATCH') {
-        const d = can('iam:update', iamPattern(s.accountId, 'group'))
+        const d = can('iam:update', iam('group', g?.groupId ?? groupId))
         if (!d.allowed) return refused(d)
         return { status: 200, body: updateGroup(dir, s.accountId, groupId, body as IamGroupInput, ifMatch) }
       }
       if (method === 'DELETE') {
-        const d = can('iam:delete', iamPattern(s.accountId, 'group'))
+        const d = can('iam:delete', iam('group', g?.groupId ?? groupId))
         if (!d.allowed) return refused(d)
         removeGroup(dir, s.accountId, groupId)
         return { status: 204 }
       }
     }
-    if (path === '/console/v1/iam/roles' && method === 'GET') return pagedBody(dir.roles, params)
+    if (path === '/console/v1/iam/roles' && method === 'GET') {
+      const d = can('iam:list', iam('role'))
+      return d.allowed ? pagedBody(dir.roles, params) : refused(d)
+    }
     m = /^\/console\/v1\/iam\/roles\/([^/]+)$/.exec(path)
     if (m && method === 'GET') {
       const id = decodeURIComponent(m[1])
+      const d = can('iam:get', iam('role', id))
+      if (!d.allowed) return refused(d)
       const r = dir.roles.find((x) => x.roleId === id || x.name === id)
       return r ? { status: 200, body: r } : notFound(`Role ${id}`)
     }
-    if (path === '/console/v1/iam/policies' && method === 'GET') return pagedBody(dir.policies, params)
+    if (path === '/console/v1/iam/policies' && method === 'GET') {
+      const d = can('iam:list', iam('policy'))
+      return d.allowed ? pagedBody(dir.policies[s.accountId] ?? [], params) : refused(d)
+    }
     m = /^\/console\/v1\/iam\/policies\/([^/]+)$/.exec(path)
     if (m && method === 'GET') {
       const id = decodeURIComponent(m[1])
-      const p = dir.policies.find((x) => x.policyId === id || x.name === id)
+      const d = can('iam:get', iam('policy', id))
+      if (!d.allowed) return refused(d)
+      const p = (dir.policies[s.accountId] ?? []).find((x) => x.policyId === id || x.name === id)
       return p ? { status: 200, body: p } : notFound(`Policy ${id}`)
     }
+
+    /* access keys: a person's own are theirs to manage; anyone else's take iam:<verb> on the key */
     if (path === '/console/v1/iam/access-keys') {
-      const manageAll = can('iam:update', iamPattern(s.accountId, 'access-key')).allowed
       if (method === 'GET') {
-        const wanted = params.get('userId')
-        const keys = (dir.accessKeys[s.accountId] ?? []).filter((k) => (manageAll ? !wanted || k.userId === wanted : k.userId === s.userId))
-        return pagedBody(keys, params)
+        const wanted = params.get('userId') ?? undefined
+        if (wanted !== s.userId) {
+          const d = can('iam:list', iam('access-key'))
+          if (!d.allowed) return refused(d)
+        }
+        return pagedBody(accessKeysOf(dir, s.accountId, at).filter((k) => !wanted || k.userId === wanted), params)
       }
       if (method === 'POST') {
         const forUser = str(body.userId) ?? s.userId
-        const d = forUser === s.userId ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:create', iamPattern(s.accountId, 'access-key'))
-        if (!d.allowed) return refused(d)
-        return { status: 201, body: createAccessKey(dir, s.accountId, forUser, { description: str(body.description), expiresAt: str(body.expiresAt) }, now()) }
+        if (forUser !== s.userId) {
+          const d = can('iam:create', iam('access-key'))
+          if (!d.allowed) return refused(d)
+        }
+        return { status: 201, body: createAccessKey(dir, s.accountId, forUser, { description: str(body.description), expiresAt: str(body.expiresAt) }, at) }
       }
     }
     m = /^\/console\/v1\/iam\/access-keys\/([^/:]+)(?::(rotate))?$/.exec(path)
     if (m) {
       const keyId = decodeURIComponent(m[1])
-      const key: AccessKey | undefined = accessKeyOf(dir, s.accountId, keyId)
+      const key: AccessKey | undefined = accessKeyOf(dir, s.accountId, keyId, at)
       if (!key) return notFound(`Access key ${keyId}`)
       const own = key.userId === s.userId
+      const needs = (verb: string) => (own ? null : can(`iam:${verb}`, iam('access-key', keyId)))
       if (method === 'GET' && !m[2]) {
-        if (!own && !can('iam:update', iamPattern(s.accountId, 'access-key')).allowed) return notFound(`Access key ${keyId}`)
-        return { status: 200, body: key }
+        const d = needs('get')
+        return d && !d.allowed ? refused(d) : { status: 200, body: key }
       }
       if (method === 'DELETE' && !m[2]) {
-        const d = own ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:delete', iamPattern(s.accountId, 'access-key'))
-        if (!d.allowed) return refused(d)
+        const d = needs('delete')
+        if (d && !d.allowed) return refused(d)
         revokeAccessKey(dir, s.accountId, keyId)
         return { status: 204 }
       }
       if (method === 'POST' && m[2] === 'rotate') {
-        const d = own ? can('iam:manage-own-keys', iamPattern(s.accountId, 'access-key')) : can('iam:update', iamPattern(s.accountId, 'access-key'))
-        if (!d.allowed) return refused(d)
-        return { status: 200, body: rotateAccessKey(dir, s.accountId, keyId, now()) }
+        const d = needs('update')
+        if (d && !d.allowed) return refused(d)
+        return { status: 200, body: rotateAccessKey(dir, s.accountId, keyId, at) }
       }
-    }
-    if (path === '/console/v1/iam/quotas' && method === 'GET') {
-      const counts: Record<string, number> = {}
-      for (const rt of data.resourceTypes) counts[rt.name] = data.resources.filter((r) => r.type === rt.name && (!r.accountId || r.accountId === s.accountId)).length
-      return pagedBody(quotasOf(dir, s.accountId, counts), params)
     }
 
-    /* access requests */
-    if (path === '/console/v1/access-requests') {
-      const all = accessRequestsOf(dir, s.accountId)
-      const status = params.get('status')
+    /* quotas: the account reads them, members ask for more, the platform team decides */
+    if (path === '/console/v1/iam/quotas' && method === 'GET') {
+      const d = can('quota:list', iam('quota'))
+      return d.allowed ? { status: 200, body: { items: quotasOf(dir, s.accountId, usedOf(s.accountId), services, at) } } : refused(d)
+    }
+    m = /^\/console\/v1\/iam\/quotas\/([^/:]+)(?::(request-increase))?$/.exec(path)
+    if (m) {
+      const key = decodeURIComponent(m[1])
+      if (method === 'GET' && !m[2]) {
+        const d = can('quota:get', iam('quota', key))
+        if (!d.allowed) return refused(d)
+        return isQuotaKey(key) ? { status: 200, body: quotaOf(dir, s.accountId, key, usedOf(s.accountId), at) } : notFound(`Quota ${key}`)
+      }
+      if (method === 'POST' && m[2] === 'request-increase') {
+        const d = can('quota:request-increase', iam('quota', key))
+        if (!d.allowed) return refused(d)
+        if (!isQuotaKey(key)) return notFound(`Quota ${key}`)
+        const current = quotaOf(dir, s.accountId, key, usedOf(s.accountId), at)
+        return { status: 202, body: requestQuotaIncrease(dir, s.accountId, key, s.userId, { limit: body.limit as number, reason: body.reason as string }, current, at) }
+      }
+    }
+    m = /^\/console\/v1\/iam\/quota-requests\/([^/:]+)$/.exec(path)
+    if (m) {
+      const requestId = decodeURIComponent(m[1])
       if (method === 'GET') {
-        const scope = params.get('scope') ?? 'mine'
-        let items: AccessRequest[]
-        if (scope === 'account') {
-          const d = can('iam:decide', iamPattern(s.accountId, 'access-request'))
+        const d = can('quota:get', iam('quota', requestId))
+        if (!d.allowed) return refused(d)
+        const r = quotaRequestOf(dir, s.accountId, requestId)
+        return r ? { status: 200, body: r } : notFound(`Quota request ${requestId}`)
+      }
+      if (method === 'DELETE') {
+        const r = quotaRequestOf(dir, s.accountId, requestId)
+        if (!r) return notFound(`Quota request ${requestId}`)
+        if (r.requestedBy !== s.userId) {
+          const d = can('quota:set', iam('quota', r.quotaKey))
           if (!d.allowed) return refused(d)
-          items = all
-        } else {
-          items = all.filter((r) => r.requester.userId === s.userId)
         }
-        return pagedBody(items.filter((r) => !status || r.status === status), params)
+        withdrawQuotaRequest(dir, s.accountId, requestId, s.userId, at)
+        return { status: 204 }
+      }
+    }
+
+    /* access requests: anyone reads their own; the account's take access-request:list, deciding access-request:decide */
+    if (path === '/console/v1/access-requests') {
+      if (method === 'GET') {
+        const status = params.get('status')
+        if (status && !['pending', 'approved', 'rejected', 'expired'].includes(status)) return { status: 400, body: { error: 'status is pending, approved, rejected or expired' } }
+        const requester = params.get('requester') ?? undefined
+        const reads = can('access-request:list', iam('access-request'))
+        let only = requester
+        if (!reads.allowed) {
+          if (requester && requester !== s.userId) return refused(reads)
+          only = s.userId
+        }
+        return pagedBody(
+          accessRequestsOf(dir, s.accountId, at).filter((r) => (!only || r.requester.userId === only) && (!status || r.status === status)),
+          params,
+        )
       }
       if (method === 'POST') {
-        const input: AccessRequestInput = { action: str(body.action) ?? '', resource: str(body.resource), role: str(body.role), reason: str(body.reason) ?? '', layer: body.layer === 'platform' ? 'platform' : 'console-iam' }
-        return { status: 202, body: createAccessRequest(dir, s.accountId, me, input, now()) }
+        const d = can('access-request:create', iam('access-request'))
+        if (!d.allowed) return refused(d)
+        const input: Partial<AccessRequestInput> = { action: str(body.action), resource: str(body.resource), role: str(body.role), reason: str(body.reason), layer: body.layer === 'platform' ? 'platform' : 'console-iam' }
+        return { status: 202, body: createAccessRequest(dir, s.accountId, me, input, at) }
       }
     }
     m = /^\/console\/v1\/access-requests\/([^/:]+)(?::(decide))?$/.exec(path)
     if (m) {
       const requestId = decodeURIComponent(m[1])
-      const request = accessRequestsOf(dir, s.accountId).find((r) => r.requestId === requestId)
-      if (!request) return notFound(`Access request ${requestId}`)
       if (method === 'GET' && !m[2]) {
-        if (request.requester.userId !== s.userId && !can('iam:decide', iamPattern(s.accountId, 'access-request')).allowed) return notFound(`Access request ${requestId}`)
+        const request = accessRequestOf(dir, s.accountId, requestId, at)
+        if (!request) return notFound(`Access request ${requestId}`)
+        if (request.requester.userId !== s.userId) {
+          const d = can('access-request:get', iam('access-request', requestId))
+          if (!d.allowed) return refused(d)
+        }
         return { status: 200, body: request }
       }
       if (method === 'POST' && m[2] === 'decide') {
-        const d = can('iam:decide', iamPattern(s.accountId, 'access-request'))
+        const d = can('access-request:decide', iam('access-request', requestId))
         if (!d.allowed) return refused(d)
+        const request = accessRequestOf(dir, s.accountId, requestId, at)
+        if (!request) return notFound(`Access request ${requestId}`)
+        // stricter than the identity service, which lets an approver decide their own (reported to it)
+        if (request.requester.userId === s.userId) return refused({ allowed: false, denied: { layer: 'console-iam', action: 'access-request:decide', resource: iam('access-request', requestId), reason: 'Someone else decides your own request', role: d.via?.role, requestable: false } })
         const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' ? 'reject' : null
         if (!decision) return { status: 400, body: { error: 'decision is approve or reject' } }
-        return { status: 202, body: decideAccessRequest(dir, s.accountId, requestId, decision, s.userId, str(body.comment), now()) }
+        return { status: 202, body: decideAccessRequest(dir, s.accountId, requestId, decision, s.userId, str(body.comment), at) }
       }
     }
 
@@ -487,7 +576,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       try {
         return consoleRoutes(req, s, path, params, method)
       } catch (e) {
-        if (e instanceof DirectoryError) return { status: e.status, body: { error: e.message } }
+        if (e instanceof PendingRequestError) return { status: 409, body: e.request }
+        if (e instanceof DirectoryError) return { status: e.status, body: e.detail === undefined ? { error: e.message } : { error: e.message, detail: e.detail } }
         throw e
       }
     }

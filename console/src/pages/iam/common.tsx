@@ -8,7 +8,7 @@ import { Link, pathFor } from '../../app/router'
 import { isApiError } from '../../lib/api'
 import { adminOnly, type Decision } from '../../lib/permissions'
 import { invalidate } from '../../lib/queries'
-import { MANAGED_ROLES, ROLE_SUMMARY, type ManagedRole } from '../../lib/session'
+import { MANAGED_ROLES, ROLE_SUMMARY, isManagedRole, type ManagedRole } from '../../lib/session'
 import type { AccessKey, AccessRequestStatus, IamGroup, IamUser } from '../../lib/types'
 
 /*
@@ -18,7 +18,7 @@ import type { AccessKey, AccessRequestStatus, IamGroup, IamUser } from '../../li
  * queries are read again).
  */
 
-const RANK: Record<string, number> = { admin: 0, operator: 1, auditor: 2, viewer: 3 }
+const RANK: Record<string, number> = { 'account-admin': 0, operator: 1, auditor: 2, viewer: 3 }
 
 /** admin first, then the order people read them in */
 export function sortRoles(roles: Iterable<string>): string[] {
@@ -101,16 +101,27 @@ export function GroupPicker({ groups, value, onChange, legend, hint, disabled }:
   )
 }
 
-export function RolePicker({ value, onChange, legend = 'Roles', hint, disabled }: { value: readonly string[]; onChange: (next: string[]) => void; legend?: string; hint?: ReactNode; disabled?: boolean }) {
+/**
+ * The managed roles as checkboxes. A custom role the value holds is kept and named under them
+ * (it is granted on the Roles page's terms, not here); a locked role cannot be taken away (the
+ * owners group keeps account-admin).
+ */
+export function RolePicker({ value, onChange, legend = 'Roles', hint, disabled, locked = [] }: { value: readonly string[]; onChange: (next: string[]) => void; legend?: string; hint?: ReactNode; disabled?: boolean; locked?: readonly string[] }) {
+  const custom = value.filter((r) => !isManagedRole(r))
   return (
     <fieldset>
       <legend className="text-sm font-medium text-primary">{legend}</legend>
       {hint && <p className="mt-0.5 text-caption text-secondary">{hint}</p>}
       <div className="mt-2 space-y-2">
         {MANAGED_ROLES.map((r: ManagedRole) => (
-          <Checkbox key={r} id={`pick-role-${r}`} checked={value.includes(r)} disabled={disabled} onChange={(on) => onChange(on ? sortRoles([...value, r]) : value.filter((x) => x !== r))} label={<RoleTags roles={[r]} />} description={ROLE_SUMMARY[r]} />
+          <Checkbox key={r} id={`pick-role-${r}`} checked={value.includes(r)} disabled={disabled || (locked.includes(r) && value.includes(r))} onChange={(on) => onChange(on ? sortRoles([...value, r]) : value.filter((x) => x !== r))} label={<RoleTags roles={[r]} />} description={ROLE_SUMMARY[r]} />
         ))}
       </div>
+      {custom.length > 0 && (
+        <p className="mt-2 flex flex-wrap items-center gap-1.5 text-caption text-secondary">
+          Also grants <RoleTags roles={custom} link />, which a change here keeps.
+        </p>
+      )}
     </fieldset>
   )
 }

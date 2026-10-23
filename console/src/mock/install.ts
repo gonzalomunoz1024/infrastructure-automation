@@ -13,7 +13,8 @@ import { createMockServer, memorySessionStore, nextMockEvent, type MockServer, t
 
 const LIVE_EVERY_MS = 2_000
 export const MOCK_SESSION_KEY = 'console-mock-session'
-export const MOCK_DIRECTORY_KEY = 'console-mock-directory'
+/** versioned: a browser that kept an older directory's shape starts again from the seed */
+export const MOCK_DIRECTORY_KEY = 'console-mock-directory-v2'
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /** The directory the browser kept, over the fresh one; a write saves it again. */
@@ -22,7 +23,7 @@ export function restoreDirectory(dir: Directory, storage: Pick<Storage, 'getItem
     const raw = storage.getItem(MOCK_DIRECTORY_KEY)
     if (!raw) return false
     const saved = JSON.parse(raw) as Partial<Directory>
-    if (!saved || typeof saved !== 'object' || !Array.isArray(saved.people) || typeof saved.groups !== 'object') return false
+    if (!saved || typeof saved !== 'object' || !Array.isArray(saved.people) || typeof saved.groups !== 'object' || typeof saved.policies !== 'object' || Array.isArray(saved.policies)) return false
     Object.assign(dir, saved)
     return true
   } catch {
