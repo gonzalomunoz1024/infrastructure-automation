@@ -285,8 +285,10 @@ class ResourceGroupsEndpointTest extends DemoApp {
         return signed;
     }
 
-    /** A VM made through the console carrying exactly these tags; its wfrn. */
-    private String vm(Console.Signed as, String name, Map<String, String> tags) {
+    /** A VM made through the console carrying these tags over the required ones; its wfrn. */
+    private String vm(Console.Signed as, String name, Map<String, String> own) {
+        Map<String, String> tags = new java.util.HashMap<>(ResourceFixtures.TAGS);
+        tags.putAll(own);
         String wfrn = ResourceFixtures.createVm(console, clients, as, name, tags);
         // set the tags on the resource as the tags page does, so the groups meet exactly these whatever the create kept
         Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(200)).untilAsserted(() -> {
