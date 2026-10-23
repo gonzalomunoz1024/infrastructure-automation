@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.iaf.console.bff.access.domain.ManagedRoles;
 import com.iaf.console.bff.demo.directory.domain.AccessRequest;
 import com.iaf.console.bff.demo.directory.domain.DemoAccount;
+import com.iaf.console.bff.demo.directory.domain.DemoElevation;
 import com.iaf.console.bff.demo.directory.domain.DemoMembership;
 import com.iaf.console.bff.demo.directory.domain.DemoPerson;
 import com.iaf.console.wfrn.Ulid;
@@ -20,12 +21,15 @@ import com.iaf.console.wfrn.Ulid;
 /**
  * The people, accounts and memberships of the demo, shared by the demo identity provider (who can
  * sign in) and the demo identity stand-in (what they may do). Mutable where the console mutates
- * it: adding users, granting roles, access requests. One instance, in memory.
+ * it: adding users, granting roles, access requests, elevations and break-glass access (whose
+ * roles count while active), closing an account. One instance, in memory.
  */
 public class DemoDirectory {
 
     public static final String ACCOUNT_COMPUTE = "123456789012";
     public static final String ACCOUNT_DATA = "210987654321";
+    /** An account nobody belongs to, for break-glass access and closing an account. */
+    public static final String ACCOUNT_SANDBOX = "345678901234";
 
     private final Map<String, DemoPerson> people = new LinkedHashMap<>();
     private final Map<String, DemoAccount> accounts = new LinkedHashMap<>();
@@ -33,13 +37,16 @@ public class DemoDirectory {
     private final Map<String, AccessRequest> accessRequests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> versions = new ConcurrentHashMap<>();
     private final List<DenyStatement> denies = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final Map<String, DemoElevation> elevations = new ConcurrentHashMap<>();
+    private final Map<String, Closed> closed = new ConcurrentHashMap<>();
     private final Clock clock;
 
     public DemoDirectory(Clock clock) {
         this.clock = clock;
         accounts.put(ACCOUNT_COMPUTE, new DemoAccount(ACCOUNT_COMPUTE, "Compute", "team-compute", "global"));
         accounts.put(ACCOUNT_DATA, new DemoAccount(ACCOUNT_DATA, "Data", "team-data", "global"));
-        person("gonzalo", "Gonzalo Munoz", List.of("team-compute", "team-platform", "admin"));
+        accounts.put(ACCOUNT_SANDBOX, new DemoAccount(ACCOUNT_SANDBOX, "Sandbox", "team-platform", "global"));
+        person("gonzalo", "Gonzalo Munoz", List.of("team-compute", "team-platform", "admin", "console-org-admins"));
         person("dana", "Dana Reyes", List.of("team-compute", "developer"));
         person("mateo", "Mateo Silva", List.of("team-compute", "ops"));
         person("raj", "Raj Patel", List.of("team-data", "data-approvers"));
@@ -103,8 +110,113 @@ public class DemoDirectory {
         return out;
     }
 
+    /** The roles a person holds in an account: through their groups, and for a while (their active elevations and break-glass access). */
     public List<String> rolesOf(String subject, String accountId) {
+        List<String> roles = new ArrayList<>(groupRolesOf(subject, accountId));
+        for (String role : elevatedRolesOf(subject, accountId)) {
+            if (!roles.contains(role)) {
+                roles.add(role);
+            }
+        }
+        return List.copyOf(roles);
+    }
+
+    /** The roles a person holds in an account through their groups. */
+    public List<String> groupRolesOf(String subject, String accountId) {
         return membership(subject, accountId).map(DemoMembership::roles).orElse(List.of());
+    }
+
+    /** The roles a person holds in an account for a while. */
+    public List<String> elevatedRolesOf(String subject, String accountId) {
+        Instant now = clock.instant();
+        return elevations.values().stream()
+                .filter(e -> e.accountId().equals(accountId) && e.userId().equals("user_" + subject) && e.active(now))
+                .map(DemoElevation::role).distinct().toList();
+    }
+
+    /** Whether a person may act in an account at all: a member, or holding a role there for a while; never in a closed account. */
+    public boolean inAccount(String subject, String accountId) {
+        return !isClosed(accountId) && (membership(subject, accountId).isPresent() || !elevatedRolesOf(subject, accountId).isEmpty());
+    }
+
+    // elevations and break-glass access
+
+    public Optional<DemoElevation> elevation(String elevationId) {
+        return Optional.ofNullable(elevations.get(elevationId)).map(e -> e.served(clock.instant()));
+    }
+
+    /** The account's elevations as served now, newest first. */
+    public List<DemoElevation> elevations(String accountId) {
+        Instant now = clock.instant();
+        return elevations.values().stream().filter(e -> e.accountId().equals(accountId)).map(e -> e.served(now))
+                .sorted((a, b) -> b.elevationId().compareTo(a.elevationId())).toList();
+    }
+
+    /** A person's active elevations in every account, as served now. */
+    public List<DemoElevation> activeElevationsOf(String userId) {
+        Instant now = clock.instant();
+        return elevations.values().stream().filter(e -> e.userId().equals(userId) && e.active(now)).map(e -> e.served(now)).toList();
+    }
+
+    /** The open ask or elevation of the same person, role and kind in the account. */
+    public Optional<DemoElevation> openElevation(String accountId, String userId, String role, String kind) {
+        Instant now = clock.instant();
+        return elevations.values().stream().filter(e -> e.accountId().equals(accountId) && e.userId().equals(userId) && e.role().equals(role)
+                && e.kind().equals(kind) && e.open(now)).map(e -> e.served(now)).findFirst();
+    }
+
+    public synchronized DemoElevation saveElevation(DemoElevation elevation) {
+        elevations.put(elevation.elevationId(), elevation);
+        bump(elevation.accountId());
+        return elevation;
+    }
+
+    // closing
+
+    /** When and why an account was closed. */
+    public record Closed(Instant at, String reason) {
+    }
+
+    public boolean isClosed(String accountId) {
+        return closed.containsKey(accountId);
+    }
+
+    public Optional<Closed> closure(String accountId) {
+        return Optional.ofNullable(closed.get(accountId));
+    }
+
+    /** Closes an account and ends every open elevation in it; false when it was closed already. */
+    public synchronized boolean close(String accountId, String reason) {
+        if (closed.containsKey(accountId)) {
+            return false;
+        }
+        Instant now = clock.instant();
+        closed.put(accountId, new Closed(now, reason));
+        for (DemoElevation e : List.copyOf(elevations.values())) {
+            if (e.accountId().equals(accountId) && e.open(now)) {
+                elevations.put(e.elevationId(), e.served(now).ended("svc:console-identity-service", "the account closed", now));
+            }
+        }
+        bump(accountId);
+        return true;
+    }
+
+    /** Takes a group (and the managed role it gives) off a person's membership, as an access review's revoke does. */
+    public synchronized boolean removeGroup(String subject, String accountId, String group) {
+        Optional<DemoMembership> current = membership(subject, accountId);
+        if (current.isEmpty() || !current.get().groups().contains(group)) {
+            return false;
+        }
+        List<String> groups = new ArrayList<>(current.get().groups());
+        groups.remove(group);
+        List<String> roles = new ArrayList<>(current.get().roles());
+        String role = ManagedRoles.ALL.stream().filter(r -> ManagedRoles.groupOf(r).equals(group)).findFirst().orElse(null);
+        if (role != null) {
+            roles.remove(role);
+        }
+        memberships.get(subject).put(accountId, new DemoMembership(accountId, groups, roles));
+        bump(accountId);
+        return true;
     }
 
     public boolean isAdmin(String subject, String accountId) {

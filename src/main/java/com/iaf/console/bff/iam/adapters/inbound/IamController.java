@@ -1,30 +1,35 @@
 package com.iaf.console.bff.iam.adapters.inbound;
 
-import java.util.Set;
+import java.nio.charset.StandardCharsets;
 
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
+import com.iaf.console.bff.iam.application.IamPaths;
 import com.iaf.console.bff.iam.application.IamProxy;
 import com.iaf.console.bff.iam.application.ProxiedResponse;
 import com.iaf.console.bff.session.application.CurrentSession;
+import com.iaf.console.kit.errors.NotFoundException;
 
 import reactor.core.publisher.Mono;
 
 /**
- * {@code /console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}...} and
- * {@code /console/v1/access-requests...}, served through the identity service for the session's
- * account. Writes go through the CSRF filter like every other write.
+ * {@code /console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}...},
+ * decision 34's {@code guardrails} (read only), {@code policy-simulations} (POST only),
+ * {@code access-reviews} and {@code elevations}, the organization's {@code quota-rules} and
+ * {@code elevation-rules} (read only), and {@code /console/v1/access-requests...}, served through
+ * the identity service for the session's account ({@link IamPaths} says which paths exist). Writes
+ * go through the CSRF filter like every other write.
  */
 @RestController
 public class IamController {
-
-    private static final Set<String> RESOURCES = Set.of("users", "groups", "roles", "policies", "access-keys", "quotas", "quota-requests");
 
     private final IamProxy proxy;
 
@@ -36,9 +41,18 @@ public class IamController {
     public Mono<ResponseEntity<byte[]>> iam(ServerWebExchange exchange) {
         String path = exchange.getRequest().getPath().value();
         String rest = path.substring("/console/v1/iam/".length());
-        String resource = rest.contains("/") ? rest.substring(0, rest.indexOf('/')) : rest.replaceAll(":.*$", "");
-        if (!RESOURCES.contains(resource)) {
-            return Mono.error(new com.iaf.console.kit.errors.NotFoundException("no IAM resource " + resource));
+        String resource = IamPaths.collectionOf(rest);
+        if (!IamPaths.COLLECTIONS.contains(resource)) {
+            return Mono.error(new NotFoundException("no IAM resource " + resource));
+        }
+        HttpStatus refusal = IamPaths.refusal(exchange.getRequest().getMethod(), rest);
+        if (refusal == HttpStatus.NOT_FOUND) {
+            return Mono.error(new NotFoundException("no IAM path " + rest));
+        }
+        if (refusal != null) {
+            return Mono.just(ResponseEntity.status(refusal).contentType(MediaType.APPLICATION_JSON)
+                    .body(("{\"error\":\"" + exchange.getRequest().getMethod().name() + " is not served on " + resource + "\"}")
+                            .getBytes(StandardCharsets.UTF_8)));
         }
         return forward(exchange, rest);
     }
@@ -52,19 +66,24 @@ public class IamController {
 
     private Mono<ResponseEntity<byte[]>> forward(ServerWebExchange exchange, String rest) {
         HttpMethod method = exchange.getRequest().getMethod();
-        return CurrentSession.required(exchange).flatMap(session -> DataBufferUtils.join(exchange.getRequest().getBody())
+        return CurrentSession.required(exchange).flatMap(session -> body(exchange)
+                .flatMap(body -> proxy.forward(session, method, rest, exchange.getRequest().getURI().getRawQuery(), exchange.getRequest().getHeaders(), body)))
+                .map(IamController::toEntity);
+    }
+
+    /** The request's body, empty when it has none. */
+    static Mono<byte[]> body(ServerWebExchange exchange) {
+        return DataBufferUtils.join(exchange.getRequest().getBody())
                 .map(buffer -> {
                     byte[] bytes = new byte[buffer.readableByteCount()];
                     buffer.read(bytes);
                     DataBufferUtils.release(buffer);
                     return bytes;
                 })
-                .defaultIfEmpty(new byte[0])
-                .flatMap(body -> proxy.forward(session, method, rest, exchange.getRequest().getURI().getRawQuery(), exchange.getRequest().getHeaders(), body)))
-                .map(IamController::toEntity);
+                .defaultIfEmpty(new byte[0]);
     }
 
-    private static ResponseEntity<byte[]> toEntity(ProxiedResponse response) {
+    static ResponseEntity<byte[]> toEntity(ProxiedResponse response) {
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.status());
         if (response.etag() != null) {
             builder.header(HttpHeaders.ETAG, response.etag());

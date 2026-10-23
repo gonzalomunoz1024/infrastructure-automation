@@ -426,7 +426,7 @@ class DriftEndpointTest extends DemoApp {
         assertNotNull(session, "the session behind the cookie");
         sessions.update(new Session(session.id(), session.user(), session.accounts(), session.accountId(), session.region(), session.createdAt(),
                 session.authTime().minus(Duration.ofHours(1)), session.lastSeenAt(), session.expiresAt(), session.issuer(), session.subject(),
-                session.idpGroups(), session.rolesResolvedAt(), session.rolesUntil())).block();
+                session.idpGroups(), session.rolesResolvedAt(), session.rolesUntil(), session.organizationAdmin())).block();
         return signed;
     }
 

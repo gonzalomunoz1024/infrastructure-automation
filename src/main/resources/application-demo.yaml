@@ -10,6 +10,8 @@ console:
     redirect-uri: http://localhost:18081/auth/callback
   session:
     secure: false
+  organization:
+    admin-groups: [console-org-admins]   # gonzalo's sign-in carries it
   identity:
     url: ""
   state:

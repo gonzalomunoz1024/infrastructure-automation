@@ -10,8 +10,9 @@ import java.util.Optional;
  * accounts are the ones the identity service answered, at sign-in and at every re-read since
  * ({@code rolesResolvedAt}); {@code rolesUntil} is when they must be read again, at the latest
  * after the re-read interval and never after the earliest time-boxed role ends, and no token may
- * carry them past it. {@code idpGroups} are the identity provider's groups the re-read sends again
- * (null on a session stored before they were kept, which a re-read ends). {@code authTime} is
+ * carry them past it. {@code idpGroups} are the identity provider's groups the sign-in named, which
+ * the re-read sends again and a step-up reads again (null on a session stored before they were
+ * kept, which a re-read ends); {@code organizationAdmin} was decided from them. {@code authTime} is
  * when the identity provider last saw the user type a credential, which the step-up policy reads.
  */
 public record Session(
@@ -28,7 +29,8 @@ public record Session(
         String subject,
         List<String> idpGroups,
         Instant rolesResolvedAt,
-        Instant rolesUntil) {
+        Instant rolesUntil,
+        boolean organizationAdmin) {
 
     public Session {
         Objects.requireNonNull(id, "id");
@@ -49,10 +51,21 @@ public record Session(
         }
     }
 
-    /** A session whose memberships were read at its creation and are due again now (tests, and records from before the re-reads). */
+    /**
+     * A session of someone who is no organization admin, whose memberships were read at its
+     * creation and are due again now (tests, and records from before the re-reads).
+     */
     public Session(String id, Principal user, List<AccountMembership> accounts, String accountId, String region, Instant createdAt,
             Instant authTime, Instant lastSeenAt, Instant expiresAt, String issuer, String subject) {
-        this(id, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, null, createdAt, null);
+        this(id, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, null, createdAt, null, false);
+    }
+
+    /** A session of someone who is no organization admin (records from before organization admins were kept). */
+    public Session(String id, Principal user, List<AccountMembership> accounts, String accountId, String region, Instant createdAt,
+            Instant authTime, Instant lastSeenAt, Instant expiresAt, String issuer, String subject, List<String> idpGroups,
+            Instant rolesResolvedAt, Instant rolesUntil) {
+        this(id, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups, rolesResolvedAt,
+                rolesUntil, false);
     }
 
     /** When the earliest time-boxed role of these memberships ends; null when none is held. */
@@ -92,32 +105,44 @@ public record Session(
     /** The same session under another id: a store keeps it under the id's hash. */
     public Session withId(String otherId) {
         return new Session(otherId, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
-                rolesResolvedAt, rolesUntil);
+                rolesResolvedAt, rolesUntil, organizationAdmin);
     }
 
     public Session switchedTo(String otherAccountId, String otherRegion) {
         return new Session(id, user, accounts, otherAccountId, otherRegion, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
-                rolesResolvedAt, rolesUntil);
+                rolesResolvedAt, rolesUntil, organizationAdmin);
     }
 
     /** The memberships as read again at {@code resolvedAt}, valid until {@code until}; the person as the identity service now has them. */
     public Session withAccounts(Principal resolvedUser, List<AccountMembership> refreshed, Instant resolvedAt, Instant until) {
         return new Session(id, resolvedUser, refreshed, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
-                resolvedAt, until);
+                resolvedAt, until, organizationAdmin);
+    }
+
+    /** Other memberships, read no later than the current ones were (tests). */
+    public Session withAccounts(List<AccountMembership> refreshed) {
+        return new Session(id, user, refreshed, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, idpGroups,
+                rolesResolvedAt, rolesUntil, organizationAdmin);
     }
 
     public Session seenAt(Instant now) {
         return new Session(id, user, accounts, accountId, region, createdAt, authTime, now, expiresAt, issuer, subject, idpGroups, rolesResolvedAt,
-                rolesUntil);
+                rolesUntil, organizationAdmin);
     }
 
     public Session reauthenticatedAt(Instant when) {
         return new Session(id, user, accounts, accountId, region, createdAt, when, lastSeenAt, expiresAt, issuer, subject, idpGroups, rolesResolvedAt,
-                rolesUntil);
+                rolesUntil, organizationAdmin);
+    }
+
+    /** The identity provider's groups of a new sign-in (a step-up), and whether they make the person an organization admin. */
+    public Session withIdpGroups(List<String> groups, boolean admin) {
+        return new Session(id, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, expiresAt, issuer, subject, groups, rolesResolvedAt,
+                rolesUntil, admin);
     }
 
     public Session expiringAt(Instant when) {
         return new Session(id, user, accounts, accountId, region, createdAt, authTime, lastSeenAt, when, issuer, subject, idpGroups, rolesResolvedAt,
-                rolesUntil);
+                rolesUntil, organizationAdmin);
     }
 }

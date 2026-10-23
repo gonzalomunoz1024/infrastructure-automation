@@ -92,7 +92,7 @@ public class Sessions {
                 new SessionView.User(session.user().userId(), session.user().email(), session.user().name(), session.user().groups()),
                 new SessionView.Account(account.accountId(), account.name(), account.status(), account.defaultRegion(), account.roles(), account.groups()),
                 session.region(), csrf.tokenFor(session.id()), session.expiresAt(), session.authTime(),
-                new SessionView.StepUp(stepUp.actions(), session.authTime().plus(stepUp.maxAge())), null);
+                new SessionView.StepUp(stepUp.actions(), session.authTime().plus(stepUp.maxAge())), session.organizationAdmin(), null);
     }
 
     public String csrfToken(Session session) {
@@ -165,6 +165,15 @@ public class Sessions {
     /** Errors with {@link StepUpRequiredException} when the action is guarded and the session's authentication is too old. */
     public Mono<Void> requireFreshFor(Session session, String action) {
         return stepUp.requiresStepUp(session, action, clock.instant()) ? Mono.error(new StepUpRequiredException(action)) : Mono.empty();
+    }
+
+    /**
+     * Errors with {@link StepUpRequiredException} when the session's authentication is too old,
+     * whatever the step-up patterns say: for writes that always need a fresh sign-in (the
+     * organization's).
+     */
+    public Mono<Void> requireFresh(Session session, String action) {
+        return stepUp.fresh(session, clock.instant()) ? Mono.empty() : Mono.error(new StepUpRequiredException(action));
     }
 
     public StepUpPolicy stepUpPolicy() {
