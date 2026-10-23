@@ -17,6 +17,7 @@ public record StateProperties(
         PlatformSettings platform,
         AuthSettings auth,
         CryptoSettings crypto,
+        TrailSettings trail,
         DemoSettings demo) {
 
     public StateProperties {
@@ -28,6 +29,7 @@ public record StateProperties(
         platform = platform == null ? new PlatformSettings(null, null, null, null) : platform;
         auth = auth == null ? new AuthSettings(null, null, null, null) : auth;
         crypto = crypto == null ? new CryptoSettings(null) : crypto;
+        trail = trail == null ? new TrailSettings(null, null, null, null, null, null, null) : trail;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
     }
 
@@ -97,6 +99,22 @@ public record StateProperties(
 
     /** The master key (base64, 32 bytes) the per-account data keys are wrapped under. */
     public record CryptoSettings(String masterKey) {
+    }
+
+    /**
+     * The trail's digests: whether they are made, the period each seals (aligned to the epoch), the
+     * grace a period gets for late events, how often the digester looks, how far back its first pass
+     * reaches, and the signing key (a private EC JWK on P-256; without one the process makes its own).
+     */
+    public record TrailSettings(Boolean enabled, Duration period, Duration grace, Duration interval, Duration backfill, String signingKey,
+            String keyId) {
+        public TrailSettings {
+            enabled = enabled == null || enabled;
+            period = period == null ? Duration.ofHours(1) : period;
+            grace = grace == null ? Duration.ofMinutes(5) : grace;
+            interval = interval == null ? Duration.ofMinutes(1) : interval;
+            backfill = backfill == null ? Duration.ofHours(24) : backfill;
+        }
     }
 
     /** The demo profile's embedded platform: its port (0 for any free one) and how fast its jobs run. */

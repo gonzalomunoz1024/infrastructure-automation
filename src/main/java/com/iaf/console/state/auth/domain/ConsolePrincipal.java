@@ -40,6 +40,14 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
         return internal() || roles.contains(ACCOUNT_ADMIN);
     }
 
+    /** The managed role of an account's auditors, as the token's {@code roles} claim names it. */
+    public static final String AUDITOR = "auditor";
+
+    /** Whether the caller may take an account's evidence pack: an internal principal, an account admin or an auditor. */
+    public boolean mayAudit() {
+        return internal() || roles.contains(ACCOUNT_ADMIN) || roles.contains(AUDITOR);
+    }
+
     /**
      * The scope of a read or a command: the principal's own account, or the named account for an
      * internal principal. Another account's name answers 404, never 403, so ids cannot be probed.

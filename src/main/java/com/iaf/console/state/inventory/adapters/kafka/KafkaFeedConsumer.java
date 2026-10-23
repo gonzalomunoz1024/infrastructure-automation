@@ -116,14 +116,16 @@ public final class KafkaFeedConsumer implements SmartLifecycle, FeedSource {
                 .doOnSuccess(v -> handled.incrementAndGet());
     }
 
-    /** An account that closes loses its data key. */
+    /**
+     * An account that closes loses its data key: {@code AccountChanged} with the action {@code closed}
+     * (identity's {@code :close}, which revokes the account's keys first), {@code deleted}, or a
+     * snapshot whose status is {@code closed}.
+     */
     Mono<Void> identityChange(JsonNode envelope) {
         if (!"AccountChanged".equals(envelope.path("type").asText())) {
             return Mono.empty();
         }
-        JsonNode data = envelope.path("data");
-        boolean closed = "deleted".equals(data.path("action").asText()) || "closed".equals(data.path("snapshot").path("status").asText());
-        if (!closed) {
+        if (!closes(envelope.path("data"))) {
             return Mono.empty();
         }
         String accountId = envelope.path("aggregateId").asText(null);
@@ -135,6 +137,11 @@ public final class KafkaFeedConsumer implements SmartLifecycle, FeedSource {
         }
         log.info("account {} closed: destroying its data key", accountId);
         return sensitive.shred(accountId).then();
+    }
+
+    static boolean closes(JsonNode data) {
+        String action = data.path("action").asText();
+        return "closed".equals(action) || "deleted".equals(action) || "closed".equals(data.path("snapshot").path("status").asText());
     }
 
     @Override

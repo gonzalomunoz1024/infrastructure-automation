@@ -35,7 +35,17 @@ repository pins by commit in `contracts.lock`, and the shared code comes from `c
   came, ended elsewhere, or registered while the feed was down.
 - **Protects secrets**: fields a type marks sensitive (or whose name says so) are sealed with a
   per-account data key under a master key, masked everywhere by default, revealed only to a caller
-  who asks, and gone for good when the account's key is destroyed at closure.
+  who asks, and gone for good when the account's key is destroyed at closure (identity's
+  `AccountChanged` with `closed`).
+- **Knows what was built from what** (WP 4.5, 9.4): lineage, the blast radius of a delete or a bulk
+  action across accounts, and the resource map, from the registry ids each registration records.
+- **Seals its own trail** (WP 7.1): every event is a link in its resource's hash chain, each
+  account's hour is sealed in a signed digest, and an evidence pack holds a period with the rules
+  to check it offline.
+- **Travels in time** (WP 9.8): any resource or list as it was at an instant, and "revert to this"
+  as a plan the BFF confirms with the person.
+- **Moves resources between accounts** (WP 7.7): by re-import, the old wfrn kept for good as an
+  alias of the new one.
 
 ## Run it
 
@@ -90,6 +100,8 @@ profiles.
 | `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token (demo only) |
 | `console.crypto.master-key` | `CONSOLE_MASTER_KEY` | 32 bytes, base64; random per process when unset outside `mongo` |
 | `console.outbox.relay.*` | on, `1s` | The service kit's outbox relay |
+| `console.trail.enabled`, `period`, `grace`, `interval`, `backfill` | on, `1h`, `5m`, `1m`, `24h` | The trail's digests: the period each seals (aligned to the epoch), the grace for late events, how often the digester looks, how far back its first pass reaches |
+| `console.trail.signing-key`, `key-id` | `CONSOLE_TRAIL_SIGNING_KEY`, generated | The private EC JWK (P-256) that signs digests; without one each process makes its own, and every public half is kept so old digests still verify |
 | `console.demo.platform-port`, `step-delay`, `seed` | `18090`, `250ms`, `20261023` | The embedded fake platform (`demo` profile) |
 
 ## The API
@@ -104,7 +116,7 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `GET /v1/resources` | The account's live resources, newest first; filters `type`, `state`, `name` (prefix), `tag.<name>`, `wfrn` (pattern), `updatedAfter`, `drift`; `sort` (`-updatedAt`, `updatedAt`, `-createdAt`, `createdAt`, `name`, `-name`); `limit` 1 to 200 (50), `after` the cursor of the last page |
 | `POST /v1/resources:mint` | 201, a `pending` resource with a fresh wfrn (`<type>-<ulid>`), before the platform knows of it |
 | `POST /v1/resources:import` | 201, an `active` resource the platform already had (`source` `backfill` or `discover`) |
-| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for an internal principal (`svc` without `acct`) and a person whose `roles` claim holds `account-admin`, ignored for anyone else; 410 with a `Tombstone` body after deletion |
+| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had) and `?at=<instant>` the resource as it was then (404 `resource.notYet` before it existed), either one reading a deleted resource's past; `?reveal=sensitive` the sensitive fields in clear, for an internal principal (`svc` without `acct`) and a person whose `roles` claim holds `account-admin`, ignored for anyone else; 410 with a `Tombstone` body after deletion, `resource.transferred` with `transferredTo` after a move |
 | `GET /v1/wfrn/{wfrn}/events` | Its log in order, each entry the `state.resources` envelope (`id`, `key`, `type`, `at`, `context`, `data` with `version` and `state`), the same event under the same `id` as on the topic; `after` is a version, `limit` a page, `reveal` as on the resource |
 | `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes`; `jobId` names the platform job when it was started first, and a job that has already ended settles the request at once |
 | `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting`; `jobId` as for an update; a request naming the job that has already deleted the resource answers the tombstone (200) instead of 410 |
@@ -112,6 +124,16 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `POST /v1/wfrn/{wfrn}:tag` | `set` and `removed` tags; names `[a-z0-9-]{1,32}`, values up to 256, 50 tags |
 | `POST /v1/wfrn/{wfrn}:record-observation` | What a provider showed (`found`, `not_found`, `error`); `not_found` on a type whose `observe.notFound` is `deleted` tombstones it |
 | `POST /v1/wfrn/{wfrn}:record-drift`, `:resolve-drift` | One open finding at a time; `accepted` writes the observed values into the attributes |
+| `GET /v1/wfrn/{wfrn}/lineage` | What it was built from and what was built from it, `depth` 1 to 32 hops each way, at most `limit` nodes (200, up to 1,000); only the caller's account is drawn, `hidden` counts the rest, `unmanaged` lists parents the console does not manage |
+| `GET /v1/wfrn/{wfrn}/blast-radius`, `POST /v1/resources:blast-radius` | Every live resource built from one resource (or 1 to 100 of one account, for a bulk action), in every account: `total`, by account (yours first) and by type, the caller's own named in `items` (100) |
+| `GET /v1/graph` | The resource map: the account's resources by name with the filters of the list, the edges between them, `context` nodes, `external` groups of other accounts by type and direction, `unmanaged` parents; `limit` up to 2,000; up to 20 `accountId`s for an internal principal |
+| `GET /v1/activity` | The account's trail, newest first: each event's envelope, masked, with `chain {previous, hash}`; filters `from`, `to`, `type`, `actor`, `jobId`, `wfrn` (pattern) |
+| `GET /v1/activity/digests`, `/v1/activity/keys` | The account's sealed periods, oldest first, and the public keys (a JWK set) that signed them |
+| `GET /v1/activity/evidence` | The evidence pack of `from` to `to`, widened to whole periods (31 days, 50,000 events at most): the sealed events, the digests, the keys, the canonicalization, the service's own check and each job's platform evidence link; `account-admin`, `auditor` and internal principals only, 403 otherwise |
+| `GET /v1/wfrn/{wfrn}/events:verify` | Checks the resource's hash chain: versions, hashes and links |
+| `GET /v1/wfrn/{wfrn}/revert-plan` | "Revert to this" for `version` or `at`: the merge patch for `:request-update`, the tag changes for `:tag`, every changed field; `possible` false with a `reason` when it cannot be |
+| `POST /v1/wfrn/{wfrn}:transfer` | `{toAccountId, reason}`: moves an idle, active resource to another account of the organization and answers the resource it became (hub decision 30) |
+| `POST /internal/accounts/{id}:transfer` | For the BFF's service token: `{toAccountId, region, reason, limit}` moves an account's active resources (at most `limit`, 1,000 by default, 10,000 at most) and lists each move and what stayed; run it again while `more` |
 | `POST /internal/import` | For services: `{accountId, region, owner}`; with an `owner` (the team whose resources get names) the platform's backfill mints the missing wfrns first (the console-internal service account holds `resources:backfill`; a token without it, or a call without an owner, imports what already carries a wfrn), then the account's resources are taken under management |
 | `POST /internal/rebuild`, `/internal/reap`, `/internal/accounts/{id}:shred`, `GET /internal/feed` | Operations: rebuild from the snapshot, run the reaper now, destroy an account's data key, the feed's status |
 
@@ -221,16 +243,67 @@ account's data key (`identity.changes` or `POST /internal/accounts/{id}:shred`) 
 every copy, in every store and backup, is unreadable from then on, and a later seal for the same
 account gets a new key.
 
+## Relationships
+
+A registration names what the resource was built from by the platform's registry ids (the
+registry's lineage, P-02); the state service keeps them on the resource as `builtFrom` and
+resolves them to wfrns when it reads, so a parent taken under management later joins the graph
+with nothing rewritten, and a deleted parent shows as `deleted`. The reads walk every account, so
+the blast radius counts what a delete reaches anywhere, but draw only the caller's: other
+accounts' resources are counted (`hidden`, `accounts`, `external`) and never named, unless the
+caller is an internal principal. Walks stop at 32 hops, 1,000 lineage nodes, 2,000 map nodes and
+10,000 affected resources, and say `truncated` when they do.
+
+## The trail
+
+The log is the trail. When an event is written it gets `previous`, the hash of the resource's
+event before it, and `hash`, `sha256:` and the hex SHA-256 of its stored form (sensitive values
+sealed): object members sorted by name, no whitespace, integers as digits, other numbers in their
+shortest decimal form, UTF-8. A resource's versions are written once each, so its chain needs no
+lock. Every period (an hour, after a grace of 5 minutes for late events) the digester seals each
+account and region that had events: a digest counts them, names the first and the last, hashes
+their hashes (recomputed from what is stored) into `root`, carries the hash of the account's
+previous digest, and is signed with ES256. Digests are deterministic and written once, so replicas
+may race; one checkpoint (`trail_progress`, compare-and-set) says how far sealing has got. The
+public half of every signing key is kept in `trail_keys`, so a digest still verifies after its key
+is rotated out. The evidence pack carries everything a verifier needs and the service's own check
+of it; the platform's evidence of each job stays the platform's (P-12) and is linked by job id.
+
+## Time travel
+
+`?at=` folds the resource's log up to an instant; the list's `?at=` takes the resources that
+existed then (created before, not yet deleted) in wfrn order and folds each, so its filters apply
+to the past values. The revert plan compares the resource now with the resource then, on clear
+values, and answers masked: a JSON merge patch (RFC 7386) of the attributes, the tags to set and
+remove, and each changed leaf by JSON pointer. It changes nothing; the BFF shows it and runs the
+type's update workflow when the person confirms. A resource that is busy, deleted, or was not
+provisioned at that point cannot be reverted, and the plan says why.
+
+## Moving a resource to another account
+
+`:transfer` moves an idle, active resource by re-import (hub decision 30). It writes `Transferred`
+on the old wfrn first, a tombstone with `transferredTo` and no end date, so the registry id is
+never live twice, then imports the new wfrn in the other account (`Imported`, `source: transfer`,
+`transferredFrom`) with the registry id, the attributes opened with the old account's key and
+sealed again with the new one's, the tags and the lineage. The same call again answers the same
+resource; a move cut short between the two writes is finished by the same call or by the reaper,
+which looks at the last hour's moves once they are a minute old. A shredded account's resources
+cannot move (409 `account.shredded`), since masked values must never travel as real ones. Until
+the BFF re-homes the platform's record (P-23), the feed's events about the old wfrn apply to the
+new one, following up to eight moves.
+
 ## Storage
 
 MongoDB, one database (`console_state`) per deployment; indexes are created at start by each adapter.
 
 | Collection | Document | Indexes | Sharding (when needed) |
 | --- | --- | --- | --- |
-| `resource_events` | `_id` `<wfrn>#<version>`, `wfrn`, `version`, `type`, `accountId`, `region`, `atNs`, `expiresAt`, `doc` (the event) | unique `{wfrn, version}` (the optimistic append), `{accountId, region, atNs}`, TTL `expiresAt` (set on the tombstone) | hashed `wfrn`: one resource's log on one shard, writes spread |
-| `resources` | `_id` wfrn, `accountId`, `region`, `type`, `name`, `state`, `live`, `version`, `registryId`, `tagsFlat` (`k=v`), `drifted`, `updatedAtNs`, `createdAtNs`, `expiresAt`, `doc` | `{accountId, region, live, -updatedAtNs, _id}`, the same with `type`, `{…, name, _id}`, `{…, -createdAtNs, _id}`, `{accountId, region, tagsFlat}`, `registryId` (live only), `{state, updatedAtNs}` (the reaper), TTL `expiresAt` | `{accountId, _id}`: an account's lists stay on one shard (1 million resources per account fits), lookups by wfrn carry the account |
+| `resource_events` | `_id` `<wfrn>#<version>`, `wfrn`, `version`, `type`, `accountId`, `region`, `atNs`, `expiresAt`, `doc` (the event) | unique `{wfrn, version}` (the optimistic append), `{accountId, region, atNs}`, `{accountId, region, -atNs, -_id}` (the activity trail), `atNs` (the digester), TTL `expiresAt` (set on the tombstone) | hashed `wfrn`: one resource's log on one shard, writes spread |
+| `resources` | `_id` wfrn, `accountId`, `region`, `type`, `name`, `state`, `live`, `version`, `registryId`, `tagsFlat` (`k=v`), `drifted`, `updatedAtNs`, `createdAtNs`, `deletedAtNs`, `builtFrom`, `transferredTo`, `expiresAt`, `doc` | `{accountId, region, live, -updatedAtNs, _id}`, the same with `type`, `{…, name, _id}`, `{…, -createdAtNs, _id}`, `{accountId, region, tagsFlat}`, `registryId` (live only), `{registryId, live}`, `{builtFrom, _id}` (live only), `{state, updatedAtNs}` (the reaper), `updatedAtNs` (moved only), TTL `expiresAt` | `{accountId, _id}`: an account's lists stay on one shard (1 million resources per account fits), lookups by wfrn carry the account |
 | `idempotency_keys` | `_id` `<accountId>:<key>`, `bodyHash`, `status`, `body`, `expiresAt` | TTL `expiresAt` | hashed `_id` |
 | `account_keys` | `_id` accountId, `version`, `wrapped`, `nonce`, `createdAt` | `_id` | not needed |
+| `trail_digests` | `_id` `<accountId>:<region>:<from>`, `fromNs`, `toNs`, `doc` (the digest) | `{accountId, region, fromNs}` | hashed `_id` |
+| `trail_keys`, `trail_progress` | the public JWKs by `kid`; the digester's checkpoint (`throughNs`) | `_id` | not needed |
 | `feed_checkpoints` | `_id` feed, `seq` (`$max` only) | `_id` | not needed |
 | `outbox`, `processed_events` | the service kit's | the service kit's | hashed |
 
@@ -247,11 +320,13 @@ com.iaf.console.state
 │   │                             ResourceQuery/ResourceMatching, TagRules, Commands; no Spring, no I/O
 │   ├── ports.outbound            ResourceEventStorePort, ResourceProjectionPort, IdempotencyKeyPort,
 │   │                             ResourceTypesPort, AccountKeysPort, FeedCheckpointPort
-│   ├── application               InventoryService (commands, platform facts), InventoryQueries,
+│   ├── application               InventoryService (commands, platform facts, transfers), InventoryQueries,
 │   │                             IdempotentCommands, SensitiveData, ResourceEventPublisher,
 │   │                             ChangeRequests, PlatformEventHandler, JobOutcomes, RegistryImporter,
-│   │                             PendingReaper
+│   │                             PendingReaper, Relationships
 │   └── adapters.{web,mongo,memory,platform,kafka}
+├── trail                         the sealed trail: Digest, DigestRoot, DigestSigner, EvidencePack;
+│                                 TrailDigester, ActivityTrail; TrailDigestPort and its adapters
 ├── auth                          ConsolePrincipal, JwtVerifier (the BFF's JWKS), ConsoleAuthWebFilter
 └── boot                          StateProperties and the profile wiring
 ```
@@ -276,6 +351,11 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 11 | `reveal=sensitive` is honored for internal principals and account admins only | The token's `roles` claim decides (hub decision 21), never a group name; a token without roles has none; anyone else is answered masked, not refused |
 | 12 | A change and its job in either order | The BFF starts an update's or a delete's job before it records the change, so a refused start never leaves a resource `updating`; the service settles a request whose named job already ended, and the reaper settles a change by its own job, so neither order can strand a resource |
 | 13 | A failed create is retried by an explicit command | `:request-retry` (hub decision 24) rather than letting a job's start revive a failed resource: the trail shows who retried, the page shows `pending` at once, a late event of the failed job cannot pass for the retry, and a second failure is recorded; the BFF reruns the failed job from its failed step, so no one handles the original input, whose secrets it only sees masked |
+| 14 | Lineage by registry id, resolved when read (hub decision 29) | The registry already records what a job built from; resolving at read time means a parent imported later, or deleted, shows correctly without rewriting its children |
+| 15 | Other accounts are counted, never named | A delete's real reach crosses accounts, so the blast radius must count it, but a caller sees only its own account (the 404-never-403 rule) |
+| 16 | The trail is sealed by the service itself | A per-resource chain is race-free on versions and verifies one resource alone; hourly signed digests per account make deleting or editing a whole event detectable, the way CloudTrail's digest files do; keys' public halves are kept so rotation never orphans a digest |
+| 17 | Revert is a plan, never an action | The person confirms the change and it runs through the type's update workflow, its preview and IAM like any other update |
+| 18 | A move is a re-import, the tombstone written first (hub decision 30) | A wfrn names its account, so moving means a new name; writing the tombstone first keeps a registry id from being live twice, and the old name answers where it went for good |
 
 ## CI and release
 

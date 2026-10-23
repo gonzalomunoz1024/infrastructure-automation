@@ -5182,8 +5182,8 @@ components:
       type: object
       required: [ level, code, message ]
       properties:
-        code: { type: string, description: A stable problem code, for example schema.invalid }
-        field: { type: string, description: The field at fault, as a JSON pointer }
+        code: { type: string, description: "A stable problem code, for example schema.invalid" }
+        field: { type: string, description: "The field at fault, as a JSON pointer" }
         level: { type: string, enum: [ error, warning ] }
         message: { type: string }
         step: { type: string }
@@ -5353,7 +5353,7 @@ components:
         teams:
           type: array
           items: { type: string }
-        note: { type: string, description: Says when the teams were taken from the creator, or that no team means the policy refuses every job }
+        note: { type: string, description: "Says when the teams were taken from the creator, or that no team means the policy refuses every job" }
     ServiceAccountRotated:
       type: object
       required: [ id, token ]
@@ -5371,7 +5371,7 @@ components:
         owner: { type: string }
         description: { type: string }
         visibility: { type: string, enum: [ team, public, hidden ] }
-        schema: { type: object, description: The JSON Schema of a resource's attributes, with the x-console hints (P-06), additionalProperties: true }
+        schema: { type: object, description: "The JSON Schema of a resource's attributes, with the x-console hints (P-06)", additionalProperties: true }
         states:
           type: array
           items: { type: string }
@@ -5604,7 +5604,7 @@ components:
             properties:
               from: { type: string }
               to: { type: string }
-              via: { type: string, description: The workflow that registered `to`, when known }
+              via: { type: string, description: "The workflow that registered `to`, when known" }
     ObserveResult:
       type: object
       description: What one observe call found (P-09)
@@ -5620,7 +5620,7 @@ components:
         environment: { type: string }
         at: { type: string, format: date-time }
         durationMs: { type: integer }
-        id: { type: string, description: The registry id, in a batch answer }
+        id: { type: string, description: "The registry id, in a batch answer" }
         wfrn: { $ref: '#/components/schemas/Wfrn' }
     ObserveBatchRequest:
       type: object
@@ -5811,7 +5811,7 @@ components:
       type: object
       required: [ class, message, retryable ]
       properties:
-        class: { type: string, description: A class from the provider's errors table, or the platform's }
+        class: { type: string, description: "A class from the provider's errors table, or the platform's" }
         message: { type: string }
         retryable: { type: boolean }
     JobStep:
@@ -5944,7 +5944,7 @@ components:
         version: { type: string, description: Pin this published or retired version }
         input: { type: object, additionalProperties: true }
         channel: { type: string, description: rest by default }
-        traceId: { type: string, description: A W3C trace id (32 hex characters, not all zeros) }
+        traceId: { type: string, description: "A W3C trace id (32 hex characters, not all zeros)" }
         changeId: { type: string, description: An existing change record to run under }
     BatchContext:
       type: object
@@ -6060,7 +6060,7 @@ components:
         dataVersion: { type: integer, description: The version of this event type's `data` schema in the catalog }
         id: { type: string, description: 'Random (`evt_...`); for tracing only' }
         key: { type: string, description: 'Deterministic: `<type>:<jobId>:<seq>` for job events, `<type>:<resourceId>:<updatedAt nanos>` for resource events, `<type>:<name>:<version>` for content events' }
-        seq: { type: integer, format: int64, description: The outbox sequence, one total order per installation }
+        seq: { type: integer, format: int64, description: "The outbox sequence, one total order per installation" }
         type: { type: string, description: 'An event type of the catalog (contracts/platform/asyncapi-target.yaml)' }
         at: { type: string, format: date-time }
         aggregate: { type: string, enum: [ job, resource, workflow, provider, resource-type, region, release, audit, content ] }
@@ -6098,7 +6098,7 @@ components:
         limitPerMinute: { type: integer }
         burst: { type: integer }
         available: { type: integer, description: Tokens in the bucket now }
-        refillsAt: { type: string, format: date-time, description: When the next token comes, when the bucket is not full }
+        refillsAt: { type: string, format: date-time, description: "When the next token comes, when the bucket is not full" }
         source: { type: string, enum: [ default, configuration, override ], description: Where the limit comes from }
     QuotaUpdate:
       type: object

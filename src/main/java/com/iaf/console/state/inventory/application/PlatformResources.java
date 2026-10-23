@@ -1,5 +1,6 @@
 package com.iaf.console.state.inventory.application;
 
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -35,13 +36,19 @@ public final class PlatformResources {
         String job = jobId != null ? jobId : record.createdBy() == null ? null : record.createdBy().jobId();
         String wf = workflow != null ? workflow : record.createdBy() == null ? null : record.createdBy().workflow();
         String version = workflowVersion != null ? workflowVersion : record.createdBy() == null ? null : record.createdBy().version();
-        return new Commands.Registration(job, wf, version, record.id(), record.providerId(), record.name(), attributes(record), meta);
+        return new Commands.Registration(job, wf, version, record.id(), record.providerId(), record.name(), attributes(record), meta,
+                lineage(record));
     }
 
     /** The import command a platform record spells. */
     public static Commands.Import imported(Resource record, String source, Commands.Meta meta) {
         return new Commands.Import(record.type(), record.region(), record.wfrn(), record.id(), record.providerId(), record.name(),
-                attributes(record), source, meta);
+                attributes(record), source, meta, lineage(record));
+    }
+
+    /** The registry ids a record was built from, as the registry lists them. */
+    public static List<String> lineage(Resource record) {
+        return record.builtFrom() == null ? List.of() : record.builtFrom().stream().filter(id -> id != null && !id.isBlank()).distinct().toList();
     }
 
     public static ObjectNode attributes(Resource record) {

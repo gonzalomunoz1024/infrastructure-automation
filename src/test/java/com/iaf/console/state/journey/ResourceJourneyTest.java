@@ -247,4 +247,135 @@ class ResourceJourneyTest extends DemoServiceTest {
         }
         throw new AssertionError("job " + jobId + " never asked for an approval");
     }
+
+    /** The image a VM is built from: imported into the account unless the boot import brought it already. */
+    private String imageWfrn(WebTestClient client, String image) {
+        JsonNode images = body(client.get().uri("/v1/resources?type=image&limit=200").exchange().expectStatus().isOk());
+        for (JsonNode r : images.get("items")) {
+            if (image.equals(r.path("registryId").asText())) {
+                return r.get("wfrn").asText();
+            }
+        }
+        ObjectNode body = json.createObjectNode().put("type", "image").put("region", "global").put("registryId", image).put("name", "golden-image")
+                .put("source", "discover");
+        return body(client.post().uri("/v1/resources:import").bodyValue(body).exchange().expectStatus().isCreated()).get("wfrn").asText();
+    }
+
+    @Test
+    void aVmBuiltFromAnImageHasItsLineageTrailAndPast() {
+        WebTestClient dana = as(ACCOUNT, "dana");
+        String image = fake.demo().imageIds().get(0);
+        String imageWfrn = imageWfrn(dana, image);
+        java.time.Instant beforeMint = java.time.Instant.now();
+        String name = "lineage-" + UUID.randomUUID().toString().substring(0, 8);
+        ObjectNode mint = json.createObjectNode().put("type", "vm").put("region", "global").put("name", name).put("workflow", "create-vm");
+        mint.putObject("input").put("name", name).put("image", image).put("size", "small").put("environment", "dev");
+        String wfrn = body(dana.post().uri("/v1/resources:mint").bodyValue(mint).exchange().expectStatus().isCreated()).get("wfrn").asText();
+        startJob(PlatformOperation.CREATE_VM, Map.of(), Map.of("name", name, "image", image, "size", "small", "environment", "dev"), wfrn);
+        JsonNode active = await(() -> getResource(dana, wfrn), r -> "active".equals(r.get("state").asText()), "the VM to become active");
+        assertThat(active.get("builtFrom")).extracting(JsonNode::asText).containsExactly(image);
+        assertThat(active.get("eventHash").asText()).startsWith("sha256:");
+
+        // lineage, blast radius and the map
+        JsonNode lineage = body(dana.get().uri(resource(wfrn, "/lineage")).exchange().expectStatus().isOk());
+        assertThat(lineage.get("builtFrom")).extracting(r -> r.get("wfrn").asText()).containsExactly(imageWfrn);
+        assertThat(lineage.get("edges")).anySatisfy(e -> {
+            assertThat(e.get("from").asText()).isEqualTo(imageWfrn);
+            assertThat(e.get("to").asText()).isEqualTo(wfrn);
+            assertThat(e.get("via").asText()).isEqualTo("create-vm");
+        });
+        dana.get().uri(resource(wfrn, "/lineage?depth=0")).exchange().expectStatus().isBadRequest();
+
+        JsonNode radius = body(dana.get().uri(resource(imageWfrn, "/blast-radius")).exchange().expectStatus().isOk());
+        assertThat(radius.get("total").asInt()).isPositive();
+        assertThat(radius.get("items")).extracting(r -> r.get("wfrn").asText()).contains(wfrn);
+        assertThat(radius.get("accounts").get(0).get("accountId").asText()).isEqualTo(ACCOUNT);
+        assertThat(radius.get("accounts").get(0).get("yours").asBoolean()).isTrue();
+        ObjectNode bulk = json.createObjectNode();
+        bulk.putArray("wfrns").add(imageWfrn);
+        JsonNode bulkRadius = body(dana.post().uri("/v1/resources:blast-radius").bodyValue(bulk).exchange().expectStatus().isOk());
+        assertThat(bulkRadius.get("total").asInt()).isEqualTo(radius.get("total").asInt());
+        dana.post().uri("/v1/resources:blast-radius").bodyValue(json.createObjectNode().putArray("wfrns")).exchange().expectStatus().isBadRequest();
+
+        JsonNode map = body(dana.get().uri("/v1/graph?type=vm&limit=500").exchange().expectStatus().isOk());
+        assertThat(map.get("nodes")).anySatisfy(n -> assertThat(n.get("wfrn").asText()).isEqualTo(wfrn));
+        assertThat(map.get("nodes")).anySatisfy(n -> {
+            assertThat(n.get("wfrn").asText()).isEqualTo(imageWfrn);
+            assertThat(n.get("context").asBoolean()).isTrue();
+        });
+        assertThat(map.get("edges")).anySatisfy(e -> assertThat(e.get("to").asText()).isEqualTo(wfrn));
+        dana.get().uri("/v1/graph?accountId=" + OTHER_ACCOUNT).exchange().expectStatus().isNotFound();
+
+        // the trail
+        JsonNode activity = body(dana.get().uri(uri("/v1/activity?limit=10&wfrn=" + encode(wfrn))).exchange().expectStatus().isOk());
+        assertThat(activity.get("items").get(0).get("type").asText()).isEqualTo("ProvisioningSucceeded");
+        assertThat(activity.get("items").get(0).get("chain").get("hash").asText()).isEqualTo(active.get("eventHash").asText());
+        JsonNode check = body(dana.get().uri(resource(wfrn, "/events:verify")).exchange().expectStatus().isOk());
+        assertThat(check.get("valid").asBoolean()).isTrue();
+        assertThat(check.get("chained").asInt()).isEqualTo(3);
+        JsonNode keys = body(dana.get().uri("/v1/activity/keys").exchange().expectStatus().isOk());
+        assertThat(keys.get("keys").get(0).get("alg").asText()).isEqualTo("ES256");
+        String window = "&from=" + beforeMint.minusSeconds(3600) + "&to=" + java.time.Instant.now().plusSeconds(60);
+        dana.get().uri("/v1/activity/evidence?accountId=" + ACCOUNT + window).exchange().expectStatus().isForbidden();
+        JsonNode pack = body(asAdmin(ACCOUNT, "ana").get().uri("/v1/activity/evidence?accountId=" + ACCOUNT + window).exchange().expectStatus().isOk());
+        assertThat(pack.get("verification").get("valid").asBoolean()).isTrue();
+        assertThat(pack.get("events")).anySatisfy(e -> assertThat(e.get("wfrn").asText()).isEqualTo(wfrn));
+
+        // the past
+        dana.get().uri(uri("/v1/wfrn/" + encode(wfrn) + "?at=" + beforeMint.minusSeconds(1))).exchange().expectStatus().isNotFound();
+        JsonNode now = body(dana.get().uri(uri("/v1/wfrn/" + encode(wfrn) + "?at=" + java.time.Instant.now())).exchange().expectStatus().isOk());
+        assertThat(now.get("state").asText()).isEqualTo("active");
+        JsonNode account = body(dana.get().uri(uri("/v1/resources?type=vm&limit=200&at=" + java.time.Instant.now())).exchange().expectStatus().isOk());
+        assertThat(account.get("items")).extracting(r -> r.get("wfrn").asText()).contains(wfrn);
+        ObjectNode tag = json.createObjectNode();
+        tag.putObject("set").put("owner-team", "web");
+        dana.post().uri(resource(wfrn, ":tag")).bodyValue(tag).exchange().expectStatus().isOk();
+        JsonNode plan = body(dana.get().uri(resource(wfrn, "/revert-plan?version=" + active.get("version").asLong())).exchange().expectStatus().isOk());
+        assertThat(plan.get("possible").asBoolean()).isTrue();
+        assertThat(plan.get("tags").get("removed")).extracting(JsonNode::asText).containsExactly("owner-team");
+        dana.get().uri(resource(wfrn, "/revert-plan")).exchange().expectStatus().isBadRequest();
+    }
+
+    @Test
+    void aVmMovesToAnotherAccountAndItsOldNameSaysWhereItWent() {
+        WebTestClient dana = as(ACCOUNT, "dana");
+        String image = fake.demo().imageIds().get(0);
+        String name = "move-" + UUID.randomUUID().toString().substring(0, 8);
+        ObjectNode mint = json.createObjectNode().put("type", "vm").put("region", "global").put("name", name).put("workflow", "create-vm");
+        mint.putObject("input").put("name", name).put("image", image).put("size", "small").put("environment", "dev");
+        String wfrn = body(dana.post().uri("/v1/resources:mint").bodyValue(mint).exchange().expectStatus().isCreated()).get("wfrn").asText();
+        startJob(PlatformOperation.CREATE_VM, Map.of(), Map.of("name", name, "image", image, "size", "small", "environment", "dev"), wfrn);
+        JsonNode active = await(() -> getResource(dana, wfrn), r -> "active".equals(r.get("state").asText()), "the VM to become active");
+
+        ObjectNode move = json.createObjectNode().put("toAccountId", OTHER_ACCOUNT).put("reason", "the team moved");
+        dana.post().uri(resource(wfrn, ":transfer")).bodyValue(json.createObjectNode().put("toAccountId", ACCOUNT)).exchange()
+                .expectStatus().isBadRequest();
+        JsonNode moved = body(dana.post().uri(resource(wfrn, ":transfer")).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
+                .expectStatus().isOk());
+        String there = moved.get("wfrn").asText();
+        assertThat(there).contains(":" + OTHER_ACCOUNT + ":vm/").isNotEqualTo(wfrn);
+        assertThat(moved.get("transferredFrom").asText()).isEqualTo(wfrn);
+        assertThat(moved.get("source").asText()).isEqualTo("transfer");
+        assertThat(moved.get("registryId").asText()).isEqualTo(active.get("registryId").asText());
+        assertThat(moved.get("version").asInt()).isEqualTo(1);
+        dana.post().uri(resource(wfrn, ":transfer")).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
+                .expectStatus().isOk().expectHeader().valueEquals("Idempotent-Replay", "true");
+
+        JsonNode gone = body(dana.get().uri(resource(wfrn)).exchange().expectStatus().isEqualTo(410));
+        assertThat(gone.get("error").asText()).isEqualTo("resource.transferred");
+        assertThat(gone.get("transferredTo").asText()).isEqualTo(there);
+        assertThat(gone.has("tombstoneUntil")).isFalse();
+        dana.get().uri(resource(there)).exchange().expectStatus().isNotFound();
+        JsonNode arrived = getResource(as(OTHER_ACCOUNT, "omar"), there);
+        assertThat(arrived.get("state").asText()).isEqualTo("active");
+        assertThat(arrived.get("builtFrom")).extracting(JsonNode::asText).containsExactly(image);
+
+        JsonNode trail = body(dana.get().uri("/v1/activity?type=Transferred").exchange().expectStatus().isOk());
+        assertThat(trail.get("items")).anySatisfy(e -> {
+            assertThat(e.get("aggregateId").asText()).isEqualTo(wfrn);
+            assertThat(e.get("data").get("transferredTo").asText()).isEqualTo(there);
+        });
+        dana.post().uri(resource(wfrn, ":tag")).bodyValue(json.createObjectNode().putObject("set").put("a", "b")).exchange()
+                .expectStatus().isEqualTo(410);
+    }
 }

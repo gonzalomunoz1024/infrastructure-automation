@@ -24,11 +24,22 @@ public final class Requests {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ImportRequest(String type, String region, String wfrn, String registryId, String providerId, String name, ObjectNode attributes,
-            String source, String actor) {
+            String source, String actor, List<String> builtFrom) {
         Commands.Import command(String fallbackActor, String requestId) {
             return new Commands.Import(type, region, wfrn, registryId, providerId, name, attributes, source,
-                    new Commands.Meta(null, actor != null ? actor : fallbackActor, requestId));
+                    new Commands.Meta(null, actor != null ? actor : fallbackActor, requestId), builtFrom);
         }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TransferRequest(Long expectedVersion, String actor, String toAccountId, String reason) {
+        Commands.Transfer command(String fallbackActor, String requestId) {
+            return new Commands.Transfer(toAccountId, reason, meta(expectedVersion, actor, fallbackActor, requestId));
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AccountTransferRequest(String toAccountId, String region, String reason, String actor, Integer limit) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

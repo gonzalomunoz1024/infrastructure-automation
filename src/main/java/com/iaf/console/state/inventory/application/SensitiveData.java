@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
+import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.state.inventory.domain.Drift;
 import com.iaf.console.state.inventory.domain.DriftField;
 import com.iaf.console.state.inventory.domain.Json;
@@ -230,6 +231,18 @@ public final class SensitiveData {
                 .defaultIfEmpty(mask(r));
     }
 
+    /**
+     * A resource's attributes in clear, to move them to another account; a 409 when the account's
+     * key is gone, because masked values must never travel as if they were the real ones.
+     */
+    public Mono<ObjectNode> attributesInClear(Resource r) {
+        if (!hasSealed(r.attributes())) {
+            return Mono.just(Json.orEmpty(r.attributes()).deepCopy());
+        }
+        return keyIfAny(r.accountId()).map(key -> open(r.attributes(), key, r.accountId()))
+                .switchIfEmpty(Mono.error(() -> new ConflictException("account.shredded: the account's data key is gone, so its sensitive values cannot move")));
+    }
+
     public Mono<ResourceEvent> reveal(ResourceEvent event) {
         if (!hasSealed(event.data())) {
             return Mono.just(event);
@@ -313,9 +326,7 @@ public final class SensitiveData {
     }
 
     private static Resource rebuild(Resource r, ObjectNode attributes, ObjectNode changes, ObjectNode observed, Drift drift) {
-        return new Resource(r.wfrn(), r.accountId(), r.region(), r.type(), r.service(), r.name(), r.state(), r.version(), r.registryId(),
-                r.providerId(), attributes, changes, observed, r.observedStatus(), r.observedAt(), drift, r.tags(), r.requestedBy(), r.workflow(),
-                r.lastJobId(), r.lastError(), r.source(), r.createdAt(), r.updatedAt(), r.deletedAt(), r.tombstoneUntil());
+        return r.withValues(attributes, changes, observed, drift);
     }
 
     // the keys

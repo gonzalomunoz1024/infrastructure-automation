@@ -38,6 +38,7 @@ import com.iaf.console.state.inventory.application.JobOutcomes;
 import com.iaf.console.state.inventory.application.PendingReaper;
 import com.iaf.console.state.inventory.application.PlatformEventHandler;
 import com.iaf.console.state.inventory.application.PlatformResources;
+import com.iaf.console.state.inventory.application.Relationships;
 import com.iaf.console.state.inventory.application.RegistryImporter;
 import com.iaf.console.state.inventory.application.ResourceEventPublisher;
 import com.iaf.console.state.inventory.application.ResourceLoader;
@@ -181,6 +182,11 @@ public class InventoryConfiguration {
     @Bean
     public IdempotentCommands idempotentCommands(IdempotencyKeyPort keys, StateProperties properties, Clock clock) {
         return new IdempotentCommands(keys, properties.state().idempotencyTtl(), clock);
+    }
+
+    @Bean
+    public Relationships relationships(ResourceLoader loader, ResourceProjectionPort projection) {
+        return new Relationships(loader, projection);
     }
 
     @Bean

@@ -37,6 +37,7 @@ import com.iaf.console.state.inventory.domain.Resource;
 import com.iaf.console.state.inventory.domain.ResourceIdentity;
 import com.iaf.console.state.inventory.domain.ResourceQuery;
 import com.iaf.console.state.inventory.domain.ResourceState;
+import com.iaf.console.state.inventory.domain.RevertPlan;
 import com.iaf.console.state.inventory.domain.TagRules;
 import com.iaf.console.state.inventory.domain.TombstoneException;
 import com.iaf.console.wfrn.WfrnPattern;
@@ -92,7 +93,8 @@ public final class ResourceController {
             @RequestParam(required = false) Boolean drift,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) Integer limit,
-            @RequestParam(required = false) String after) {
+            @RequestParam(required = false) String after,
+            @RequestParam(required = false) Instant at) {
         ConsolePrincipal principal = principal(exchange);
         AccountScope scope = principal.scope(accountId, region != null ? region : principal.region() != null ? principal.region() : defaultRegion);
         ResourceState s = null;
@@ -117,6 +119,13 @@ public final class ResourceController {
         });
         ResourceQuery query = new ResourceQuery(type, s, name, tags, wfrn, updatedAfter, drift, ResourceQuery.Sort.of(sort),
                 ResourceQuery.limitOf(limit), after == null ? null : CursorPaging.decode(after));
+        if (at != null) {
+            if (sort != null || updatedAfter != null) {
+                throw new InvalidInputException("an account as it was at an instant is listed by wfrn",
+                        List.of(Problem.error("at", sort != null ? "/sort" : "/updatedAfter", "sort and updatedAfter do not apply with at")));
+            }
+            return queries.listAt(scope, query, at).map(Listing::of);
+        }
         return queries.list(scope, query).map(Listing::of);
     }
 
@@ -153,11 +162,12 @@ public final class ResourceController {
     @GetMapping("/v1/wfrn/{wfrn}")
     public Mono<ResponseEntity<Object>> get(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestParam(required = false) Long asOf,
+            @RequestParam(required = false) Instant at,
             @RequestParam(required = false) String reveal,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {
         AccountScope scope = scopeOf(exchange, wfrn);
-        return queries.get(scope, wfrn, asOf, revealing(exchange, reveal)).map(r -> {
-            if (r.deleted() && asOf == null) {
+        return queries.get(scope, wfrn, asOf, at, revealing(exchange, reveal)).map(r -> {
+            if (r.deleted() && asOf == null && at == null) {
                 return ResponseEntity.status(HttpStatus.GONE).<Object>body(r.tombstone());
             }
             if (ifNoneMatch != null && ifNoneMatch.trim().equals(r.etag())) {
@@ -165,6 +175,14 @@ public final class ResourceController {
             }
             return ResponseEntity.ok().eTag(r.etag()).<Object>body(r);
         });
+    }
+
+    @GetMapping("/v1/wfrn/{wfrn}/revert-plan")
+    public Mono<RevertPlan> revertPlan(ServerWebExchange exchange, @PathVariable String wfrn,
+            @RequestParam(required = false) Long version,
+            @RequestParam(required = false) Instant at,
+            @RequestParam(required = false) String reveal) {
+        return queries.revertPlan(scopeOf(exchange, wfrn), wfrn, version, at, revealing(exchange, reveal));
     }
 
     @GetMapping("/v1/wfrn/{wfrn}/events")
@@ -211,6 +229,14 @@ public final class ResourceController {
             @RequestBody Requests.TagRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.tag(scope, wfrn, body.command(actor, requestId)));
+    }
+
+    /** Moves the resource to another account of the organization; answers the resource it became there. */
+    @PostMapping("/v1/wfrn/{wfrn}:transfer")
+    public Mono<ResponseEntity<ObjectNode>> transfer(ServerWebExchange exchange, @PathVariable String wfrn,
+            @RequestBody Requests.TransferRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
+            @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        return on(exchange, wfrn, key, body, (scope, actor) -> inventory.transfer(scope, wfrn, body.command(actor, requestId)));
     }
 
     @PostMapping("/v1/wfrn/{wfrn}:record-observation")

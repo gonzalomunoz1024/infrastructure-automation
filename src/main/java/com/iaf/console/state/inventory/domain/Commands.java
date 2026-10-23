@@ -23,9 +23,18 @@ public final class Commands {
     public record Mint(String type, String region, String name, String workflow, ObjectNode input, Meta meta) {
     }
 
-    /** {@code POST /v1/resources:import}. */
+    /** {@code POST /v1/resources:import}; {@code builtFrom} is the registry's lineage (registry ids), when known. */
     public record Import(String type, String region, String wfrn, String registryId, String providerId, String name, ObjectNode attributes,
-            String source, Meta meta) {
+            String source, Meta meta, List<String> builtFrom) {
+
+        public Import(String type, String region, String wfrn, String registryId, String providerId, String name, ObjectNode attributes,
+                String source, Meta meta) {
+            this(type, region, wfrn, registryId, providerId, name, attributes, source, meta, null);
+        }
+    }
+
+    /** {@code :transfer}: the resource moves to another account of the organization. */
+    public record Transfer(String toAccountId, String reason, Meta meta) {
     }
 
     /** {@code :request-update}. */
@@ -60,9 +69,18 @@ public final class Commands {
     public record JobStarted(String jobId, String workflow, String workflowVersion, Meta meta) {
     }
 
-    /** The platform registered the resource (or re-registered it with new attributes): what the registry holds. */
+    /**
+     * The platform registered the resource (or re-registered it with new attributes): what the registry
+     * holds. {@code builtFrom} is the record's whole lineage (registry ids); null when the command does
+     * not know it, which keeps the lineage on record.
+     */
     public record Registration(String jobId, String workflow, String workflowVersion, String registryId, String providerId, String name,
-            ObjectNode attributes, Meta meta) {
+            ObjectNode attributes, Meta meta, List<String> builtFrom) {
+
+        public Registration(String jobId, String workflow, String workflowVersion, String registryId, String providerId, String name,
+                ObjectNode attributes, Meta meta) {
+            this(jobId, workflow, workflowVersion, registryId, providerId, name, attributes, meta, null);
+        }
     }
 
     /** The platform job ended without the resource: failed, cancelled or rolled back. */
