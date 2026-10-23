@@ -420,7 +420,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: "The console's internal JWT, minted by the identity service: `sub` (the person, or the service), `acct` (the console account; absent on a service's own call), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there: `viewer`, `operator`, `account-admin`, `auditor`) and `svc` (the calling service). Admin-only decisions test `roles` for `account-admin`, never a group name."
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
   parameters:
     WfrnPath:
       name: wfrn
