@@ -24,7 +24,7 @@ import reactor.core.publisher.Mono;
  * Every state-changing call under {@code /console/v1} and the logout must carry the session's
  * CSRF token in {@code X-Csrf-Token}; when the browser sends an {@code Origin}, it must be the
  * console's own origin or one of the web app's. A failure is 403 with no {@code denied} block,
- * since no policy decided it.
+ * since no policy decided it. A bearer call carries no cookie, so it needs no token.
  */
 @Component
 public class CsrfWebFilter implements WebFilter, Ordered {
@@ -55,7 +55,7 @@ public class CsrfWebFilter implements WebFilter, Ordered {
         String path = exchange.getRequest().getPath().value();
         HttpMethod method = exchange.getRequest().getMethod();
         boolean guarded = UNSAFE.contains(method) && (path.startsWith(SessionWebFilter.CONSOLE_PREFIX) || path.equals("/auth/logout"));
-        if (!guarded) {
+        if (!guarded || CurrentSession.bearer(exchange)) {
             return chain.filter(exchange);
         }
         return CurrentSession.of(exchange).map(session -> {

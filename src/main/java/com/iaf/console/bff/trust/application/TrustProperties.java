@@ -12,7 +12,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * how long an internal token lives, and the signing key as a JWK (generated at boot when empty).
  * Then the service tokens of {@code POST /internal/v1/token} (hub decision 23): how long one lives,
  * how long a client-signed assertion may be, the cluster whose service-account tokens prove a
- * workload, and the console services that may ask, each with the audiences it may get.
+ * workload, and the console services that may ask, each with the audiences it may get (never
+ * {@code console-api}, the console API's own).
  */
 @ConfigurationProperties(prefix = "console.trust")
 public record TrustProperties(
@@ -55,6 +56,9 @@ public record TrustProperties(
 
         public Client {
             audiences = audiences == null ? List.of() : List.copyOf(audiences);
+            if (audiences.contains(Trust.API_AUDIENCE)) {
+                throw new IllegalArgumentException(Trust.API_AUDIENCE + " is the audience of the console API's access tokens; no service token is issued for it");
+            }
         }
 
         public boolean hasKeys() {
