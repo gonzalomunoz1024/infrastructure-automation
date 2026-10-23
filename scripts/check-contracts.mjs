@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Checks every contract in the hub (`npm run check`): that every YAML entry has a value, the
 // OpenAPI and AsyncAPI files, the JSON schemas, the type overlays and the region, the list of used
-// platform operations, the event catalog against the plan, and the shared wfrn fixtures against
-// the JavaScript reference.
+// platform operations, the event catalog against the plan, the shared wfrn fixtures against the
+// JavaScript reference, and the blueprints against the pinned types and workflows.
 // Exits 1 on any failure; warnings are printed and do not fail the run.
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
@@ -78,7 +78,8 @@ const BUILT_IN_COLUMNS = new Set(['name', 'status', 'wfrn', 'owner', 'created', 
 // ---------------------------------------------------------------------------------------------
 const MAY_BE_NULL = new Set(['default', 'example', 'const']);
 function checkEntriesHaveValues() {
-  const files = [...filesUnder(join(root, 'contracts'), '.yaml'), ...filesUnder(join(root, 'type-overlays'), '.yaml')];
+  const files = [...filesUnder(join(root, 'contracts'), '.yaml'), ...filesUnder(join(root, 'type-overlays'), '.yaml'),
+    ...filesUnder(join(root, 'blueprints'), '.yaml')];
   const problems = [];
   for (const file of files) {
     const lineCounter = new YAML.LineCounter();
@@ -233,6 +234,7 @@ function checkSchemasAndOverlays() {
   const vOverlay = validatorFor('type-overlay.schema.json');
   const vRegion = validatorFor('region.schema.json');
   const vFixtures = validatorFor('wfrn-fixtures.schema.json');
+  const vBlueprint = validatorFor('blueprint.schema.json');
 
   // the pinned platform content
   const sampleTypes = {};
@@ -251,6 +253,7 @@ function checkSchemasAndOverlays() {
   }
 
   // the overlays, each merged over its pinned type
+  const mergedTypes = { ...sampleTypes };
   const merge = (a, b) => {
     if (Array.isArray(a) || Array.isArray(b) || typeof a !== 'object' || typeof b !== 'object' || !a || !b) return b;
     const o = { ...a };
@@ -275,6 +278,7 @@ function checkSchemasAndOverlays() {
       fail(`${rel(file)} merged over ${name}.yaml validates against resource-type.schema.json`, ajv.errorsText(vType.errors));
       continue;
     }
+    mergedTypes[name] = merged;
     const fields = new Set(Object.keys(merged.schema?.properties ?? {}));
     const problems = [];
     for (const col of merged.console?.list?.columns ?? []) if (!fields.has(col) && !BUILT_IN_COLUMNS.has(col)) problems.push(`list column ${col} is not a field of the merged schema`);
@@ -304,7 +308,7 @@ function checkSchemasAndOverlays() {
     if (vRegion && !vRegion(region)) fail(`${rel(file)} validates against region.schema.json`, ajv.errorsText(vRegion.errors));
     else if (vRegion) ok(`${rel(file)} validates against region.schema.json`);
   }
-  return { vFixtures, errorsText: () => ajv.errorsText(vFixtures?.errors) };
+  return { vFixtures, errorsText: () => ajv.errorsText(vFixtures?.errors), vBlueprint, blueprintErrors: () => ajv.errorsText(vBlueprint?.errors), mergedTypes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -373,13 +377,257 @@ function checkFixtures({ vFixtures, errorsText }) {
   else ok(`${rel(file)} passes contracts/wfrn/reference.mjs`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 7. Blueprints (hub decision 33): each one against the schema, its pinned types and workflows.
+//    A resource's input must be what the type's create workflow (its producedBy) takes: known
+//    inputs, every required one given, literals the input accepts, and a reference only where its
+//    value fits (a parameter's enum within the input's, a registry id of the type an x-resource
+//    input names). References name declared parameters and resources, never a sensitive field;
+//    the resources form no cycle; a resource teardown deletes has a delete workflow whose required
+//    inputs the blueprint fills.
+// ---------------------------------------------------------------------------------------------
+const REFERENCE = /\$\{([^}]*)\}/g;
+const WHOLE_REFERENCE = /^\$\{([^}]*)\}$/;
+const STACK_FIELDS = new Set(['name', 'wfrn', 'accountId', 'region']);
+const an = (word) => (/^[aeiou]/.test(word) ? 'an ' : 'a ') + word;
+const RESOURCE_FIELDS = new Set(['wfrn', 'registryId', 'name']);
+function checkBlueprints({ vBlueprint, blueprintErrors, mergedTypes }) {
+  const files = filesUnder(join(root, 'blueprints'), '.yaml');
+  if (!files.length) {
+    warn('blueprints/ holds no blueprint');
+    return;
+  }
+  const literalAjv = new Ajv2020({ strict: false, allErrors: true, allowUnionTypes: true });
+  addFormats(literalAjv);
+  const workflows = {};
+  for (const file of filesUnder(join(root, 'contracts/platform/sample-content/workflows'), '.yaml')) {
+    const doc = readYaml(file);
+    if (doc?.metadata?.name) workflows[doc.metadata.name] = { ...doc.metadata, input: doc.api?.input ?? {}, subject: doc.api?.subject, file };
+  }
+  const plain = (schema) => {
+    // the input schema without the console's hints, for a literal's check
+    const out = {};
+    for (const [k, v] of Object.entries(schema ?? {})) if (!k.startsWith('x-')) out[k] = v;
+    return out;
+  };
+  const subjectOf = (wf) => {
+    if (wf.subject) return wf.subject;
+    const candidates = Object.entries(wf.input.properties ?? {}).filter(([, p]) => p?.['x-resource']?.type === wf.noun);
+    return candidates.length === 1 ? candidates[0][0] : null;
+  };
+  for (const file of files) {
+    let bp;
+    try {
+      bp = readYaml(file);
+    } catch (e) {
+      fail(`${rel(file)} parses as YAML`, e.message);
+      continue;
+    }
+    if (vBlueprint && !vBlueprint(bp)) {
+      fail(`${rel(file)} validates against blueprint.schema.json`, blueprintErrors());
+      continue;
+    }
+    const problems = [];
+    const base = file.split('/').pop().replace(/\.yaml$/, '');
+    if (bp.metadata.name !== base) problems.push(`metadata.name ${bp.metadata.name} is not the file's name (${base})`);
+    const params = bp.spec.parameters ?? {};
+    const resources = bp.spec.resources;
+    const used = new Set();
+
+    // the parameters
+    const fits = (param, value) => {
+      if (param.type === 'integer') return Number.isInteger(value) && (param.minimum === undefined || value >= param.minimum) && (param.maximum === undefined || value <= param.maximum);
+      if (param.type === 'boolean') return typeof value === 'boolean';
+      return typeof value === 'string' && (!param.pattern || new RegExp(param.pattern).test(value));
+    };
+    for (const [name, param] of Object.entries(params)) {
+      const at = `parameter ${name}`;
+      if (param.pattern !== undefined) {
+        if (param.type !== 'string') problems.push(`${at}: pattern is for a string`);
+        try {
+          new RegExp(param.pattern);
+        } catch (e) {
+          problems.push(`${at}: pattern does not compile (${e.message})`);
+        }
+      }
+      if ((param.minimum !== undefined || param.maximum !== undefined) && param.type !== 'integer') problems.push(`${at}: minimum and maximum are for an integer`);
+      if (param.minimum !== undefined && param.maximum !== undefined && param.minimum > param.maximum) problems.push(`${at}: minimum is above maximum`);
+      if (param['x-resource']) {
+        if (param.type !== 'string') problems.push(`${at}: x-resource is a registry id, a string`);
+        if (!mergedTypes[param['x-resource'].type]) problems.push(`${at}: x-resource type ${param['x-resource'].type} is not a pinned resource type`);
+      }
+      for (const value of param.enum ?? []) if (!fits({ ...param, pattern: undefined }, value)) problems.push(`${at}: enum value ${JSON.stringify(value)} is not ${an(param.type)}`);
+      if (param.default !== undefined) {
+        if (!fits(param, param.default)) problems.push(`${at}: default ${JSON.stringify(param.default)} does not fit the parameter`);
+        if (param.enum && !param.enum.includes(param.default)) problems.push(`${at}: default ${JSON.stringify(param.default)} is not in its enum`);
+      }
+    }
+
+    // a reference, where it may appear; answers the referenced value's type and x-resource type
+    const resolve = (expr, where, { self, allowResources = true, allowTeardown = false, edges }) => {
+      const parts = expr.trim().split('.');
+      const [root0, a, b, c] = parts;
+      if (root0 === 'params' && parts.length === 2) {
+        const param = params[a];
+        if (!param) return problems.push(`${where}: \${${expr}} names no parameter`) && null;
+        used.add(a);
+        return { kind: 'param', param, type: param.type, xResource: param['x-resource']?.type };
+      }
+      if (root0 === 'stack' && parts.length === 2) {
+        if (!STACK_FIELDS.has(a)) return problems.push(`${where}: \${${expr}}: a stack has ${[...STACK_FIELDS].join(', ')}`) && null;
+        return { kind: 'stack', type: 'string' };
+      }
+      if (root0 === 'teardown' && parts.length === 2 && a === 'reason') {
+        if (!allowTeardown) return problems.push(`${where}: \${${expr}} is only known to deleteInput`) && null;
+        return { kind: 'teardown', type: 'string' };
+      }
+      if (root0 === 'resources' && parts.length >= 3) {
+        if (!allowResources) return problems.push(`${where}: \${${expr}}: deleteInput may name parameters, the stack and the teardown, not resources`) && null;
+        const target = resources[a];
+        if (!target) return problems.push(`${where}: \${${expr}} names no resource`) && null;
+        if (a === self) return problems.push(`${where}: \${${expr}} names the resource itself`) && null;
+        edges?.add(a);
+        if (parts.length === 3 && RESOURCE_FIELDS.has(b)) return { kind: 'resource', field: b, type: 'string', xResource: b === 'registryId' ? target.type : undefined };
+        if (parts.length === 4 && b === 'attributes') {
+          const field = mergedTypes[target.type]?.schema?.properties?.[c];
+          if (!field) return problems.push(`${where}: \${${expr}}: ${c} is not a field of ${target.type}`) && null;
+          if (field['x-console']?.sensitive) return problems.push(`${where}: \${${expr}}: ${target.type}.${c} is sensitive and never leaves its resource`) && null;
+          return { kind: 'attribute', type: field.type };
+        }
+        return problems.push(`${where}: \${${expr}}: a resource has ${[...RESOURCE_FIELDS].join(', ')} and attributes.<field>`) && null;
+      }
+      return problems.push(`${where}: \${${expr}} is not a reference (params, resources, stack${allowTeardown ? ', teardown' : ''})`) && null;
+    };
+    const referencesIn = (value, where, opts) => {
+      if (typeof value === 'string') {
+        for (const m of value.matchAll(REFERENCE)) resolve(m[1], where, opts);
+      } else if (Array.isArray(value)) value.forEach((v, i) => referencesIn(v, `${where}/${i}`, opts));
+      else if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) referencesIn(v, `${where}/${k}`, opts);
+    };
+    // a value for one workflow input: a literal it accepts, or references whose values fit it
+    const checkValue = (prop, value, where, opts) => {
+      const whole = typeof value === 'string' ? value.match(WHOLE_REFERENCE) : null;
+      if (whole) {
+        const ref = resolve(whole[1], where, opts);
+        if (!ref) return;
+        if (prop.type && ref.type && prop.type !== ref.type) problems.push(`${where}: \${${whole[1]}} is ${an(ref.type)}, the input takes ${an(prop.type)}`);
+        const wants = prop['x-resource']?.type;
+        if (wants && ref.xResource !== wants) problems.push(`${where}: the input takes the registry id of ${an(wants)}; \${${whole[1]}} is not one`);
+        if (ref.kind === 'param') {
+          const param = ref.param;
+          if (prop.enum) {
+            if (!param.enum) problems.push(`${where}: the input takes one of ${prop.enum.join(', ')}; give parameter ${whole[1].split('.')[1]} an enum within it`);
+            else for (const v of param.enum) if (!prop.enum.includes(v)) problems.push(`${where}: parameter value ${JSON.stringify(v)} is not one the input takes (${prop.enum.join(', ')})`);
+          }
+          if (prop.pattern && !param.enum && !param.pattern) problems.push(`${where}: the input has a pattern; give the parameter an enum or a pattern`);
+          if (param.enum && prop.pattern) for (const v of param.enum) if (typeof v === 'string' && !new RegExp(prop.pattern).test(v)) problems.push(`${where}: parameter value ${JSON.stringify(v)} does not match the input's pattern`);
+          if (prop.minimum !== undefined && !(param.minimum >= prop.minimum)) problems.push(`${where}: the input's minimum is ${prop.minimum}; give the parameter a minimum at least that`);
+          if (prop.maximum !== undefined && !(param.maximum <= prop.maximum)) problems.push(`${where}: the input's maximum is ${prop.maximum}; give the parameter a maximum at most that`);
+        }
+        return;
+      }
+      if (typeof value === 'string' && REFERENCE.test(value)) {
+        REFERENCE.lastIndex = 0;
+        if (prop.type && prop.type !== 'string') problems.push(`${where}: text with references is a string, the input takes ${an(prop.type)}`);
+        if (prop.enum) problems.push(`${where}: the input takes one of ${prop.enum.join(', ')}; text with references cannot promise one`);
+        if (prop['x-resource']) problems.push(`${where}: the input takes a registry id; name it with one reference`);
+        referencesIn(value, where, opts);
+        return;
+      }
+      REFERENCE.lastIndex = 0;
+      referencesIn(value, where, opts);
+      const validate = literalAjv.compile(plain(prop));
+      if (!validate(value)) problems.push(`${where}: ${JSON.stringify(value)} is not a value the input takes (${literalAjv.errorsText(validate.errors)})`);
+    };
+    const checkInputs = (wf, given, where, opts, skip) => {
+      const props = wf.input.properties ?? {};
+      for (const [key, value] of Object.entries(given ?? {})) {
+        if (key === skip) {
+          problems.push(`${where}/${key}: the console fills the subject input with the resource's registry id`);
+          continue;
+        }
+        if (!props[key]) {
+          problems.push(`${where}/${key}: not an input of ${wf.name} (${Object.keys(props).join(', ')})`);
+          continue;
+        }
+        checkValue(props[key], value, `${where}/${key}`, opts);
+      }
+      for (const required of wf.input.required ?? []) {
+        if (required === skip) continue;
+        if (!(required in (given ?? {})) && props[required]?.default === undefined) problems.push(`${where}: ${wf.name} requires ${required}, which has no default`);
+      }
+    };
+
+    // the resources
+    const graph = {};
+    for (const [id, res] of Object.entries(resources)) {
+      const at = `resources/${id}`;
+      const edges = new Set();
+      graph[id] = edges;
+      const type = mergedTypes[res.type];
+      if (!type) {
+        problems.push(`${at}: type ${res.type} is not a pinned resource type`);
+        continue;
+      }
+      const create = workflows[type.producedBy];
+      if (!create) problems.push(`${at}: ${res.type} is produced by ${type.producedBy}, which is not a pinned workflow`);
+      else if (create.noun !== res.type) problems.push(`${at}: ${type.producedBy} makes ${an(create.noun)}, not ${an(res.type)}`);
+      else checkInputs(create, res.input, `${at}/input`, { self: id, edges });
+      for (const [tag, value] of Object.entries(res.tags ?? {})) referencesIn(value, `${at}/tags/${tag}`, { self: id, edges });
+      for (const dep of res.dependsOn ?? []) {
+        if (!resources[dep]) problems.push(`${at}: dependsOn ${dep} names no resource`);
+        else if (dep === id) problems.push(`${at}: dependsOn names the resource itself`);
+        else edges.add(dep);
+      }
+      if ((res.deletionPolicy ?? 'delete') === 'delete') {
+        const deletes = Object.values(workflows).filter((w) => w.noun === res.type && w.verb === 'delete');
+        if (!deletes.length) problems.push(`${at}: teardown deletes it, but ${res.type} has no delete workflow among the pinned ones; set deletionPolicy: retain`);
+        else {
+          if (deletes.length > 1) warn(`${rel(file)}: ${at}: ${res.type} has ${deletes.length} delete workflows; the console runs the catalog's`);
+          const subject = subjectOf(deletes[0]);
+          if (!subject) problems.push(`${at}: ${deletes[0].name} has no subject input (P-08) for the console to fill`);
+          checkInputs(deletes[0], res.deleteInput, `${at}/deleteInput`, { self: id, allowResources: false, allowTeardown: true }, subject);
+        }
+      } else if (res.deleteInput) problems.push(`${at}: deleteInput is for a resource teardown deletes`);
+    }
+
+    // no cycle, and the waves the state service will start
+    const waves = [];
+    const placed = new Map();
+    const visiting = new Set();
+    const depth = (id, path) => {
+      if (placed.has(id)) return placed.get(id);
+      if (visiting.has(id)) {
+        problems.push(`resources: a cycle ${[...path, id].join(' -> ')}`);
+        return 0;
+      }
+      visiting.add(id);
+      let d = 0;
+      for (const dep of graph[id] ?? []) d = Math.max(d, depth(dep, [...path, id]) + 1);
+      visiting.delete(id);
+      placed.set(id, d);
+      return d;
+    };
+    for (const id of Object.keys(graph)) depth(id, []);
+    for (const [id, d] of placed) (waves[d] ??= []).push(id);
+
+    // the outputs
+    for (const [name, output] of Object.entries(bp.spec.outputs ?? {})) referencesIn(output.value, `outputs/${name}`, {});
+
+    for (const name of Object.keys(params)) if (!used.has(name)) warn(`${rel(file)}: parameter ${name} is never used`);
+    if (problems.length) fail(`${rel(file)}: inputs, references, order and teardown`, problems.join('\n'));
+    else ok(`${rel(file)} validates; ${Object.keys(resources).length} resources in ${waves.length} waves (${waves.map((w) => w.join(' + ')).join(', then ')}), inputs fit their workflows`);
+  }
+}
+
 checkEntriesHaveValues();
 const target = await checkOpenApi();
 const asyncapi = await checkAsyncApi();
-const fixtureValidator = checkSchemasAndOverlays();
+const schemaResults = checkSchemasAndOverlays();
 checkUsedOperations(target);
 checkEventCatalog(asyncapi);
-checkFixtures(fixtureValidator);
+checkFixtures(schemaResults);
+checkBlueprints(schemaResults);
 
 console.log('');
 console.log(`${failures} failure${failures === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'}`);
