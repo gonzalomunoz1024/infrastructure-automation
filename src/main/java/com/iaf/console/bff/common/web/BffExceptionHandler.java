@@ -75,19 +75,28 @@ public class BffExceptionHandler {
     public record StepUpBody(String error, String message, String correlationId, Map<String, Object> detail) {
     }
 
+    /** What a CLI or SDK is told to do when a step-up is needed (decision 31): its sign-in time is its approval's. */
+    public static final String BEARER_STEP_UP_HINT = "run `console login` again";
+
     /**
      * 403 {@code step-up.required}: {@code detail.login} is the sign-in path with
      * {@code stepUp=true}, and with {@code returnTo} when the page's address (the {@code Referer},
      * which never carries a hash route) reduces to a console path other than the root; a console
-     * with hash routes sets its own {@code returnTo}.
+     * with hash routes sets its own {@code returnTo}. A bearer call, which cannot sign in again in
+     * place, gets {@code detail.hint} instead.
      */
     @ExceptionHandler(StepUpRequiredException.class)
     public Mono<ResponseEntity<StepUpBody>> stepUp(StepUpRequiredException ex, ServerWebExchange exchange) {
-        String returnTo = returnPath(exchange.getRequest().getHeaders().getFirst(HttpHeaders.REFERER));
-        String login = "/auth/login?stepUp=true" + (returnTo == null ? "" : "&returnTo=" + URLEncoder.encode(returnTo, StandardCharsets.UTF_8));
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("stepUp", true);
         detail.put("action", ex.action());
+        if (CurrentSession.bearer(exchange)) {
+            detail.put("hint", BEARER_STEP_UP_HINT);
+            return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new StepUpBody(StepUpRequiredException.CODE, ex.getMessage() + ": " + BEARER_STEP_UP_HINT, Correlation.of(exchange), detail)));
+        }
+        String returnTo = returnPath(exchange.getRequest().getHeaders().getFirst(HttpHeaders.REFERER));
+        String login = "/auth/login?stepUp=true" + (returnTo == null ? "" : "&returnTo=" + URLEncoder.encode(returnTo, StandardCharsets.UTF_8));
         detail.put("login", login);
         return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(new StepUpBody(StepUpRequiredException.CODE, ex.getMessage(), Correlation.of(exchange), detail)));

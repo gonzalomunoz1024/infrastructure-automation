@@ -20,7 +20,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * Finds the session the cookie names and attaches it to the request; a {@code /console/v1} call
- * without one is answered 401 here, before any controller runs.
+ * without one is answered 401 here, before any controller runs. A bearer call, whose session the
+ * bearer filter attached already, reads no cookie.
  */
 @Component
 public class SessionWebFilter implements WebFilter, Ordered {
@@ -45,6 +46,9 @@ public class SessionWebFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        if (CurrentSession.bearer(exchange)) {
+            return chain.filter(exchange);
+        }
         String path = exchange.getRequest().getPath().value();
         boolean console = path.startsWith(CONSOLE_PREFIX);
         String cookie = cookies.sessionValue(exchange);
