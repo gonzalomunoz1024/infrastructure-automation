@@ -1,0 +1,18 @@
+# build output
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# local state
+.idea/
+.vscode/
+.env
+.env.local
+playwright-report/
+test-results/
+blob-report/
+
+# agent worktrees
+.claude/
