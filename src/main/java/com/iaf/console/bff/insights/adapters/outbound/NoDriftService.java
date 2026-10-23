@@ -13,7 +13,11 @@ import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
 
-/** Without {@code console.drift.url} the console has no drift service to ask, so the executive home counts no findings. */
+/**
+ * Without {@code console.drift.url} there is no drift service to ask for findings stats (the
+ * demo's stand-in under {@code /demo-drift} serves scorecards only), so the executive home counts
+ * no findings.
+ */
 @Component
 @ConditionalOnExpression("'${console.drift.url:}' == ''")
 public class NoDriftService implements DriftStatsPort {
@@ -21,7 +25,7 @@ public class NoDriftService implements DriftStatsPort {
     private static final Logger log = LoggerFactory.getLogger(NoDriftService.class);
 
     public NoDriftService() {
-        log.info("console.drift.url is not set: the executive home shows no drift findings");
+        log.info("console.drift.url is not set: the executive home counts no drift findings");
     }
 
     @Override

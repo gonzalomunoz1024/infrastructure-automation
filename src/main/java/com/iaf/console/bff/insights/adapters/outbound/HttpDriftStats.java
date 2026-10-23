@@ -3,7 +3,6 @@ package com.iaf.console.bff.insights.adapters.outbound;
 import java.time.Duration;
 import java.time.Instant;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -14,6 +13,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import com.iaf.console.bff.insights.domain.DriftNumbers;
 import com.iaf.console.bff.insights.ports.outbound.DriftStatsPort;
+import com.iaf.console.bff.scorecards.application.DriftProperties;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.domain.InternalToken;
 import com.iaf.console.kit.scope.AccountScope;
@@ -22,7 +22,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * The drift service's {@code GET /v1/findings/stats} (its contract, hub PR #17) at
- * {@code console.drift.url}, as the console-internal principal naming the account: found is
+ * {@code console.drift.url} (the scorecards' settings), as the console-internal principal naming
+ * the account: found is
  * {@code opened}, fixed is {@code closed.total}, open is {@code open}, and the mean time to fix is
  * {@code meanMinutesToClose}, absent when nothing closed.
  */
@@ -35,12 +36,11 @@ public class HttpDriftStats implements DriftStatsPort {
     private final String serviceName;
     private final Duration timeout;
 
-    public HttpDriftStats(WebClient.Builder builder, Trust trust, @Value("${console.drift.url}") String url,
-            @Value("${console.drift.service-name:console-drift-service}") String serviceName, @Value("${console.drift.timeout:5s}") Duration timeout) {
-        this.client = builder.clone().baseUrl(url).build();
+    public HttpDriftStats(WebClient.Builder builder, Trust trust, DriftProperties properties) {
+        this.client = builder.clone().baseUrl(properties.url().replaceAll("/+$", "")).build();
         this.trust = trust;
-        this.serviceName = serviceName;
-        this.timeout = timeout;
+        this.serviceName = properties.serviceName();
+        this.timeout = properties.timeout();
     }
 
     @Override
