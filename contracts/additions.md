@@ -132,7 +132,9 @@ names it) and `DELETE` withdraws it; the decision is the platform team's, intern
 forwarded; the status, `ETag` and body come back as they were; a 403 without a `denied` block gets
 one, named as the identity service names it (`quota:request-increase`, `quota:set`,
 `access-request:<verb>`, else `iam:<verb>`, on `wfrn:wf:iam::<account>:<kind>/<id or *>`). Writes
-need `X-Csrf-Token` like every other write.
+need `X-Csrf-Token` like every other write. A path with a segment that is empty, `.` or `..`, or that holds `%2e`,
+`%2f`, `%5c` or `\` (any case), is a 400 (`path.segment`) and never reaches the identity
+service; every other segment is decoded once and encoded again before it is forwarded.
 
 The quota keys are the identity service's: `jobs-per-minute` (the platform's bucket, `source:
 platform`, with `burst`), `access-keys` (`used` counts the account's active keys) and

@@ -2,6 +2,9 @@ package com.iaf.console.bff.iam.application;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.springframework.http.HttpHeaders;
@@ -9,6 +12,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.util.UriUtils;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,6 +23,8 @@ import com.iaf.console.bff.identity.application.IdentityClient;
 import com.iaf.console.bff.session.application.MembershipChanges;
 import com.iaf.console.bff.session.domain.RoleConventions;
 import com.iaf.console.bff.session.domain.Session;
+import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.Problem;
 
 import reactor.core.publisher.Mono;
 
@@ -49,7 +55,7 @@ public class IamProxy {
 
     public Mono<ProxiedResponse> forward(Session session, HttpMethod method, String rest, String rawQuery, HttpHeaders inbound, byte[] body) {
         String base = identity.url().endsWith("/") ? identity.url().substring(0, identity.url().length() - 1) : identity.url();
-        String path = "/v1/accounts/" + session.accountId() + "/" + rest;
+        String path = "/v1/accounts/" + UriUtils.encodePathSegment(session.accountId(), StandardCharsets.UTF_8) + "/" + encodedPath(rest);
         URI uri = URI.create(base + path + (rawQuery == null || rawQuery.isBlank() ? "" : "?" + rawQuery));
         WebClient.RequestBodySpec request = identity.asUser(method, session).uri(uri);
         inbound.forEach((name, values) -> {
@@ -75,6 +81,39 @@ public class IamProxy {
             }
             return new ProxiedResponse(response.statusCode(), contentType, etag, answered);
         })).timeout(identity.timeout());
+    }
+
+    /**
+     * The path after the account, rebuilt from its segments, each decoded once and encoded again.
+     * A segment that is empty, {@code .} or {@code ..}, or that holds an encoded dot or slash or a
+     * backslash (in any case), is a 400: nothing that could climb out of the account's path
+     * reaches the identity service.
+     */
+    static String encodedPath(String rest) {
+        String path = rest == null ? "" : rest;
+        List<String> encoded = new ArrayList<>();
+        String[] segments = path.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            String raw = segments[i];
+            String lower = raw.toLowerCase(Locale.ROOT);
+            if (raw.isEmpty() || ".".equals(raw) || "..".equals(raw) || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")
+                    || raw.contains("\\")) {
+                throw badSegment(i);
+            }
+            String decoded;
+            try {
+                decoded = UriUtils.decode(raw, StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException e) {
+                throw badSegment(i);
+            }
+            encoded.add(UriUtils.encodePathSegment(decoded, StandardCharsets.UTF_8));
+        }
+        return String.join("/", encoded);
+    }
+
+    private static InvalidInputException badSegment(int index) {
+        return new InvalidInputException("the IAM path has a segment that is empty, a dot segment, or an encoded dot, slash or backslash",
+                List.of(Problem.error("path.segment", "/path/" + index, "not a name")));
     }
 
     /** A 403 body with a {@code denied} block, added when the identity service sent none. */
