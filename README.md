@@ -135,7 +135,7 @@ Pages are 1 to 200 items, 50 by default, with the kit's opaque cursors (`after`,
 | `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on |
 | `POST /v1/webhooks/{provider}` | 202; `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body); the resources it names are read now |
 | `GET /internal/watches`, `/internal/watches/{wfrn}`, `POST /internal/watches/{wfrn}:check` | For services and operators: the watch list, one watch, read one now |
-| `POST /internal/scan`, `/internal/sync`, `/internal/follow` | Operations: scan a shard and tier now, sync the inventory now, follow revert jobs now |
+| `POST /internal/scan`, `/internal/sync`, `/internal/follow` | Operations: one scan pass over every shard now (`?tier=` for one tier), sync the watch list now, look at the running revert jobs now |
 
 The decisions take `{reason}` (and `until` on an ignore) and the headers `Idempotency-Key` (the same
 key and body replay the first answer with `Idempotent-Replay: true`; another body is a 409) and
@@ -238,7 +238,7 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 
 ### Contract additions (raised with the hub)
 
-The service answers the pinned contract (`contracts.lock`) and adds, all backward compatible:
+Hub PR #14 (`console-root--drift-contract`, the commit `contracts.lock` pins) writes these into the drift contract; all are backward compatible:
 `revertStatus` on a finding; the `X-On-Behalf-Of` header relayed on `:revert`; the 409 codes
 `revert.needsPerson`, `finding.reverting`, `finding.notRevertable` and `finding.unwatched`; the job
 label `drift-finding` that ties a revert job to its finding; the `/internal/*` operations; and on

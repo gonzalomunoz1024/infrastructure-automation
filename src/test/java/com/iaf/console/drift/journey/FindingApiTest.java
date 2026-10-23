@@ -40,6 +40,33 @@ class FindingApiTest extends DemoServiceTest {
     }
 
     @Test
+    void theInternalOperationsAnswerTheirContractAndOnlyToServices() {
+        JsonNode page = body(service().get().uri("/internal/watches?accountId=" + ACCOUNT + "&type=vm&limit=5").exchange().expectStatus().isOk());
+        assertThat(page.path("items")).isNotEmpty();
+        for (JsonNode w : page.path("items")) {
+            ContractSchemas.assertValid(ContractSchemas.WATCH, w, "a watch");
+        }
+        String wfrn = page.path("items").get(0).path("wfrn").asText();
+        JsonNode one = body(service().get().uri(uri("/internal/watches/" + encode(wfrn))).exchange().expectStatus().isOk());
+        ContractSchemas.assertValid(ContractSchemas.WATCH, one, "the watch");
+        assertThat(one.path("wfrn").asText()).isEqualTo(wfrn);
+        JsonNode checked = body(service().post().uri(uri("/internal/watches/" + encode(wfrn) + ":check")).exchange().expectStatus().isOk());
+        assertThat(checked.path("wfrn").asText()).isEqualTo(wfrn);
+        assertThat(checked.path("action").asText()).isIn("none", "opened", "updated", "closed", "skipped", "error");
+
+        ContractSchemas.assertValid(ContractSchemas.SCAN_REPORT, body(service().post().uri("/internal/scan?tier=hot").exchange().expectStatus().isOk()),
+                "the scan report");
+        ContractSchemas.assertValid(ContractSchemas.SYNC_REPORT, body(service().post().uri("/internal/sync").exchange().expectStatus().isOk()),
+                "the sync report");
+        assertThat(body(service().post().uri("/internal/follow").exchange().expectStatus().isOk()).has("ended")).isTrue();
+        service().post().uri("/internal/scan?tier=lukewarm").exchange().expectStatus().isBadRequest();
+
+        // a person's token never reaches them
+        dana().get().uri("/internal/watches?accountId=" + ACCOUNT).exchange().expectStatus().isNotFound();
+        dana().post().uri("/internal/sync").exchange().expectStatus().isNotFound();
+    }
+
+    @Test
     void aDecisionWithAnIdempotencyKeyIsAnsweredOnceAndAClosedFindingIsA409() {
         JsonNode vm = vm("shop-web-2");
         setAtProvider(vm.path("providerId").asText(), "cpu", 8);

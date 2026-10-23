@@ -28,6 +28,9 @@ final class ContractSchemas {
     static final JsonSchema DISCOVERY_RUN = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/DiscoveryRun");
     static final JsonSchema UNMANAGED = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/UnmanagedObject");
     static final JsonSchema ERROR = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Error");
+    static final JsonSchema WATCH = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/Watch");
+    static final JsonSchema SCAN_REPORT = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/ScanReport");
+    static final JsonSchema SYNC_REPORT = schema("contracts/openapi/console-drift-service.yaml", "/components/schemas/SyncReport");
     static final JsonSchema FINDING_EVENT = schema("contracts/asyncapi/console-events.yaml", "/components/schemas/FindingEvent");
 
     private ContractSchemas() {
