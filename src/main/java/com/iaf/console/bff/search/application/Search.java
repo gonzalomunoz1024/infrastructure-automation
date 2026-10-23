@@ -2,14 +2,21 @@ package com.iaf.console.bff.search.application;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
+
+import com.fasterxml.jackson.databind.JsonNode;
 
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.StateCaller;
+import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.bff.search.domain.SearchQuery;
@@ -26,6 +33,7 @@ import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -42,6 +50,12 @@ public class Search {
     public static final int MAX_SUGGEST_QUERY = 128;
     public static final int MAX_SUGGESTIONS = 20;
     public static final int DEFAULT_SUGGESTIONS = 8;
+    /** The longest plain English or query a reading or a grouped count takes (the indexer may refuse a shorter one). */
+    public static final int MAX_TEXT = 500;
+    /** What a grouped count groups by: a type, service, state, region or account, or the value of one tag. */
+    public static final Pattern GROUP_BY = Pattern.compile("^(type|service|state|region|account|tag:[A-Za-z0-9._:/-]{1,128})$");
+    /** A tag name, as the state service and the indexer take one. */
+    static final Pattern TAG_NAME = Pattern.compile("^[a-z0-9-]{1,32}$");
 
     private final Types types;
     private final Access access;
@@ -98,6 +112,118 @@ public class Search {
                     .then(Mono.defer(() -> index.counts(scope(session), caller(session),
                             new SearchQuery(text, t.type(), blankToNull(state), tags, drift, null, null, null)))));
         });
+    }
+
+    /**
+     * Counts over accounts the caller has already decided the person may see counted (the
+     * executive home's), asked as the console-internal principal with {@code accountId} repeated,
+     * in calls of at most {@value SearchPort#MAX_ACCOUNTS} accounts whose answers are added up
+     * here. No policy is asked. {@code filters} takes {@code q}, {@code type}, {@code state},
+     * {@code drift} ({@code true} or {@code false}), {@code region} (every region when left out)
+     * and {@code tag.<name>} (an empty value is any value); {@code groupBy} is {@code type},
+     * {@code service}, {@code state}, {@code region}, {@code account} or {@code tag:<name>}, or
+     * {@code null} for no groups. The answer is {@code { total, byState, drift, cappedAt?, groups? }}
+     * ({@link GroupedCounts}), the groups largest first and at most 100; no account counts nothing.
+     */
+    public Mono<JsonNode> countsAcross(Session session, List<String> accountIds, Map<String, String> filters, String groupBy) {
+        return Mono.defer(() -> {
+            CountsQuery query = filtersOf(filters, groupBy == null ? null : groupBy(groupBy));
+            List<String> accounts = accountsOf(accountIds);
+            if (accounts.isEmpty()) {
+                return Mono.just(GroupedCounts.empty(query.grouped()));
+            }
+            return across(session, accounts, query);
+        });
+    }
+
+    /** The counts of the accounts, as the console-internal principal, in chunks the indexer takes, added up. */
+    private Mono<JsonNode> across(Session session, List<String> accounts, CountsQuery query) {
+        List<List<String>> chunks = new ArrayList<>();
+        for (int from = 0; from < accounts.size(); from += SearchPort.MAX_ACCOUNTS) {
+            chunks.add(accounts.subList(from, Math.min(accounts.size(), from + SearchPort.MAX_ACCOUNTS)));
+        }
+        return Flux.fromIterable(chunks).concatMap(chunk -> index.countAcross(scope(session), List.copyOf(chunk), query)).collectList()
+                .map(answers -> GroupedCounts.sum(answers, query.grouped()));
+    }
+
+    /** The filters an application caller counts with, by name; a name it does not know is a mistake of the caller's. */
+    static CountsQuery filtersOf(Map<String, String> filters, String groupBy) {
+        String q = null;
+        String type = null;
+        String state = null;
+        String region = null;
+        Boolean drift = null;
+        Map<String, String> tags = new LinkedHashMap<>();
+        for (Map.Entry<String, String> filter : (filters == null ? Map.<String, String>of() : filters).entrySet()) {
+            String value = filter.getValue();
+            if (value == null) {
+                continue;
+            }
+            switch (filter.getKey()) {
+                case "q" -> q = text(value, MAX_TEXT, false);
+                case "type" -> type = blankToNull(value);
+                case "state" -> state = state(value);
+                case "region" -> region = blankToNull(value);
+                case "drift" -> drift = drift(value);
+                default -> {
+                    if (!filter.getKey().startsWith("tag.")) {
+                        throw new IllegalArgumentException("the counts filters are q, type, state, drift, region and tag.<name>, not " + filter.getKey());
+                    }
+                    tags.put(tagName(filter.getKey().substring(4)), value);
+                }
+            }
+        }
+        return new CountsQuery(q, type, region, state, tags, drift, groupBy);
+    }
+
+    /** The accounts named, each once, in order; an id that is no account id is a mistake of the caller's. */
+    private static List<String> accountsOf(List<String> accountIds) {
+        Set<String> accounts = new LinkedHashSet<>();
+        for (String accountId : accountIds == null ? List.<String>of() : accountIds) {
+            if (!AccountScope.isAccountId(accountId)) {
+                throw new IllegalArgumentException("an account id is exactly 12 digits, was '" + accountId + "'");
+            }
+            accounts.add(accountId);
+        }
+        return List.copyOf(accounts);
+    }
+
+    /** A grouping the indexer takes, else a 400 at {@code /groupBy}. */
+    static String groupBy(String value) {
+        String groupBy = value == null ? "" : value.strip();
+        if (groupBy.isEmpty()) {
+            throw invalid("required", "/groupBy", "groupBy is required");
+        }
+        if (!GROUP_BY.matcher(groupBy).matches()) {
+            throw invalid("pattern", "/groupBy", "groupBy is type, service, state, region, account or tag:<name>");
+        }
+        return groupBy;
+    }
+
+    private static String state(String value) {
+        String state = blankToNull(value);
+        if (state != null && !ResourceCounts.STATES.contains(state)) {
+            throw invalid("enum", "/state", "state is one of: " + String.join(", ", ResourceCounts.STATES));
+        }
+        return state;
+    }
+
+    private static Boolean drift(String value) {
+        String drift = value.strip();
+        if (drift.isEmpty()) {
+            return null;
+        }
+        if (!drift.equals("true") && !drift.equals("false")) {
+            throw invalid("type", "/drift", "drift is true or false");
+        }
+        return Boolean.valueOf(drift);
+    }
+
+    private static String tagName(String name) {
+        if (!TAG_NAME.matcher(name).matches()) {
+            throw invalid("tag.name", "/tag." + name, "a tag name is 1 to 32 lowercase letters, digits or '-'");
+        }
+        return name;
     }
 
     // ---- pieces

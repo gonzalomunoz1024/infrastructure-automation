@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -30,13 +31,18 @@ import com.iaf.console.wfrn.Wfrn;
  * word, 6 for a name starting with it, 4 for a name containing it, 2 for the wfrn and 1 for a tag
  * or an attribute, summed over the words; the name's matches come back wrapped in {@code <em>},
  * HTML-escaped around them. Without a state filter only live resources match; the counts give
- * every state whatever the state filter, tombstones under {@code deleted}, and are exact.
+ * every state whatever the state filter, tombstones under {@code deleted}, and are exact, over one
+ * account or, for the console-internal principal, several added up, and per type, service, state,
+ * region, account or tag value when grouped.
  */
 public class DemoSearchIndex {
 
     public static final List<String> SORTS = List.of("score", "name", "-name", "created", "-created", "updated", "-updated");
+    /** The groupings of {@code /v1/counts}, as the indexer's contract takes them. */
+    public static final Pattern GROUP_BY = Pattern.compile("^(type|service|state|region|account|tag:[a-z0-9-]{1,32})$");
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
+    private static final int MAX_GROUPS = 100;
 
     private final DemoStateStore store;
 
@@ -142,25 +148,99 @@ public class DemoSearchIndex {
         return ranked.stream().limit(limit).map(Ranked::suggestion).toList();
     }
 
-    public ResourceCounts counts(String accountId, String q, Filters filters) {
+    /**
+     * The counts of the accounts' resources the query and filters match, added up: the total and
+     * the drifted ones apply every filter (tombstones only with {@code state=deleted}), the states
+     * every filter but the state. With {@code groupBy} the same numbers per key, every key that
+     * holds a resource in any state, the largest total first (then by key), at most 100; a
+     * resource without the tag of {@code tag:<name>} is in no group.
+     */
+    public Map<String, Object> counts(List<String> accountIds, String q, Filters filters, String groupBy) {
+        String grouping = groupBy == null || groupBy.isBlank() ? null : groupBy.strip();
+        if (grouping != null && !GROUP_BY.matcher(grouping).matches()) {
+            throw invalid("pattern", "/groupBy", "groupBy is type, service, state, region, account or tag:<name>");
+        }
         DemoQuery query = DemoQuery.parse(q == null ? "" : q);
         String state = filters.state() != null ? filters.state() : query.state();
-        Map<String, Long> byState = new LinkedHashMap<>();
-        long total = 0;
-        long drifted = 0;
-        for (StateResource r : store.snapshot(accountId, region(filters, query))) {
-            if (!matches(r, query, filters) || score(r, query.words()) <= 0) {
-                continue;
-            }
-            byState.merge(r.state(), 1L, Long::sum);
-            if (state == null ? r.live() : state.equals(r.state())) {
-                total++;
-                if (r.drift() != null) {
-                    drifted++;
+        Tally all = new Tally();
+        Map<String, Tally> groups = new LinkedHashMap<>();
+        for (String accountId : accountIds) {
+            for (StateResource r : store.snapshot(accountId, region(filters, query))) {
+                if (!matches(r, query, filters) || score(r, query.words()) <= 0) {
+                    continue;
+                }
+                boolean listed = state == null ? r.live() : state.equals(r.state());
+                all.add(r, listed);
+                String key = grouping == null ? null : keyOf(r, grouping);
+                if (key != null) {
+                    groups.computeIfAbsent(key, k -> new Tally()).add(r, listed);
                 }
             }
         }
-        return new ResourceCounts(total, byState, drifted, null);
+        Map<String, Object> body = all.write(new LinkedHashMap<>());
+        body.put("cappedAt", null);
+        if (grouping != null) {
+            List<Map.Entry<String, Tally>> sorted = new ArrayList<>(groups.entrySet());
+            sorted.sort(Comparator.comparing((Map.Entry<String, Tally> e) -> e.getValue().total).reversed().thenComparing(Map.Entry::getKey));
+            List<Map<String, Object>> list = new ArrayList<>();
+            for (Map.Entry<String, Tally> e : sorted.subList(0, Math.min(MAX_GROUPS, sorted.size()))) {
+                Map<String, Object> group = new LinkedHashMap<>();
+                group.put("key", e.getKey());
+                e.getValue().write(group);
+                if (grouping.equals("type")) {
+                    group.put("service", e.getValue().service);
+                }
+                list.add(group);
+            }
+            body.put("groups", list);
+        }
+        return body;
+    }
+
+    /** The key a resource is counted under: its type, service, state, region, account or the value of a tag; null when it has no such tag. */
+    private static String keyOf(StateResource r, String grouping) {
+        return switch (grouping) {
+            case "type" -> r.type();
+            case "service" -> r.service();
+            case "state" -> r.state();
+            case "region" -> r.region();
+            case "account" -> r.accountId();
+            default -> r.tags().get(grouping.substring("tag:".length()));
+        };
+    }
+
+    /** A list's numbers as they add up: the listed total, every state, and the listed ones with an open drift finding. */
+    private static final class Tally {
+        long total;
+        long drift;
+        String service;
+        final Map<String, Long> byState = new LinkedHashMap<>();
+
+        Tally() {
+            for (String state : ResourceCounts.STATES) {
+                byState.put(state, 0L);
+            }
+        }
+
+        void add(StateResource r, boolean listed) {
+            byState.merge(r.state(), 1L, Long::sum);
+            if (service == null) {
+                service = r.service();
+            }
+            if (listed) {
+                total++;
+                if (r.drift() != null) {
+                    drift++;
+                }
+            }
+        }
+
+        Map<String, Object> write(Map<String, Object> out) {
+            out.put("total", total);
+            out.put("byState", new LinkedHashMap<>(byState));
+            out.put("drift", drift);
+            return out;
+        }
     }
 
     // ---- matching
