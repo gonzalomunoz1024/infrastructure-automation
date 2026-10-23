@@ -32,7 +32,11 @@ info:
     decision 25); exporting the chargeback (`cost:export`) is `account-admin`'s and `auditor`'s,
     and `budgets:create`, `budgets:update` and `budgets:delete` are `account-admin`'s alone. Every
     managed role but `auditor` may ask for an elevation (`elevation:create`); reading the account's
-    elevations is `account-admin`'s and `auditor`'s, deciding and revoking them `account-admin`'s. A
+    elevations is `account-admin`'s and `auditor`'s, deciding and revoking them `account-admin`'s.
+    Blueprints and their stacks (decision 33, the service `blueprints`): every managed role reads
+    them (`blueprints:get`, `blueprints:list`); `operator` and `account-admin` launch and resume
+    stacks (`blueprints:launch`, `blueprints:resume`); tearing one down (`blueprints:teardown`) is
+    `account-admin`'s, as deleting is. A
     release that changes a managed policy reaches the accounts made before it: at start the service
     replaces each managed policy of an account that is not closed which differs from the release's,
     in place, with a `PolicyChanged` of action `updated` by `svc:console-identity-service`. The
