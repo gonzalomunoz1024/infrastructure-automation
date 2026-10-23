@@ -65,7 +65,7 @@ test.describe('identity and access in mock mode', () => {
     await page.keyboard.press('Escape')
     await expect(refusal).toBeHidden()
 
-    // the request is the requester's to follow
+    // the requester follows it on the access requests page
     await page.goto('/#/iam/access-requests')
     await expect(page.getByRole('table', { name: 'Access requests' }).getByText(requestId ?? 'areq_')).toBeVisible()
 
