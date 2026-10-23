@@ -6,7 +6,9 @@ import java.time.Duration;
 import java.time.Instant;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -26,14 +28,23 @@ class MongoProcessedEventsTest {
     @BeforeAll
     void connect() {
         client = MongoTestSupport.client();
+    }
+
+    /** A fresh database per test, so no test sees another's keys or counters. */
+    @BeforeEach
+    void freshStore() {
         mongo = new Mongo(client.getDatabase(MongoTestSupport.freshDatabase("kit_processed")));
         processed = new MongoProcessedEvents(mongo);
         processed.ensureIndexes().block(Duration.ofSeconds(30));
     }
 
+    @AfterEach
+    void dropDatabase() {
+        MongoTestSupport.drop(mongo);
+    }
+
     @AfterAll
     void disconnect() {
-        MongoTestSupport.drop(mongo);
         client.close();
     }
 
