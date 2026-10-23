@@ -1,0 +1,21 @@
+{
+  "name": "@iaf/wfrn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The TypeScript twin of the wfrn resource name: parse, format, match patterns and minted ids, judged by the shared fixtures of the console-root hub",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
