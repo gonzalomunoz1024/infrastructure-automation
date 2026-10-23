@@ -40,6 +40,7 @@ import com.iaf.console.bff.demo.directory.domain.DemoPerson;
 import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.identity.application.IdentityConfiguration;
+import com.iaf.console.bff.identity.application.IdentityProperties;
 import com.iaf.console.bff.platform.domain.DemoPlatformSeed;
 import com.iaf.console.bff.session.domain.RoleConventions;
 import com.iaf.console.wfrn.Ulid;
@@ -63,14 +64,17 @@ public class DemoIdentityRoutes {
     private final DemoTokens tokens;
     private final ObjectProvider<DemoPlatformSeed> platformSeed;
     private final ObjectProvider<Access> access;
+    private final String audience;
     private final Map<String, Map<String, Object>> accessKeys = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> customGroups = new ConcurrentHashMap<>();
     private final Map<String, Integer> quotaOverrides = new ConcurrentHashMap<>();
     private final Map<String, QuotaRequest> quotaRequests = new ConcurrentHashMap<>();
     private final Object quotaLock = new Object();
 
-    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access) {
+    public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access,
+            IdentityProperties identity) {
         this.directory = directory;
+        this.audience = identity.serviceName();
         this.tokens = tokens;
         this.platformSeed = platformSeed;
         this.access = access;
@@ -119,7 +123,7 @@ public class DemoIdentityRoutes {
     // ---- authentication and scoping
 
     private Optional<DemoCaller> caller(ServerRequest request) {
-        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), audience);
     }
 
     private interface Scoped {

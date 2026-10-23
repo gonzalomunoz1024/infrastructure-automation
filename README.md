@@ -96,9 +96,11 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 * **Step-up**: destructive actions within the configured max age need a fresh authentication:
   the API answers 403 with `detail.stepUp` and a login path; `/auth/login?stepUp=true` re-runs the
   provider with `prompt=login&max_age=0` and refreshes the same session's `authTime`.
-* **Downstream calls** carry a 60-second ES256 JWT minted here (`iss` console-bff, `aud` the
-  target service, `sub`, `acct`, `region`, `groups`) that the identity and state services verify
-  against `/.well-known/jwks.json`. Platform commands carry the account's service-account token and
+* **Downstream calls** carry a 60-second ES256 JWT minted here (`iss` console-bff, `aud` exactly
+  the target service and nothing else, hub decision 35, `sub`, `acct`, `region`, `groups`, `roles`)
+  that the identity, state and search services verify against `/.well-known/jwks.json`; the BFF's
+  own calls as the console-internal principal carry `sub` and `svc` `console-bff` and no `acct`.
+  The demo stand-ins verify the same way. Platform commands carry the account's service-account token and
   a P-02 on-behalf-of assertion signed with the same key.
 * **Service tokens** (hub decision 23): a console service that calls another on its own gets a
   token from `POST /internal/v1/token`, never a copy of the signing key or a static token. See
@@ -231,13 +233,15 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=client_credentials
 &client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
 &client_assertion=<the assertion>
-&audience=console-state-service&audience=console-identity-service
+&audience=console-state-service
 ```
 
-The answer is `{ access_token, token_type: "Bearer", expires_in: 300, audience }` with
-`Cache-Control: no-store`: an ES256 token with `iss` console-bff, `aud` only the services asked
-for (every registered one when none is), `sub` and `svc` the service id, and no `acct`, which the
-other services treat as the console-internal principal. Refusals are RFC 6749 bodies,
+`audience` is required and names exactly one service (hub decision 35): a client calling two
+services holds two tokens, and none or several is 400 `invalid_target`. The answer is
+`{ access_token, token_type: "Bearer", expires_in: 300, audience }` (`audience` a string) with
+`Cache-Control: no-store`: an ES256 token with `iss` console-bff, `aud` exactly that service,
+`sub` and `svc` the service id, and no `acct`, which a service accepts only from the service
+principals it lists as allowed to call it as themselves. Refusals are RFC 6749 bodies,
 `{ error, error_description }`: 400 `invalid_request`, `unsupported_grant_type` or
 `invalid_target`, 401 `invalid_client`.
 
@@ -250,7 +254,7 @@ The assertion proves who asks, in one of two ways:
   `service-account`. No secret exists anywhere. The chart turns this on and mounts a token for
   the API server and the cluster's CA, so the BFF can read the issuer's keys.
 * **Anywhere else** (a laptop, CI, a VM), a JWT the service signs with its own EC or RSA key: `iss`
-  and `sub` its service id, `aud` `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
+  and `sub` its service id, `aud` exactly `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
   is plenty) and a `jti` used once; the BFF holds the service's public keys
   (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Replays are refused per replica, so
   keep assertions short.

@@ -24,9 +24,10 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 
 /**
- * The BFF as a signer: internal JWTs for the identity and state services ({@code iss} the BFF,
- * {@code aud} the target service and {@code console}, {@code svc console-bff}), service tokens for
- * the console's other services (hub decision 23), P-02 assertions for the platform, and the JWKS
+ * The BFF as a signer: internal JWTs for the identity, state and search services ({@code iss} the
+ * BFF, {@code aud} exactly the one service the call is for, hub decision 35, {@code svc console-bff}),
+ * service tokens for the console's other services (hub decision 23, one audience each), P-02
+ * assertions for the platform, and the JWKS
  * every verifier reads. One ES256 key signs both; the JWKS carries the
  * previous key too while a rotation lasts.
  */
@@ -34,8 +35,6 @@ public class Trust {
 
     /** The claim naming the calling console service. */
     public static final String SERVICE_CLAIM = "svc";
-    /** The audience every console service accepts beside its own name. */
-    public static final String CONSOLE_AUDIENCE = "console";
 
     private final SigningKeyPort keys;
     private final TrustProperties properties;
@@ -68,15 +67,15 @@ public class Trust {
     }
 
     /**
-     * A service token (hub decision 23) for a console service calling others on its own: {@code aud}
-     * only the services asked for, {@code sub} and {@code svc} the service, no account.
+     * A service token (hub decision 23) for a console service calling another on its own: {@code aud}
+     * the one service asked for (decision 35), {@code sub} and {@code svc} the service, no account.
      */
-    public IssuedServiceToken issueServiceToken(String serviceId, List<String> audiences) {
+    public IssuedServiceToken issueServiceToken(String serviceId, String audience) {
         Instant now = clock.instant();
         Duration lifetime = properties.serviceTokenLifetime();
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(properties.issuer())
-                .audience(List.copyOf(audiences))
+                .audience(audience)
                 .subject(serviceId)
                 .claim(SERVICE_CLAIM, serviceId)
                 .claim("groups", List.of())
@@ -85,7 +84,7 @@ public class Trust {
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(lifetime)))
                 .build();
-        return new IssuedServiceToken(sign(claims), lifetime.toSeconds(), audiences, serviceId);
+        return new IssuedServiceToken(sign(claims), lifetime.toSeconds(), audience, serviceId);
     }
 
     /** A compact JWS for one call to another console service; it ends with the token's lifetime or when its roles stop being current. */
@@ -97,7 +96,7 @@ public class Trust {
         }
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                 .issuer(properties.issuer())
-                .audience(List.of(token.audience(), CONSOLE_AUDIENCE))
+                .audience(token.audience())
                 .subject(token.subject())
                 .claim(SERVICE_CLAIM, properties.issuer())
                 .claim("groups", token.groups())

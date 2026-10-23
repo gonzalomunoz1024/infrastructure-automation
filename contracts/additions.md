@@ -194,3 +194,12 @@ and `stepUp=true`.
 
 `GET /.well-known/jwks.json`: the public keys other console services verify this service's
 internal tokens and on-behalf-of assertions with.
+
+## Service tokens (hub decision 35)
+
+`POST /internal/v1/token` follows decision 35 rather than the pinned text: `audience` is required
+and names exactly one service (none, or more than one, whether as repeated fields or separated by
+spaces, is 400 `invalid_target`), the answer's `audience` is that service as a string, and the
+token's `aud` is that one service. The client's own assertion must name exactly `console-bff` as
+its audience. Every internal token the BFF mints names exactly its callee; `console` is never
+minted.

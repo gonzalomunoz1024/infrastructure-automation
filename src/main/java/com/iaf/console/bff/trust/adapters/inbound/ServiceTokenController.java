@@ -1,7 +1,5 @@
 package com.iaf.console.bff.trust.adapters.inbound;
 
-import java.util.List;
-
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -36,7 +34,7 @@ public class ServiceTokenController {
 
     /** RFC 6749 §5.1. */
     public record TokenBody(@JsonProperty("access_token") String accessToken, @JsonProperty("token_type") String tokenType,
-            @JsonProperty("expires_in") long expiresIn, List<String> audience) {
+            @JsonProperty("expires_in") long expiresIn, String audience) {
     }
 
     /** RFC 6749 §5.2. */

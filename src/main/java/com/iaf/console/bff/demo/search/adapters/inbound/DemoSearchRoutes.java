@@ -23,6 +23,7 @@ import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.demo.search.application.DemoSearchIndex;
 import com.iaf.console.bff.search.application.SearchConfiguration;
+import com.iaf.console.bff.search.application.SearchProperties;
 import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
@@ -44,10 +45,12 @@ public class DemoSearchRoutes {
 
     private final DemoSearchIndex index;
     private final DemoTokens tokens;
+    private final String audience;
 
-    public DemoSearchRoutes(DemoSearchIndex index, DemoTokens tokens) {
+    public DemoSearchRoutes(DemoSearchIndex index, DemoTokens tokens, SearchProperties search) {
         this.index = index;
         this.tokens = tokens;
+        this.audience = search.serviceName();
     }
 
     @Bean
@@ -67,7 +70,7 @@ public class DemoSearchRoutes {
     }
 
     private Mono<ServerResponse> answer(ServerRequest request, Function<String, Object> work) {
-        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), audience);
         if (caller.isEmpty()) {
             return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
         }

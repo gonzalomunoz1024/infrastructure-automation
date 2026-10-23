@@ -81,7 +81,12 @@ class ServiceTokensTest {
         return tokens(true, Clock.fixed(now, ZoneOffset.UTC));
     }
 
-    private static ServiceTokenRequest request(String assertion, String... audiences) {
+    /** A request for the state service, the audience every test client is registered for. */
+    private static ServiceTokenRequest request(String assertion) {
+        return requestFor(assertion, STATE);
+    }
+
+    private static ServiceTokenRequest requestFor(String assertion, String... audiences) {
         return new ServiceTokenRequest(ServiceTokenRequest.CLIENT_CREDENTIALS, ServiceTokenRequest.JWT_BEARER, assertion, null, List.of(audiences));
     }
 
@@ -90,15 +95,15 @@ class ServiceTokensTest {
     }
 
     @Test
-    void aServiceSignedAssertionGetsAFiveMinuteTokenForItsRegisteredServices() throws Exception {
-        IssuedServiceToken issued = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now))).block();
+    void aServiceSignedAssertionGetsAFiveMinuteTokenForTheOneServiceAskedFor() throws Exception {
+        IssuedServiceToken issued = tokens().issue(requestFor(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY)).block();
         assertEquals(300, issued.expiresIn());
-        assertEquals(List.of(STATE, IDENTITY), issued.audience());
+        assertEquals(IDENTITY, issued.audience());
         SignedJWT jwt = SignedJWT.parse(issued.token());
         assertTrue(jwt.verify(new ECDSAVerifier(signing.toECPublicKey())), "signed with the BFF's key");
         JWTClaimsSet claims = jwt.getJWTClaimsSet();
         assertEquals("console-bff", claims.getIssuer());
-        assertEquals(List.of(STATE, IDENTITY), claims.getAudience(), "never the shared console audience");
+        assertEquals(List.of(IDENTITY), claims.getAudience(), "exactly the service asked for, never the shared console audience");
         assertEquals("console-search-indexer", claims.getSubject());
         assertEquals("console-search-indexer", claims.getStringClaim("svc"));
         assertNull(claims.getClaim("acct"), "no account: the console-internal principal");
@@ -107,14 +112,29 @@ class ServiceTokensTest {
     }
 
     @Test
-    void theTokenNamesOnlyTheAudiencesAskedFor() {
-        IssuedServiceToken one = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now), STATE)).block();
-        assertEquals(List.of(STATE), one.audience());
-        IssuedServiceToken spaced = tokens().issue(request(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY + " " + STATE)).block();
-        assertEquals(List.of(IDENTITY, STATE), spaced.audience());
-        ServiceTokenException e = refused(tokens(), request(Assertions.own(indexerKey, "console-search-indexer", now), STATE, "console-bff"));
-        assertEquals("invalid_target", e.error());
-        assertEquals(400, e.status());
+    void aTokenIsForExactlyOneRegisteredService() {
+        IssuedServiceToken one = tokens().issue(requestFor(Assertions.own(indexerKey, "console-search-indexer", now), STATE)).block();
+        assertEquals(STATE, one.audience());
+        for (ServiceTokenRequest asked : List.of(
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now)),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), STATE, IDENTITY),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), IDENTITY + " " + STATE),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), "console-bff"),
+                requestFor(Assertions.own(indexerKey, "console-search-indexer", now), "console"))) {
+            ServiceTokenException e = refused(tokens(), asked);
+            assertEquals("invalid_target", e.error(), asked.audiences().toString());
+            assertEquals(400, e.status());
+        }
+    }
+
+    @Test
+    void anAssertionForAnotherAudienceBesideTheBffIsRefused() {
+        String both = Assertions.signed(indexerKey, new JWTClaimsSet.Builder().issuer("console-search-indexer").subject("console-search-indexer")
+                .audience(List.of("console-bff", STATE)).jwtID(UUID.randomUUID().toString()).issueTime(Date.from(now))
+                .expirationTime(Date.from(now.plusSeconds(60))).build());
+        ServiceTokenException e = refused(tokens(), request(both));
+        assertEquals("invalid_client", e.error());
+        assertTrue(e.getMessage().contains("exactly console-bff"), e.getMessage());
     }
 
     @Test
@@ -136,7 +156,7 @@ class ServiceTokensTest {
         String tooLong = Assertions.signed(indexerKey, claims("console-search-indexer", "console-search-indexer", "console-bff", now, Duration.ofMinutes(30)));
         assertTrue(refused(tokens, request(tooLong)).getMessage().contains("longer"));
         String elsewhere = Assertions.signed(indexerKey, claims("console-search-indexer", "console-search-indexer", "console-state-service", now, Duration.ofSeconds(60)));
-        assertTrue(refused(tokens, request(elsewhere)).getMessage().contains("not for console-bff"));
+        assertTrue(refused(tokens, request(elsewhere)).getMessage().contains("exactly console-bff"));
         String someoneElse = Assertions.signed(indexerKey, claims("console-search-indexer", "console-drift-service", "console-bff", now, Duration.ofSeconds(60)));
         assertEquals("invalid_client", refused(tokens, request(someoneElse)).error());
         String stranger = Assertions.own(indexerKey, "console-unknown", now);
@@ -171,7 +191,7 @@ class ServiceTokensTest {
         IssuedServiceToken first = tokens.issue(request(token)).block();
         IssuedServiceToken again = tokens.issue(request(token)).block();
         assertEquals("console-drift-service", first.clientId());
-        assertEquals(List.of(STATE), again.audience());
+        assertEquals(STATE, again.audience());
         assertEquals("console-drift-service", SignedJWT.parse(again.token()).getJWTClaimsSet().getStringClaim("svc"));
 
         String other = Assertions.serviceAccount(clusterKey, CLUSTER, "default", "console-drift-service", now);
@@ -184,7 +204,7 @@ class ServiceTokensTest {
         assertTrue(refused(tokens, request(forever)).getMessage().contains("needs exp"));
         String apiServer = Assertions.signed(clusterKey, new JWTClaimsSet.Builder().issuer(CLUSTER).subject("system:serviceaccount:console:console-drift-service")
                 .audience(List.of("https://kubernetes.default.svc")).expirationTime(Date.from(now.plusSeconds(600))).build());
-        assertTrue(refused(tokens, request(apiServer)).getMessage().contains("not for console-bff"));
+        assertTrue(refused(tokens, request(apiServer)).getMessage().contains("exactly console-bff"));
     }
 
     @Test

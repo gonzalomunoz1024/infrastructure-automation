@@ -4,7 +4,6 @@ import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,9 +34,9 @@ import reactor.core.publisher.Mono;
  * client assertion, either the caller's projected Kubernetes service-account token (the cluster's
  * issuer, audience {@code console-bff}, a registered service account) or a JWT the caller signed
  * with its own registered key ({@code iss} and {@code sub} its id, audience {@code console-bff},
- * short, its {@code jti} used once). The client is authenticated first; only then are the
- * audiences it asked for checked against the ones registered for it. The answer is the BFF's own
- * internal JWT for those audiences, with no account: the console-internal principal.
+ * short, its {@code jti} used once). The client is authenticated first; only then is the audience
+ * it asked for checked: exactly one (hub decision 35), registered for it. The answer is the BFF's
+ * own internal JWT for that one service, with no account.
  */
 public class ServiceTokens {
 
@@ -94,9 +93,9 @@ public class ServiceTokens {
                         if (!claimant.cluster()) {
                             checkFirstUse(claimant, claims, now);
                         }
-                        List<String> audiences = audiences(claimant, request.audiences());
-                        IssuedServiceToken issued = trust.issueServiceToken(claimant.id(), audiences);
-                        log.info("issued a service token to {} for {} ({})", claimant.id(), audiences,
+                        String audience = audience(claimant, request.audiences());
+                        IssuedServiceToken issued = trust.issueServiceToken(claimant.id(), audience);
+                        log.info("issued a service token to {} for {} ({})", claimant.id(), audience,
                                 claimant.cluster() ? "service-account token" : "signed assertion");
                         return issued;
                     });
@@ -209,10 +208,10 @@ public class ServiceTokens {
         }
     }
 
+    /** Exactly this service: an assertion naming another audience beside it could be replayed there. */
     private void checkAudience(JWTClaimsSet claims) {
-        List<String> aud = claims.getAudience() == null ? List.of() : claims.getAudience();
-        if (!aud.contains(properties.issuer())) {
-            throw ServiceTokenException.invalidClient("the assertion is not for " + properties.issuer());
+        if (!List.of(properties.issuer()).equals(claims.getAudience())) {
+            throw ServiceTokenException.invalidClient("the assertion's audience must be exactly " + properties.issuer());
         }
     }
 
@@ -226,25 +225,17 @@ public class ServiceTokens {
         }
     }
 
-    /** The audiences asked for, each registered for the client; every registered one when none is asked for. */
-    private static List<String> audiences(Claimant claimant, List<String> asked) {
-        List<String> registered = claimant.client().audiences();
-        if (registered.isEmpty()) {
-            throw ServiceTokenException.invalidTarget(claimant.id() + " is registered for no audience");
+    /** The one audience asked for, registered for the client; none or several is {@code invalid_target}. */
+    private static String audience(Claimant claimant, List<String> asked) {
+        if (asked.size() != 1) {
+            throw ServiceTokenException.invalidTarget(asked.isEmpty() ? "name the one service the token is for in audience"
+                    : "a token is for one service; ask once per service, not for " + String.join(", ", asked));
         }
-        if (asked.isEmpty()) {
-            return registered;
+        String audience = asked.get(0);
+        if (!claimant.client().audiences().contains(audience)) {
+            throw ServiceTokenException.invalidTarget(claimant.id() + " may not get tokens for " + audience);
         }
-        List<String> refused = new ArrayList<>();
-        for (String audience : asked) {
-            if (!registered.contains(audience)) {
-                refused.add(audience);
-            }
-        }
-        if (!refused.isEmpty()) {
-            throw ServiceTokenException.invalidTarget(claimant.id() + " may not get tokens for " + String.join(", ", refused));
-        }
-        return asked;
+        return audience;
     }
 
     private static boolean blank(String value) {

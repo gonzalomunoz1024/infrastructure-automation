@@ -26,6 +26,7 @@ import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.demo.state.application.DemoStateStore;
 import com.iaf.console.bff.resources.application.ResourcesConfiguration;
+import com.iaf.console.bff.resources.application.StateProperties;
 import com.iaf.console.bff.resources.domain.StateQuery;
 import com.iaf.console.bff.resources.domain.StateResource;
 import com.iaf.console.bff.resources.domain.Tombstone;
@@ -53,10 +54,12 @@ public class DemoStateRoutes {
 
     private final DemoStateStore store;
     private final DemoTokens tokens;
+    private final String audience;
 
-    public DemoStateRoutes(DemoStateStore store, DemoTokens tokens) {
+    public DemoStateRoutes(DemoStateStore store, DemoTokens tokens, StateProperties state) {
         this.store = store;
         this.tokens = tokens;
+        this.audience = state.serviceName();
     }
 
     @Bean
@@ -172,7 +175,7 @@ public class DemoStateRoutes {
     // ---- pieces
 
     private Optional<DemoCaller> caller(ServerRequest request) {
-        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        return tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION), audience);
     }
 
     private static String key(ServerRequest request) {
