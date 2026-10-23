@@ -36,6 +36,10 @@ public final class Commands {
     public record RequestDelete(String jobId, String workflow, String workflowVersion, String reason, Meta meta) {
     }
 
+    /** {@code :request-retry}: the workflow is the resource's create workflow when the request names none. */
+    public record RequestRetry(String jobId, String workflow, String workflowVersion, Meta meta) {
+    }
+
     /** {@code :tag}. */
     public record Tag(Map<String, String> set, List<String> removed, Meta meta) {
     }

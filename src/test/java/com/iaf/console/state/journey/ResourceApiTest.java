@@ -125,6 +125,19 @@ class ResourceApiTest extends DemoServiceTest {
     }
 
     @Test
+    void onlyAFailedResourceCanBeRetried() {
+        String wfrn = mint(as(ACCOUNT, "dana"), mintBody("vm", "retry-" + UUID.randomUUID()), null).get("wfrn").asText();
+        JsonNode bodiless = body(as(ACCOUNT, "dana").post().uri(resource(wfrn, ":request-retry")).exchange().expectStatus().isEqualTo(409));
+        assertThat(bodiless.toString()).as("the body is optional").contains("resource.notFailed");
+        JsonNode named = body(as(ACCOUNT, "dana").post().uri(resource(wfrn, ":request-retry")).bodyValue(json.createObjectNode().put("jobId", "job_nope"))
+                .exchange().expectStatus().isEqualTo(409));
+        assertThat(named.toString()).contains("resource.notFailed").contains("pending");
+        as(OTHER_ACCOUNT, "lee").post().uri(resource(wfrn, ":request-retry")).exchange().expectStatus().isNotFound();
+        as(ACCOUNT, "dana").post().uri(resource("wfrn:wf:compute:global:" + ACCOUNT + ":vm/vm-00000000000000000000000000", ":request-retry")).exchange()
+                .expectStatus().isNotFound();
+    }
+
+    @Test
     void anIdempotencyKeyReplaysTheFirstAnswer() {
         String key = "mint-" + UUID.randomUUID();
         ObjectNode body = mintBody("vm", "idem-" + UUID.randomUUID());

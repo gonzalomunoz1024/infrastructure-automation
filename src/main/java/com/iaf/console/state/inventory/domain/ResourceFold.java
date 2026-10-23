@@ -128,6 +128,7 @@ public final class ResourceFold {
                 change(b, event, data);
                 // the state says it all
             }
+            case RETRY_REQUESTED -> change(b, event, data); // the failure stays on record until the retry succeeds
             case DELETED -> {
                 b.deletedAt = event.at();
                 b.tombstoneUntil = instant(data.get("tombstoneUntil"));

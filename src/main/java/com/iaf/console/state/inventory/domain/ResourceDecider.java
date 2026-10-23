@@ -81,6 +81,27 @@ public final class ResourceDecider {
         return event(current, null, ResourceEventType.DELETE_REQUESTED, now, command.meta(), command.jobId(), data);
     }
 
+    /**
+     * A failed create, tried again: the resource is pending once more, and the job the BFF reruns
+     * carries the retry ({@code retryOf} names the failed job). Empty when the job the retry names is
+     * already on record: the BFF may rerun the failed job before it records the retry, and that job's
+     * outcome may come first; it stands.
+     */
+    public static Optional<ResourceEvent> requestRetry(Resource current, Commands.RequestRetry command, Instant now) {
+        requireExists(current);
+        if (command.jobId() != null && command.jobId().equals(current.lastJobId())) {
+            return Optional.empty();
+        }
+        Transitions.next(current.state(), ResourceEventType.RETRY_REQUESTED, current); // 409 before the input is looked at
+        String workflow = command.workflow() != null && !command.workflow().isBlank() ? command.workflow() : current.workflow();
+        requireText(workflow, "/workflow");
+        checkVersion(current, command.meta());
+        ObjectNode data = job(command.jobId(), workflow, command.workflowVersion());
+        Json.putIf(data, "retryOf", current.lastError() != null && current.lastError().jobId() != null ? current.lastError().jobId()
+                : current.lastJobId());
+        return Optional.of(event(current, null, ResourceEventType.RETRY_REQUESTED, now, command.meta(), command.jobId(), data));
+    }
+
     /** Empty when the tags already are what the command asks. */
     public static Optional<ResourceEvent> tag(Resource current, Commands.Tag command, Instant now) {
         requireExists(current);
@@ -186,15 +207,15 @@ public final class ResourceDecider {
 
     // the platform's facts
 
-    /** Empty when the job is already the one on record. */
     /**
-     * Empty for a job already recorded, and for a job on a resource that waits for none (active,
-     * failed, deleted): the BFF may start a job before it records the change, and the request that
-     * names the job, or the job's end, says what it means.
+     * Empty for a job already recorded, for the job whose failure is on record (it cannot start a
+     * retry), and for a job on a resource that waits for none (active, failed, deleted): the BFF may
+     * start a job before it records the change, and the request that names the job, or the job's
+     * end, says what it means.
      */
     public static Optional<ResourceEvent> jobStarted(Resource current, Commands.JobStarted command, Instant now) {
         requireExists(current);
-        if (command.jobId() != null && command.jobId().equals(current.lastJobId())) {
+        if (command.jobId() != null && (command.jobId().equals(current.lastJobId()) || failureOnRecord(current, command.jobId()))) {
             return Optional.empty();
         }
         if (!current.state().busy()) {
@@ -249,6 +270,11 @@ public final class ResourceDecider {
         Json.putIf(data, "registryId", command.registryId() != null ? command.registryId() : current.registryId());
         data.put("tombstoneUntil", now.plus(tombstoneTtl).toString());
         return Optional.of(event(current, null, ResourceEventType.DELETED, now, command.meta(), command.jobId(), data));
+    }
+
+    /** Whether the job's failure is the one the resource has on record. */
+    public static boolean failureOnRecord(Resource current, String jobId) {
+        return jobId != null && current.lastError() != null && jobId.equals(current.lastError().jobId());
     }
 
     // helpers

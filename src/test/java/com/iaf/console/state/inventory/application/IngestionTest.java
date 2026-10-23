@@ -368,6 +368,125 @@ class IngestionTest {
         assertThat(current(earlier.wfrn()).lastError().errorClass()).isEqualTo("console.noJob");
     }
 
+    /** A create whose job failed: the resource is failed with that job's error on record. */
+    private Resource failedCreate(String name, long seq, String jobId) {
+        Resource pending = mint(name);
+        handler.handle(feed(seq, "job.finished", "job", jobId, pending.wfrn(), finished(jobId, "failed", "provider.quota"))).block();
+        Resource failed = current(pending.wfrn());
+        assertThat(failed.state()).isEqualTo(ResourceState.FAILED);
+        assertThat(failed.lastError().jobId()).isEqualTo(jobId);
+        return failed;
+    }
+
+    private FeedEvent started(long seq, String jobId, String wfrn) {
+        return feed(seq, "job.started", "job", jobId, wfrn, Json.object().put("jobId", jobId).put("workflow", "create-vm").put("version", "2.0.1"));
+    }
+
+    @Test
+    void aRetryRecordedBeforeTheRerunIsEndedByTheRerunAloneNeverByTheFailedJob() {
+        Resource failed = failedCreate("again", 60, "job_f");
+        String wfrn = failed.wfrn();
+        Resource retrying = changes.requestRetry(SCOPE, wfrn, new Commands.RequestRetry(null, null, null, by("dana"))).block();
+        assertThat(retrying.state()).isEqualTo(ResourceState.PENDING);
+
+        handler.handle(started(61, "job_f", wfrn)).block();
+        handler.handle(feed(62, "job.finished", "job", "job_f", wfrn, finished("job_f", "failed", "provider.quota"))).block();
+        assertThat(current(wfrn).state()).as("late events of the failed job end nothing").isEqualTo(ResourceState.PENDING);
+        assertThat(current(wfrn).version()).isEqualTo(retrying.version());
+
+        handler.handle(started(63, "job_r", wfrn)).block();
+        assertThat(current(wfrn).lastJobId()).isEqualTo("job_r");
+        com.iaf.console.platform.model.Resource record = record("vm-a", wfrn, "job_r", "ready", "again");
+        when(platform.getResourceByWfrn(wfrn)).thenReturn(Mono.just(record));
+        handler.handle(feed(64, "resource.registered", "resource", "vm-a", null, registered(record, "job_r"))).block();
+        Resource active = current(wfrn);
+        assertThat(active.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(active.lastError()).isNull();
+        assertThat(trail(wfrn)).containsExactly("ResourceRequested", "ProvisioningFailed", "RetryRequested", "ProvisioningStarted",
+                "ProvisioningSucceeded");
+        List<OutboxEntry> published = outbox.all().collectList().block();
+        OutboxEntry retry = published.stream().filter(e -> e.event().type().equals("RetryRequested")).findFirst().orElseThrow();
+        assertThat(retry.event().data().get("retryOf").asText()).isEqualTo("job_f");
+        assertThat(retry.event().data().get("workflow").asText()).isEqualTo("create-vm");
+        assertThat(retry.event().data().get("state").asText()).isEqualTo("pending");
+    }
+
+    @Test
+    void aRetryRecordedAfterItsRerunEndsAsTheRerunDid() {
+        // the rerun succeeded and the feed said so before the BFF recorded the retry: nothing to retry
+        Resource first = failedCreate("first", 70, "job_f1");
+        handler.handle(started(71, "job_r1", first.wfrn())).block();
+        assertThat(current(first.wfrn()).version()).as("a job's start on a failed resource is no event").isEqualTo(first.version());
+        com.iaf.console.platform.model.Resource record = record("vm-1", first.wfrn(), "job_r1", "ready", "first");
+        when(platform.getResourceByWfrn(first.wfrn())).thenReturn(Mono.just(record));
+        handler.handle(feed(72, "resource.registered", "resource", "vm-1", null, registered(record, "job_r1"))).block();
+        when(platform.getJob("job_r1")).thenReturn(Mono.just(job("job_r1", "create-vm", JobStatus.SUCCEEDED, first.wfrn(), null)));
+        Resource done = changes.requestRetry(SCOPE, first.wfrn(), new Commands.RequestRetry("job_r1", null, null, by("dana"))).block();
+        assertThat(done.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(trail(first.wfrn())).containsExactly("ResourceRequested", "ProvisioningFailed", "ProvisioningSucceeded");
+
+        // the rerun failed too, before the retry was recorded: the retry is recorded and settled with the second failure
+        Resource second = failedCreate("second", 80, "job_f2");
+        handler.handle(feed(81, "job.finished", "job", "job_r2", second.wfrn(), finished("job_r2", "failed", "provider.timeout"))).block();
+        assertThat(current(second.wfrn()).lastError().jobId()).as("a failure on a resource that waits for none is not recorded").isEqualTo("job_f2");
+        when(platform.getJob("job_r2")).thenReturn(Mono.just(job("job_r2", "create-vm", JobStatus.FAILED, second.wfrn(), "provider.timeout")));
+        Resource failedAgain = changes.requestRetry(SCOPE, second.wfrn(), new Commands.RequestRetry("job_r2", null, null, by("dana"))).block();
+        assertThat(failedAgain.state()).isEqualTo(ResourceState.FAILED);
+        assertThat(failedAgain.lastError().jobId()).isEqualTo("job_r2");
+        assertThat(failedAgain.lastError().errorClass()).isEqualTo("provider.timeout");
+        assertThat(trail(second.wfrn())).containsExactly("ResourceRequested", "ProvisioningFailed", "RetryRequested", "ProvisioningFailed");
+
+        // the rerun still runs: the retry waits for it, and its start is no second event
+        Resource third = failedCreate("third", 90, "job_f3");
+        when(platform.getJob("job_r3")).thenReturn(Mono.just(job("job_r3", "create-vm", JobStatus.RUNNING, third.wfrn(), null)));
+        Resource waiting = changes.requestRetry(SCOPE, third.wfrn(), new Commands.RequestRetry("job_r3", null, null, by("dana"))).block();
+        assertThat(waiting.state()).isEqualTo(ResourceState.PENDING);
+        assertThat(waiting.lastJobId()).isEqualTo("job_r3");
+        handler.handle(started(91, "job_r3", third.wfrn())).block();
+        assertThat(current(third.wfrn()).version()).isEqualTo(waiting.version());
+        assertThat(changes.requestRetry(SCOPE, third.wfrn(), new Commands.RequestRetry("job_r3", null, null, by("dana"))).block().version())
+                .as("the same retry again changes nothing").isEqualTo(waiting.version());
+    }
+
+    @Test
+    void theReaperFailsARetryThatNoJobCarriesOut() {
+        // the platform refused the rerun: the registry still holds the failed attempt, and the only job is the failed one
+        Resource failed = failedCreate("refused", 100, "job_f");
+        when(platform.getResourceByWfrn(failed.wfrn())).thenReturn(Mono.just(record("vm-r", failed.wfrn(), "job_f", "failed", "refused")));
+        when(platform.listJobs(any())).thenReturn(Mono.just(new PagedList<>(List.of(new JobSummary("job_f", "create-vm", "Create VM", "2.0.1",
+                JobStatus.FAILED, "dana", "rest", T0, T0.plusSeconds(5), 5000L, null, "single", null, null, "provider.quota", "createVm", "svc:bff", null,
+                new JobContext(ACCOUNT, REGION, failed.wfrn(), null, Map.of()))), null)));
+        changes.requestRetry(SCOPE, failed.wfrn(), new Commands.RequestRetry(null, null, null, by("dana"))).block();
+
+        clock.advance(Duration.ofMinutes(6));
+        PendingReaper.Report report = reaper.tick().block();
+        assertThat(report.checked()).isEqualTo(1);
+        Resource noJob = current(failed.wfrn());
+        assertThat(noJob.state()).isEqualTo(ResourceState.FAILED);
+        assertThat(noJob.lastError().errorClass()).as("the failed job is not the retry's outcome").isEqualTo("console.noJob");
+        assertThat(trail(failed.wfrn())).containsExactly("ResourceRequested", "ProvisioningFailed", "RetryRequested", "ProvisioningFailed");
+    }
+
+    @Test
+    void aDeleteRecordedAfterItsJobDeletedTheResourceAnswersTheTombstone() {
+        Resource fast = imported("fast");
+        handler.handle(feed(110, "resource.retired", "resource", "id-fast", null, Json.object().put("id", "id-fast").put("type", "vm").put("by", "platform")
+                .put("wfrn", fast.wfrn()).put("accountId", ACCOUNT).put("region", REGION))).block();
+        assertThat(current(fast.wfrn()).state()).isEqualTo(ResourceState.DELETED);
+        when(platform.getJob("job_d")).thenReturn(Mono.just(job("job_d", "delete-vm", JobStatus.SUCCEEDED, fast.wfrn(), null)));
+        Resource gone = changes.requestDelete(SCOPE, fast.wfrn(), new Commands.RequestDelete("job_d", "delete-vm", null, "clean up", by("dana"))).block();
+        assertThat(gone.state()).isEqualTo(ResourceState.DELETED);
+        assertThat(trail(fast.wfrn())).containsExactly("Imported", "Deleted");
+
+        when(platform.getJob("job_x")).thenReturn(Mono.just(job("job_x", "delete-vm", JobStatus.SUCCEEDED, "wfrn:wf:compute:global:" + ACCOUNT
+                + ":vm/vm-other", null)));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> changes.requestDelete(SCOPE, fast.wfrn(), new Commands.RequestDelete("job_x",
+                "delete-vm", null, null, by("dana"))).block()).as("another resource's job").isInstanceOf(
+                        com.iaf.console.state.inventory.domain.TombstoneException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> changes.requestDelete(SCOPE, fast.wfrn(), new Commands.RequestDelete(null, "delete-vm",
+                null, null, by("dana"))).block()).as("no job named").isInstanceOf(com.iaf.console.state.inventory.domain.TombstoneException.class);
+    }
+
     @Test
     void anUnknownTypeCannotBeMintedAndACollidingImportIsRefused() {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> inventory.mint(SCOPE, new Commands.Mint("toaster", REGION, "x", "make-toast",

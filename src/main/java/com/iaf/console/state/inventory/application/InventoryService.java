@@ -126,6 +126,10 @@ public final class InventoryService {
                 ResourceDecider.requestDelete(current, command, clock.instant()))));
     }
 
+    public Mono<Resource> requestRetry(AccountScope scope, String wfrn, Commands.RequestRetry command) {
+        return onResource(scope, wfrn, "request-retry", (current, type) -> Mono.just(ResourceDecider.requestRetry(current, command, clock.instant())));
+    }
+
     public Mono<Resource> tag(AccountScope scope, String wfrn, Commands.Tag command) {
         return onResource(scope, wfrn, "tag", (current, type) -> Mono.just(ResourceDecider.tag(current, command, clock.instant())));
     }

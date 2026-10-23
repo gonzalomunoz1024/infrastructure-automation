@@ -23,8 +23,8 @@ repository pins by commit in `contracts.lock`, and the shared code comes from `c
   reconstructions. A projection (one document per resource) serves lists in one query.
 - **Serves the BFF** with the API of `contracts/openapi/console-state-service.yaml`: cursor-paged
   lists with filters and sorts, the resource by wfrn with an `ETag`, its events, and the commands
-  (`:request-update`, `:request-delete`, `:tag`, `:record-observation`, `:record-drift`,
-  `:resolve-drift`, `:mint`, `:import`) with optimistic concurrency and idempotency keys.
+  (`:request-update`, `:request-delete`, `:request-retry`, `:tag`, `:record-observation`,
+  `:record-drift`, `:resolve-drift`, `:mint`, `:import`) with optimistic concurrency and idempotency keys.
 - **Publishes the console's own events** on the Kafka topic `state.resources` through the service
   kit's outbox, in the platform's P-01 envelope (hub decision 17), for the search indexer, the
   drift service and the BFF's live updates.
@@ -107,7 +107,8 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for an internal principal (`svc` without `acct`) and a person whose `roles` claim holds `account-admin`, ignored for anyone else; 410 with a `Tombstone` body after deletion |
 | `GET /v1/wfrn/{wfrn}/events` | Its log in order, each entry the `state.resources` envelope (`id`, `key`, `type`, `at`, `context`, `data` with `version` and `state`), the same event under the same `id` as on the topic; `after` is a version, `limit` a page, `reveal` as on the resource |
 | `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes`; `jobId` names the platform job when it was started first, and a job that has already ended settles the request at once |
-| `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting`; `jobId` as for an update |
+| `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting`; `jobId` as for an update; a request naming the job that has already deleted the resource answers the tombstone (200) instead of 410 |
+| `POST /v1/wfrn/{wfrn}:request-retry` | `failed` → `pending` for a rerun of the create (hub decision 24), 409 `resource.notFailed` in any other state; the body is optional: `jobId` the rerun when the BFF started it first (a rerun that already ended settles the retry at once, one already on record changes nothing), `workflow` the create workflow by default |
 | `POST /v1/wfrn/{wfrn}:tag` | `set` and `removed` tags; names `[a-z0-9-]{1,32}`, values up to 256, 50 tags |
 | `POST /v1/wfrn/{wfrn}:record-observation` | What a provider showed (`found`, `not_found`, `error`); `not_found` on a type whose `observe.notFound` is `deleted` tombstones it |
 | `POST /v1/wfrn/{wfrn}:record-drift`, `:resolve-drift` | One open finding at a time; `accepted` writes the observed values into the attributes |
@@ -130,9 +131,9 @@ observation equal to the last) answers the resource without writing an event.
                              ▼                                                       ▼ │ (succeeded: new attributes;
                           failed ──── request-delete ────▶ deleting ◀─── request-delete ──┘  failed: back to active)
                              │                               │                       │
-                             │ registered (a retry)          │ retired / job ends     │ request-update
-                             ▼                               ▼                       ▼
-                          active                       deleted (410 for 90 days)   updating
+                             │ request-retry                 │ retired / job ends    │ request-update
+                             ▼ (or registered: active)       ▼                       ▼
+                          pending                      deleted (410 for 90 days)   updating
   import ───▶ active                                   ▲
   observed not_found on a type whose notFound is deleted ─┘
 ```
@@ -145,6 +146,7 @@ observation equal to the last) answers the resource without writing an event.
 | `ProvisioningSucceeded` | the registry registered it as active, or a succeeded job | `active`, with the registry id, provider id and attributes |
 | `ProvisioningFailed` | a failed, cancelled or rolled-back job, or no job at all | `pending` → `failed`; an update or delete goes back to `active` |
 | `UpdateRequested`, `DeleteRequested` | the commands | `updating`, `deleting` |
+| `RetryRequested` | `:request-retry` | `failed` → `pending`; `retryOf` names the failed job, whose failure stays on record until the retry succeeds |
 | `Deleted` | the platform retired it, a delete job succeeded, or a `not_found` observation | `deleted`, with `deletedAt` and `tombstoneUntil` |
 | `Tagged`, `Observed`, `DriftDetected`, `DriftResolved` | the commands | Tags, the observed snapshot, the open finding; the state stays |
 
@@ -171,6 +173,14 @@ asks the platform for that job and applies its outcome at once (`ChangeRequests`
 never waits on a job that has ended. A job whose context names another wfrn is never applied. A
 new change forgets the previous change's job (`lastJobId` is the request's `jobId`, or none until
 the job is known).
+
+A failed create is retried the same way (hub decision 24): the BFF reruns the failed job with the
+platform's `:rerun` from `lastError.failedStep`, a new job that keeps the wfrn as its context, then
+records `:request-retry` naming it; a refused rerun records nothing. The retry makes the resource
+`pending`, and the rerun's events end it as they end a create. The failed job's events can never
+end the retry: a failure the resource has on record is not recorded again, and that job's start is
+no event. When the rerun's outcome came before the retry, a retry naming that job changes nothing
+(it succeeded: the resource is already `active`) or is recorded and settled with the second failure.
 Lifecycle classes come from the type's `console.lifecycle` map (`building` → pending, `ready` →
 active, `retired` → deleted) with sensible fallbacks for types without one.
 
@@ -181,9 +191,11 @@ follower checkpoints `platform-feed` after each event, so a replay after a crash
 destroys the account's data key.
 
 The reaper (`console.reaper.*`) runs every minute. A resource `pending` for more than five minutes
-is checked against the registry first (active → succeeded, retired → deleted), then the account's
-jobs for the wfrn (none → `console.noJob`, a terminal job → its outcome, a running job → wait and
-warn past the job timeout). A resource `updating` or `deleting` for more than two hours is settled
+is checked against the registry first (active → succeeded, retired → deleted), then, while the
+record is missing, building or failed, the account's jobs for the wfrn, leaving out the failed job a
+retry follows (none → `console.noJob`, a terminal job → its outcome, a running job → wait and warn
+past the job timeout); so a retry recorded before a rerun the platform then refused fails as
+`console.noJob`. A resource `updating` or `deleting` for more than two hours is settled
 by its own job first, since the registry still holds it and cannot tell: the change's job ended →
 its outcome; running → wait. When the platform knows no job for the change and none runs on the
 wfrn, the registry decides: an update ends with the registry's attributes, a delete whose record is
@@ -263,6 +275,7 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 10 | A forbidden backfill does not fail an import | The console-internal service account holds `resources:backfill` (console-libs `f44213a`); a deployment whose token lacks it still takes what already carries a wfrn under management |
 | 11 | `reveal=sensitive` is honored for internal principals and account admins only | The token's `roles` claim decides (hub decision 21), never a group name; a token without roles has none; anyone else is answered masked, not refused |
 | 12 | A change and its job in either order | The BFF starts an update's or a delete's job before it records the change, so a refused start never leaves a resource `updating`; the service settles a request whose named job already ended, and the reaper settles a change by its own job, so neither order can strand a resource |
+| 13 | A failed create is retried by an explicit command | `:request-retry` (hub decision 24) rather than letting a job's start revive a failed resource: the trail shows who retried, the page shows `pending` at once, a late event of the failed job cannot pass for the retry, and a second failure is recorded; the BFF reruns the failed job from its failed step, so no one handles the original input, whose secrets it only sees masked |
 
 ## CI and release
 

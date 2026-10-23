@@ -38,6 +38,14 @@ class ResourceDeciderTest {
         return ResourceFold.apply(s, registered);
     }
 
+    private static Resource failed() {
+        Resource p = pending();
+        Resource s = ResourceFold.apply(p, ResourceDecider.jobStarted(p, new Commands.JobStarted("job_1", "create-vm", "2.0.1", by("platform")), t(1))
+                .orElseThrow());
+        return ResourceFold.apply(s, ResourceDecider.jobFailed(s, new Commands.JobFailed("job_1", "create-vm", "2.0.1", "failed", "provider.quota",
+                "createVm", "quota exceeded", by("platform")), t(5)));
+    }
+
     @Test
     void aMintOpensAPendingResourceAtVersionOne() {
         Resource r = pending();
@@ -213,12 +221,89 @@ class ResourceDeciderTest {
     }
 
     @Test
-    void aFailedCreateCanBeDeletedAndRetried() {
+    void aRetryMakesAFailedResourcePendingForTheJobThatRerunsTheCreate() {
+        Resource f = failed();
+        ResourceEvent retry = ResourceDecider.requestRetry(f, new Commands.RequestRetry(null, null, null, by("dana")), t(10)).orElseThrow();
+        assertThat(retry.type()).isEqualTo(ResourceEventType.RETRY_REQUESTED);
+        assertThat(retry.state()).isEqualTo(ResourceState.PENDING);
+        assertThat(retry.actor()).isEqualTo("dana");
+        assertThat(retry.data().get("retryOf").asText()).isEqualTo("job_1");
+        assertThat(retry.data().get("workflow").asText()).as("the create workflow when the request names none").isEqualTo("create-vm");
+        Resource retrying = ResourceFold.apply(f, retry);
+        assertThat(retrying.state()).isEqualTo(ResourceState.PENDING);
+        assertThat(retrying.lastJobId()).as("no job until the rerun is known").isNull();
+        assertThat(retrying.lastError().jobId()).as("the failure stays on record until the retry succeeds").isEqualTo("job_1");
+
+        assertThat(ResourceDecider.jobStarted(retrying, new Commands.JobStarted("job_1", "create-vm", "2.0.1", by("platform")), t(11)))
+                .as("the failed job cannot pass for the retry").isEmpty();
+        Resource rerun = ResourceFold.apply(retrying, ResourceDecider.jobStarted(retrying, new Commands.JobStarted("job_2", "create-vm", "2.0.1",
+                by("platform")), t(12)).orElseThrow());
+        assertThat(rerun.state()).isEqualTo(ResourceState.PENDING);
+        assertThat(rerun.lastJobId()).isEqualTo("job_2");
+
+        Resource failedAgain = ResourceFold.apply(rerun, ResourceDecider.jobFailed(rerun, new Commands.JobFailed("job_2", "create-vm", "2.0.1", "failed",
+                "provider.timeout", "waitReady", null, by("platform")), t(20)));
+        assertThat(failedAgain.state()).isEqualTo(ResourceState.FAILED);
+        assertThat(failedAgain.lastError().jobId()).as("the second failure is recorded").isEqualTo("job_2");
+        assertThat(failedAgain.lastError().failedStep()).isEqualTo("waitReady");
+
+        Resource done = ResourceFold.apply(rerun, ResourceDecider.registered(rerun, new Commands.Registration("job_2", "create-vm", "2.0.1", "vm-8", "vm-8",
+                "web-03", Fixtures.attributes("web-03", 2, 4), by("platform")), t(20)).orElseThrow());
+        assertThat(done.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(done.lastError()).isNull();
+        assertThat(done.registryId()).isEqualTo("vm-8");
+    }
+
+    @Test
+    void onlyAFailedResourceCanBeRetried() {
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(active(), new Commands.RequestRetry(null, null, null, by("dana")), t(10)))
+                .isInstanceOf(ConflictException.class).hasMessageStartingWith("resource.notFailed")
+                .extracting(e -> ((ConflictException) e).detail()).isEqualTo(Map.of("state", "active", "jobId", "job_1"));
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(pending(), new Commands.RequestRetry(null, null, null, by("dana")), t(10)))
+                .isInstanceOf(ConflictException.class).hasMessageStartingWith("resource.notFailed");
+        Resource f = failed();
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(f, new Commands.RequestRetry(null, null, null, Fixtures.at(1, "dana")), t(10)))
+                .isInstanceOf(ConflictException.class).hasMessageStartingWith("version.mismatch");
+        Resource retrying = ResourceFold.apply(f, ResourceDecider.requestRetry(f, new Commands.RequestRetry(null, "create-vm-v2", "3.0.0", Fixtures.at(3,
+                "dana")), t(10)).orElseThrow());
+        assertThat(retrying.workflow()).as("a retry may name another workflow").isEqualTo("create-vm-v2");
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(retrying, new Commands.RequestRetry(null, null, null, by("dana")), t(11)))
+                .as("a retry is already under way").isInstanceOf(ConflictException.class).hasMessageStartingWith("resource.notFailed");
+        Resource deleting = ResourceFold.apply(f, ResourceDecider.requestDelete(f, new Commands.RequestDelete("job_9", "delete-vm", null, null, by("dana")),
+                t(12)));
+        Resource gone = ResourceFold.apply(deleting, ResourceDecider.deleted(deleting, new Commands.Deletion("job_9", null, by("platform")), t(13), TOMBSTONE)
+                .orElseThrow());
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(gone, new Commands.RequestRetry(null, null, null, by("dana")), t(14)))
+                .isInstanceOf(TombstoneException.class);
+    }
+
+    @Test
+    void aRetryNamingAJobAlreadyOnRecordChangesNothing() {
+        // the BFF reran the failed job before recording the retry, and the rerun's success came first
+        Resource f = failed();
+        Resource active = ResourceFold.apply(f, ResourceDecider.registered(f, new Commands.Registration("job_2", "create-vm", "2.0.1", "vm-8", "vm-8",
+                "web-03", Fixtures.attributes("web-03", 2, 4), by("platform")), t(20)).orElseThrow());
+        assertThat(ResourceDecider.requestRetry(active, new Commands.RequestRetry("job_2", null, null, Fixtures.at(3, "dana")), t(21)))
+                .as("its outcome stands, whatever version the caller saw").isEmpty();
+        assertThatThrownBy(() -> ResourceDecider.requestRetry(active, new Commands.RequestRetry("job_3", null, null, by("dana")), t(21)))
+                .as("a job not on record does not make an active resource retryable").isInstanceOf(ConflictException.class)
+                .hasMessageStartingWith("resource.notFailed");
+
+        // named before its outcome: the retry records the job, and the job's start is no second event
+        Resource named = ResourceFold.apply(f, ResourceDecider.requestRetry(f, new Commands.RequestRetry("job_2", null, null, by("dana")), t(10))
+                .orElseThrow());
+        assertThat(named.state()).isEqualTo(ResourceState.PENDING);
+        assertThat(named.lastJobId()).isEqualTo("job_2");
+        assertThat(ResourceDecider.jobStarted(named, new Commands.JobStarted("job_2", "create-vm", "2.0.1", by("platform")), t(11))).isEmpty();
+    }
+
+    @Test
+    void aRegistrationAfterAFailureMakesTheResourceActive() {
         Resource p = pending();
         Resource f = ResourceFold.apply(p, ResourceDecider.jobFailed(p, new Commands.JobFailed("job_1", "create-vm", null, "failed", "x", null, null,
                 by("platform")), t(5)));
         assertThat(ResourceDecider.requestDelete(f, new Commands.RequestDelete(null, "delete-vm", null, null, by("dana")), t(6)).state())
-                .isEqualTo(ResourceState.DELETING);
+                .as("a failed create can be deleted").isEqualTo(ResourceState.DELETING);
         Resource retried = ResourceFold.apply(f, ResourceDecider.registered(f, new Commands.Registration("job_2", "create-vm", null, "vm-8", null,
                 "web-03", Fixtures.attributes("web-03", 2, 4), by("platform")), t(7)).orElseThrow());
         assertThat(retried.state()).isEqualTo(ResourceState.ACTIVE);

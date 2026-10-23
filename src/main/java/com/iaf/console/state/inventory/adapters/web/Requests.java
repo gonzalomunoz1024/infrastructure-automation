@@ -46,6 +46,16 @@ public final class Requests {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RetryRequest(Long expectedVersion, String actor, String jobId, String workflow, String workflowVersion) {
+        /** A retry with no body: the create workflow, no job yet. */
+        static final RetryRequest NONE = new RetryRequest(null, null, null, null, null);
+
+        Commands.RequestRetry command(String fallbackActor, String requestId) {
+            return new Commands.RequestRetry(jobId, workflow, workflowVersion, meta(expectedVersion, actor, fallbackActor, requestId));
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record TagRequest(Long expectedVersion, String actor, Map<String, String> set, List<String> removed) {
         Commands.Tag command(String fallbackActor, String requestId) {
             return new Commands.Tag(set, removed, meta(expectedVersion, actor, fallbackActor, requestId));

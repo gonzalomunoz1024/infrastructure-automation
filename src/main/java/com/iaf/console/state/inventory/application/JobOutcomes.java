@@ -10,6 +10,7 @@ import com.iaf.console.platform.client.PlatformPort;
 import com.iaf.console.platform.model.JobDetail;
 import com.iaf.console.state.inventory.domain.Commands;
 import com.iaf.console.state.inventory.domain.Resource;
+import com.iaf.console.state.inventory.domain.ResourceDecider;
 import com.iaf.console.state.inventory.domain.ResourceState;
 
 import reactor.core.publisher.Mono;
@@ -18,9 +19,10 @@ import reactor.core.publisher.Mono;
  * What a finished platform job means for the resource it was for. A success on a deleting resource
  * is its end; on anything else it is the registry's record (fetched now) becoming the resource's
  * attributes, or, when the job registered nothing, a failure to provision (pending) or a quiet end
- * of the update (updating). A failure, a cancel or a rollback is {@code ProvisioningFailed}. A job a
- * resource names can also be looked up and settled at once ({@link #settle}), for a change whose
- * job ended before the change was recorded.
+ * of the update (updating). A failure, a cancel or a rollback is {@code ProvisioningFailed}, once:
+ * the failure the resource has on record is never recorded again, so the failed job cannot end the
+ * retry that follows it. A job a resource names can also be looked up and settled at once
+ * ({@link #settle}), for a change whose job ended before the change was recorded.
  */
 public final class JobOutcomes {
 
@@ -100,7 +102,7 @@ public final class JobOutcomes {
                             PlatformResources.registration(record, job.jobId(), job.workflow(), job.workflowVersion(), job.meta())))
                     .switchIfEmpty(Mono.defer(() -> nothingRegistered(scope, current, job)));
         }
-        if (!current.state().busy()) {
+        if (!current.state().busy() || ResourceDecider.failureOnRecord(current, job.jobId())) {
             log.debug("job {} ended {} on {} which is {}: nothing to record", job.jobId(), job.status(), current.wfrn(), current.state().wire());
             return Mono.just(current);
         }

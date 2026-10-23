@@ -16,6 +16,7 @@ import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.state.inventory.domain.Commands;
 import com.iaf.console.state.inventory.domain.Resource;
+import com.iaf.console.state.inventory.domain.ResourceDecider;
 import com.iaf.console.state.inventory.domain.ResourceState;
 
 import reactor.core.publisher.Flux;
@@ -23,10 +24,11 @@ import reactor.core.publisher.Mono;
 
 /**
  * The reaper (WP 2.4): a resource that stays pending longer than the platform needs to start a job
- * is checked against the platform. The registry may already hold it (a missed event): then it is
- * registered. Else its jobs are looked up by wfrn: a finished job is applied as its outcome, a
- * running one is left to finish, and no job at all within the pending timeout is a failure
- * ({@code console.noJob}), so the console never shows a request that nothing is working on.
+ * is checked against the platform. The registry may already hold it ready (a missed event): then it
+ * is registered. Else its jobs are looked up by wfrn, leaving out the failed job a retry follows: a
+ * finished job is applied as its outcome, a running one is left to finish, and no job at all within
+ * the pending timeout is a failure ({@code console.noJob}), so the console never shows a request,
+ * or a retry the platform refused to rerun, that nothing is working on.
  * Updating and deleting resources that have given no outcome for too long are settled by their own
  * job first (the registry still holds an updating or deleting resource, so it cannot tell): the
  * job's outcome when it ended, a wait while it runs; when the platform knows no job for the change
@@ -118,14 +120,15 @@ public final class PendingReaper {
                     if (lifecycle == ResourceState.DELETED) {
                         return inventory.deleted(scope, r.wfrn(), new Commands.Deletion(null, record.id(), meta)).thenReturn("deleted");
                     }
-                    return Mono.just("waiting");
+                    return byJobs(scope, r, now, meta); // building, or failed on the platform's side: the jobs tell
                 }))
                 .switchIfEmpty(Mono.defer(() -> byJobs(scope, r, now, meta)));
     }
 
     private Mono<String> byJobs(AccountScope scope, Resource r, Instant now, Commands.Meta meta) {
         Mono<List<JobSummary>> jobs = platform.listJobs(JobFilter.ofAccount(r.accountId()).withWfrn(r.wfrn()).withLimit(20)).map(p -> p.items());
-        return jobs.flatMap(list -> {
+        return jobs.flatMap(all -> {
+            List<JobSummary> list = all.stream().filter(j -> !ResourceDecider.failureOnRecord(r, j.id())).toList();
             JobSummary latest = list.stream().filter(j -> j.startedAt() != null).max(Comparator.comparing(JobSummary::startedAt))
                     .orElse(list.isEmpty() ? null : list.get(0));
             if (latest == null) {

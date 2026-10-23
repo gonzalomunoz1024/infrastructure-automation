@@ -20,7 +20,10 @@ import com.iaf.console.platform.client.RequestOptions;
 import com.iaf.console.fake.identity.domain.Caller;
 import com.iaf.console.fake.identity.domain.DevUsers;
 import com.iaf.console.fake.runs.domain.ApprovalRecord;
+import com.iaf.console.platform.model.CommandAccepted;
 import com.iaf.console.platform.model.JobAccepted;
+import com.iaf.console.platform.model.JobStatus;
+import com.iaf.console.platform.model.RerunRequest;
 
 /**
  * A VM's whole life as the console drives it: minted here, built by a platform job the BFF starts
@@ -37,10 +40,15 @@ class ResourceJourneyTest extends DemoServiceTest {
 
     /** Waits until the platform says a job has ended. */
     private void awaitJobEnd(String jobId) {
+        awaitJob(jobId, status -> status.terminal(), "end");
+    }
+
+    /** Waits until the platform says a job is in a status the test waits for. */
+    private void awaitJob(String jobId, java.util.function.Predicate<JobStatus> reached, String what) {
         long deadline = System.nanoTime() + WAIT.toNanos();
         while (System.nanoTime() < deadline) {
             var job = console().getJob(jobId).block(WAIT);
-            if (job != null && job.status() != null && job.status().terminal()) {
+            if (job != null && job.status() != null && reached.test(job.status())) {
                 return;
             }
             try {
@@ -50,7 +58,7 @@ class ResourceJourneyTest extends DemoServiceTest {
                 throw new IllegalStateException(e);
             }
         }
-        throw new AssertionError("job " + jobId + " did not end within " + WAIT);
+        throw new AssertionError("job " + jobId + " did not " + what + " within " + WAIT);
     }
 
     /** What the BFF does after a mint: starts the platform job for the account's user, naming the wfrn. */
@@ -155,6 +163,63 @@ class ResourceJourneyTest extends DemoServiceTest {
         assertThat(body(dana.get().uri("/v1/resources?type=vm&name=" + name + "&state=deleted").exchange().expectStatus().isOk()).get("items")).hasSize(1);
         dana.post().uri(resource(wfrn, ":tag")).bodyValue(tag).exchange().expectStatus().isEqualTo(410);
     }
+    @Test
+    void aFailedCreateIsRetriedByRerunningItsJob() {
+        WebTestClient dana = as(ACCOUNT, "dana");
+        String name = "retry-" + UUID.randomUUID().toString().substring(0, 8);
+        String image = fake.demo().imageIds().get(0);
+        ObjectNode mint = json.createObjectNode().put("type", "vm").put("region", "global").put("name", name).put("workflow", "create-vm");
+        mint.putObject("input").put("name", name).put("image", image).put("size", "small").put("environment", "dev");
+        String wfrn = body(dana.post().uri("/v1/resources:mint").bodyValue(mint).exchange().expectStatus().isCreated()).get("wfrn").asText();
+
+        ObjectNode noCapacity = json.createObjectNode().put("provider", "vsphere").put("action", "vm.create");
+        noCapacity.putObject("fail").put("class", "provider.capacity").put("message", "no capacity left in the cluster").put("retryable", false)
+                .put("status", 409).put("times", 1);
+        fake.world().mutate(noCapacity);
+        JobAccepted create = startJob(PlatformOperation.CREATE_VM, Map.of(), Map.of("name", name, "image", image, "size", "small", "environment", "dev"),
+                wfrn);
+        // the platform pauses a failed step for a decision; the user gives up on it, and the create fails
+        awaitJob(create.jobId(), status -> status == JobStatus.NEEDS_ATTENTION, "stop at the failed step");
+        assertThat(console().abortJob(create.jobId(), onBehalfOfDana(wfrn, "abort-")).block(WAIT)).isNotNull();
+        JsonNode failed = await(() -> getResource(dana, wfrn), r -> "failed".equals(r.get("state").asText()), "the create to fail");
+        assertThat(failed.get("lastError").get("jobId").asText()).isEqualTo(create.jobId());
+        assertThat(failed.get("lastError").get("failedStep").asText()).isEqualTo("createVm");
+
+        // the BFF's order: the platform reruns the failed job from its failed step (the wfrn stays its context), then the retry names the rerun
+        String rerun = rerun(create.jobId(), failed.get("lastError").get("failedStep").asText(), wfrn);
+        JsonNode retried = body(dana.post().uri(resource(wfrn, ":request-retry")).header("Idempotency-Key", "retry-" + name)
+                .bodyValue(json.createObjectNode().put("jobId", rerun)).exchange().expectStatus().isOk());
+        assertThat(retried.get("state").asText()).as("pending until the rerun ends, unless it already has").isIn("pending", "active");
+        assertThat(retried.get("lastJobId").asText()).isEqualTo(rerun);
+        JsonNode active = await(() -> getResource(dana, wfrn), r -> "active".equals(r.get("state").asText()), "the rerun to make the VM active");
+        assertThat(active.get("lastJobId").asText()).isEqualTo(rerun);
+        assertThat(active.path("lastError").isMissingNode() || active.path("lastError").isNull()).as("the failure is behind it").isTrue();
+        assertThat(active.get("registryId").asText()).isNotBlank();
+
+        JsonNode events = body(dana.get().uri(resource(wfrn, "/events")).exchange().expectStatus().isOk());
+        List<String> types = new ArrayList<>();
+        events.get("items").forEach(e -> types.add(e.get("type").asText()));
+        assertThat(types).startsWith("ResourceRequested", "ProvisioningStarted", "ProvisioningFailed").endsWith("ProvisioningSucceeded")
+                .containsOnlyOnce("ProvisioningFailed");
+        dana.post().uri(resource(wfrn, ":request-retry")).exchange().expectStatus().isEqualTo(409);
+    }
+
+    /** What the BFF does to retry: reruns the failed job from a step for the account's user; answers the new job's id. */
+    private String rerun(String jobId, String fromStep, String wfrn) {
+        Accepted<CommandAccepted> accepted = console().rerunJob(jobId, new RerunRequest(fromStep, null), onBehalfOfDana(wfrn, "rerun-")).block(WAIT);
+        assertThat(accepted).isNotNull();
+        assertThat(accepted.body().id()).isNotEqualTo(jobId);
+        return accepted.body().id();
+    }
+
+    /** How the BFF calls the platform for the account's user about one resource. */
+    private RequestOptions onBehalfOfDana(String wfrn, String keyPrefix) {
+        OnBehalfOfAssertions.Signer signer = new OnBehalfOfAssertions.Signer(fake.verifier().demoKey(), fake.verifier().issuer(),
+                fake.verifier().audience());
+        return RequestOptions.none().withOnBehalfOf(signer.sign(DANA, ACCOUNT, "global")).withResourceWfrn(wfrn)
+                .withConsoleRequestId("req-" + UUID.randomUUID()).withIdempotencyKey(keyPrefix + UUID.randomUUID());
+    }
+
     /** A delete is destructive and waits for an approval on the platform; an approver of the group gives it, as the demo seed does. */
     private void approve(String jobId) {
         Caller admin = DevUsers.byName(DevUsers.DEFAULT);

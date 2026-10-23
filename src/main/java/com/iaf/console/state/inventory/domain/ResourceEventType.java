@@ -2,7 +2,7 @@ package com.iaf.console.state.inventory.domain;
 
 import com.fasterxml.jackson.annotation.JsonValue;
 
-/** The twelve event types of {@code state.resources}, with their PascalCase wire names. */
+/** The thirteen event types of {@code state.resources}, with their PascalCase wire names. */
 public enum ResourceEventType {
     RESOURCE_REQUESTED("ResourceRequested"),
     PROVISIONING_STARTED("ProvisioningStarted"),
@@ -15,7 +15,8 @@ public enum ResourceEventType {
     TAGGED("Tagged"),
     DELETE_REQUESTED("DeleteRequested"),
     DELETED("Deleted"),
-    IMPORTED("Imported");
+    IMPORTED("Imported"),
+    RETRY_REQUESTED("RetryRequested");
 
     private final String wire;
 

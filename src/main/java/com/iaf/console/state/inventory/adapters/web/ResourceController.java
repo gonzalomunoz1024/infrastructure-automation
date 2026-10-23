@@ -198,6 +198,14 @@ public final class ResourceController {
         return on(exchange, wfrn, key, body, (scope, actor) -> changes.requestDelete(scope, wfrn, body.command(actor, requestId)));
     }
 
+    @PostMapping("/v1/wfrn/{wfrn}:request-retry")
+    public Mono<ResponseEntity<ObjectNode>> requestRetry(ServerWebExchange exchange, @PathVariable String wfrn,
+            @RequestBody(required = false) Requests.RetryRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
+            @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        Requests.RetryRequest retry = body == null ? Requests.RetryRequest.NONE : body;
+        return on(exchange, wfrn, key, retry, (scope, actor) -> changes.requestRetry(scope, wfrn, retry.command(actor, requestId)));
+    }
+
     @PostMapping("/v1/wfrn/{wfrn}:tag")
     public Mono<ResponseEntity<ObjectNode>> tag(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.TagRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,

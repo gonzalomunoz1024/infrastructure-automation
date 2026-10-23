@@ -17,8 +17,9 @@ import com.iaf.console.kit.errors.ConflictException;
  * {@code ProvisioningStarted} keeps it where it is (and records the job), {@code ProvisioningSucceeded}
  * makes it active, {@code ProvisioningFailed} makes a pending resource failed and ends an update or
  * a delete (the resource is still there, so active), {@code UpdateRequested} and {@code DeleteRequested}
- * need an idle resource (one change at a time), {@code Deleted} is the tombstone, {@code Imported}
- * opens a resource straight in active (or brings a tombstone back), and the rest leave the state alone.
+ * need an idle resource (one change at a time), {@code RetryRequested} makes a failed resource pending
+ * again, {@code Deleted} is the tombstone, {@code Imported} opens a resource straight in active (or
+ * brings a tombstone back), and the rest leave the state alone.
  */
 public final class Transitions {
 
@@ -69,6 +70,11 @@ public final class Transitions {
                 case ACTIVE, FAILED -> DELETING;
                 case DELETING -> throw new ConflictException("resource.deleting: a delete is already under way", detail(resource));
                 default -> throw busy(resource, current);
+            };
+            case RETRY_REQUESTED -> switch (current) {
+                case FAILED -> PENDING;
+                default -> throw new ConflictException("resource.notFailed: only a failed resource can be retried, this one is " + current.wire(),
+                        detail(resource));
             };
             case DELETED -> DELETED;
             case OBSERVED, DRIFT_DETECTED, DRIFT_RESOLVED, TAGGED -> current;
