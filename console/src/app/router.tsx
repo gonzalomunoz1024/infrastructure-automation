@@ -26,6 +26,10 @@ export type RouteName =
   | 'iam-keys'
   | 'iam-requests'
   | 'iam-request'
+  | 'iam-reviews'
+  | 'iam-review'
+  | 'iam-elevations'
+  | 'org-accounts'
   | 'groups'
   | 'group'
   | 'tag-editor'
@@ -66,6 +70,11 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-keys', pattern: '/iam/access-keys', title: 'Access keys' },
   { name: 'iam-requests', pattern: '/iam/access-requests', title: 'Access requests' },
   { name: 'iam-request', pattern: '/iam/access-requests/:id', title: 'Access request' },
+  // access over time (phases 7 and 9): review campaigns, roles held for a while, the organization's accounts
+  { name: 'iam-reviews', pattern: '/iam/access-reviews', title: 'Access reviews' },
+  { name: 'iam-review', pattern: '/iam/access-reviews/:id', title: 'Access review' },
+  { name: 'iam-elevations', pattern: '/iam/elevations', title: 'Elevations' },
+  { name: 'org-accounts', pattern: '/organization/accounts', title: 'Accounts' },
   // resource groups and tags (phase 4): across every type of the account and region
   { name: 'groups', pattern: '/resource-groups', title: 'Resource groups' },
   { name: 'group', pattern: '/resource-groups/:id', title: 'Resource group' },

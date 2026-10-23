@@ -1,4 +1,5 @@
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, SavedFilter, SavedView } from '../lib/types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, HeldElevation, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, SavedFilter, SavedView } from '../lib/types'
+import type { AccessState } from './access'
 
 /*
  * The mock's identity directory, seeded as the identity service's demo seeds it (and as the BFF's
@@ -21,6 +22,9 @@ export interface DirectoryAccount {
   name: string
   owningTeam: string
   status: 'active' | 'suspended' | 'closed'
+  /** when and why it was closed (WP 7.7) */
+  closedAt?: string
+  closeReason?: string
   defaultRegion: string
   /** the platform service account the account is bound to (P-03) */
   platformServiceAccountId: string
@@ -83,9 +87,9 @@ export function policiesFor(accountId: string): IamPolicy[] {
   const managed = (policyId: string, description: string, statements: IamStatement[]): IamPolicy => ({ policyId, name: policyId, description, builtIn: true, version: 1, updatedAt: born, statements })
   return [
     // a person always sees their own access requests; reading the account's is for those who decide them, auditors and admins
-    managed('managed-viewer', 'The viewer role’s policy: every read, no change', [allow('reads', ['*:get', '*:list', '*:observe', '*:history', 'search:query', 'cost:get', 'cost:list', 'access-request:create', 'quota:request-increase'], all, ['access-request:get', 'access-request:list'])]),
+    managed('managed-viewer', 'The viewer role’s policy: every read, no change', [allow('reads', ['*:get', '*:list', '*:observe', '*:history', 'search:query', 'cost:get', 'cost:list', 'access-request:create', 'quota:request-increase', 'elevation:create'], all, ['access-request:get', 'access-request:list', 'access-review:*', 'elevation:list', 'elevation:get'])]),
     managed('managed-operator', 'The operator role’s policy: everything but deletes and IAM', [
-      allow('changes', ['*:*'], all, ['*:delete', 'iam:*', 'quota:set', 'account:update', 'access-request:get', 'access-request:list', 'access-request:decide']),
+      allow('changes', ['*:*'], all, ['*:delete', 'iam:*', 'quota:set', 'account:update', 'access-request:get', 'access-request:list', 'access-request:decide', 'access-review:*', 'elevation:list', 'elevation:get', 'elevation:decide', 'elevation:revoke']),
       allow('iam-reads', ['iam:get', 'iam:list'], all),
     ]),
     managed('managed-account-admin', 'The account-admin role’s policy: everything', [allow('everything', ['*:*'], all)]),
@@ -158,6 +162,8 @@ export interface Directory {
   counters: { groups: number; keys: number; requests: number; quotaRequests: number }
   /** by person: what `/console/v1/preferences` keeps (phase 3) */
   preferences?: Record<string, Preferences>
+  /** access reviews and roles held for a while (./access, WP 9.11 and 9.12), made on first use */
+  access?: AccessState
 }
 
 export function buildDirectory(): Directory {
@@ -248,15 +254,21 @@ export function isMember(dir: Directory, accountId: string, userId: string): boo
   return groupsOf(dir, accountId, userId).length > 0
 }
 
-/** The accounts a person belongs to, in the directory's order. */
-export function membershipsOf(dir: Directory, userId: string): AccountSummary[] {
-  return dir.accounts.filter((a) => isMember(dir, a.accountId, userId)).map((a) => accountSummaryFor(dir, a.accountId, userId))
+/** The roles a person holds in an account for a while (an active elevation or break-glass access), until each one's `until`. */
+export function heldOf(dir: Directory, accountId: string, userId: string, now = Date.now()): HeldElevation[] {
+  return (dir.access?.elevations[accountId] ?? []).filter((e) => e.user.userId === userId && e.status === 'active' && !!e.until && Date.parse(e.until) > now).map((e) => ({ elevationId: e.elevationId, role: e.role, kind: e.kind, until: e.until! }))
 }
 
-export function accountSummaryFor(dir: Directory, accountId: string, userId: string): AccountSummary {
+/** The accounts a person belongs to, in the directory's order; a closed account is left out, as sign-in leaves it out. */
+export function membershipsOf(dir: Directory, userId: string, now = Date.now()): AccountSummary[] {
+  return dir.accounts.filter((a) => a.status !== 'closed' && isMember(dir, a.accountId, userId)).map((a) => accountSummaryFor(dir, a.accountId, userId, now))
+}
+
+export function accountSummaryFor(dir: Directory, accountId: string, userId: string, now = Date.now()): AccountSummary {
   const a = accountOf(dir, accountId)
   if (!a) throw new Error(`Unknown account ${accountId}`)
-  return { accountId: a.accountId, name: a.name, status: a.status, defaultRegion: a.defaultRegion, owningTeam: a.owningTeam, roles: rolesOf(dir, accountId, userId), groups: groupsOf(dir, accountId, userId).map((g) => g.name) }
+  const held = heldOf(dir, accountId, userId, now)
+  return { accountId: a.accountId, name: a.name, status: a.status, defaultRegion: a.defaultRegion, owningTeam: a.owningTeam, roles: sortRoles([...rolesOf(dir, accountId, userId), ...held.map((h) => h.role)]), groups: groupsOf(dir, accountId, userId).map((g) => g.name), ...(held.length ? { elevations: held } : {}) }
 }
 
 /** The people holding account-admin in the account. */
@@ -312,6 +324,8 @@ export interface Decision {
   denied?: Denial
   /** the statement that allowed it */
   via?: { policyId: string; statement?: string; role?: string }
+  /** only a role held for a while allowed it (WP 9.12): the roles from groups are tried first */
+  elevated?: boolean
 }
 
 /** `*` matches any run of characters, none included; the rest is literal. */
@@ -377,7 +391,7 @@ export function suggestedRoleFor(dir: Directory, accountId: string, action: stri
 }
 
 /** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups'])
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {
@@ -399,6 +413,8 @@ export function platformAllows(account: DirectoryAccount, action: string): boole
 export interface AuthorizeContext {
   accountId: string
   userId: string
+  /** the clock a held role is judged by */
+  now?: number
 }
 
 /**
@@ -410,9 +426,14 @@ export interface AuthorizeContext {
 export function authorize(dir: Directory, ctx: AuthorizeContext, action: string, resource: string): Decision {
   const account = accountOf(dir, ctx.accountId)
   if (!account) return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `account ${ctx.accountId} unknown`, requestable: false } }
-  const roles = rolesOf(dir, ctx.accountId, ctx.userId)
+  if (account.status === 'closed') return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: 'account closed', requestable: false } }
+  const fromGroups = rolesOf(dir, ctx.accountId, ctx.userId)
+  const held = heldOf(dir, ctx.accountId, ctx.userId, ctx.now).map((h) => h.role)
+  const roles = sortRoles([...fromGroups, ...held])
   if (!roles.length) return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `not a member of ${account.name}`, requestable: false } }
   const verdict = evaluateRoles(dir, ctx.accountId, roles, action, resource)
+  // the roles from groups first, so `elevated` marks only what the held role alone allows
+  const elevated = held.length > 0 && verdict.effect === 'allow' && evaluateRoles(dir, ctx.accountId, fromGroups, action, resource).effect !== 'allow'
   const suggested = suggestedRoleFor(dir, ctx.accountId, action, resource)
   const requestable = !!suggested && !roles.includes(suggested)
   if (verdict.effect === 'deny') {
@@ -426,7 +447,7 @@ export function authorize(dir: Directory, ctx: AuthorizeContext, action: string,
     const scope = platformScopeOf(action)
     return { allowed: false, denied: { layer: 'platform', action, resource, reason: `The platform's role for ${account.name} (${account.platformServiceAccountId}) has no ${scope} scope`, role: roles[0], scope, serviceAccount: account.platformServiceAccountId, requestable: true } }
   }
-  return { allowed: true, via: { policyId: verdict.policyId!, statement: verdict.statement, role: verdict.role } }
+  return { allowed: true, via: { policyId: verdict.policyId!, statement: verdict.statement, role: verdict.role }, ...(elevated ? { elevated: true } : {}) }
 }
 
 /* ----------------------------------------------------------------------------

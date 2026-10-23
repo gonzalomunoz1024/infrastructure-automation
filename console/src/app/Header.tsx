@@ -4,6 +4,7 @@ import { BrandLockup } from './BrandMark'
 import { RoleTag } from './RoleTag'
 import { UserMenuButton } from './UserMenuButton'
 import { useAccessRequestQueue } from './access'
+import { AccessTimeBellItems, useAccessTimeQueue } from './accessTimeBell'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
 import { TOOL_SECTIONS, toolPath, toolsIn } from './tools'
@@ -251,7 +252,9 @@ function MenuHeading({ children }: { children: ReactNode }) {
 function NotificationsBell() {
   const queue = useAccessRequestQueue()
   const items = queue.toDecide
-  const count = items.length
+  // access reviews and elevations that wait for this person sit beside the access requests
+  const timed = useAccessTimeQueue()
+  const count = items.length + timed.count
   return (
     <HeaderMenu label={count ? `Notifications, ${count} to decide` : 'Notifications'} icon="bell" role="dialog" width="w-80" badge={count}>
       {(close) =>
@@ -259,8 +262,9 @@ function NotificationsBell() {
           <EmptyState compact icon="bell" title="Nothing to decide" message={queue.readable ? `Access requests waiting for you land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
         ) : (
           <div>
-            <MenuHeading>Access requests to decide</MenuHeading>
-            <ul aria-label="Access requests to decide">
+            <AccessTimeBellItems queue={timed} close={close} />
+            {items.length > 0 && <MenuHeading>Access requests to decide</MenuHeading>}
+            <ul aria-label="Access requests to decide" hidden={items.length === 0}>
               {items.map((r) => (
                 <li key={r.requestId}>
                   <Link to={pathFor('iam-request', { id: r.requestId })} onClick={close} className="block px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">

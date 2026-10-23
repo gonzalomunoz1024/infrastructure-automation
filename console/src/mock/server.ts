@@ -9,6 +9,7 @@ import { jobRoutes, stepsOf } from './jobs'
 import { tagRoutes } from './tags'
 import { driftRoutes } from './drift'
 import { monitoringRoutes } from './monitoring'
+import { accessRoutes, isOrganizationAdmin, settleAccess } from './access'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -200,7 +201,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
   const sessionBody = (s: MockSession): Session => {
     const person = personOf(dir, s.userId)!
-    const account = accountSummaryFor(dir, s.accountId, s.userId)
+    const account = accountSummaryFor(dir, s.accountId, s.userId, now())
     return {
       user: { userId: person.id, email: person.email, name: person.name, groups: account.groups },
       account,
@@ -208,6 +209,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       csrfToken: csrfTokenOf(person.id),
       expiresAt: new Date(Date.parse(s.authTime) + SESSION_TTL_MS).toISOString(),
       authTime: s.authTime,
+      ...(isOrganizationAdmin(person.id) ? { organizationAdmin: true } : {}),
     }
   }
 
@@ -226,7 +228,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
   /** Every type with the decision for each of its verbs, for this person in this account and region. */
   const consoleTypes = (s: MockSession): BffConsoleType[] => {
-    const ctx = { accountId: s.accountId, userId: s.userId }
+    const ctx = { accountId: s.accountId, userId: s.userId, now: now() }
     return data.resourceTypes.map((rt) => {
       const service = serviceOf(rt)
       const pattern = `wfrn:${data.partition}:${service}:${s.region}:${s.accountId}:${rt.name}/*`
@@ -242,10 +244,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       ]
       const actions = [...standard.filter((a) => !fromCatalog.some((c) => c.verb === a.verb)), ...fromCatalog].map((a) => {
         const d = authorize(dir, ctx, `${service}:${a.verb}`, pattern)
-        return { ...a, allowed: d.allowed, denied: d.denied }
+        return { ...a, allowed: d.allowed, denied: d.denied, ...(d.elevated ? { elevated: true } : {}) }
       })
       const type: BffConsoleType = { key: `${service}/${rt.name}`, type: rt.name, service, plural: rt.plural, title: rt.console?.title ?? rt.plural, actions, etag: '' }
-      type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId })
+      type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId, roles: accountSummaryFor(dir, s.accountId, s.userId, now()).roles })
       return type
     })
   }
@@ -257,7 +259,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
   seedQuotaOverrides(dir, Object.fromEntries(dir.accounts.map((a) => [a.accountId, usedOf(a.accountId)])))
 
   const consoleRoutes = (req: MockRequest, s: MockSession, path: string, params: URLSearchParams, method: string): MockResponse => {
-    const ctx = { accountId: s.accountId, userId: s.userId }
+    const ctx = { accountId: s.accountId, userId: s.userId, now: now() }
     const can = (action: string, resource: string) => authorize(dir, ctx, action, resource)
     const iam = (kind: string, id?: string) => iamResource(s.accountId, kind, id)
     const body = bodyOf(req)
@@ -278,7 +280,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
       return { status: 405, body: { error: `${method} is not allowed on the session` } }
     }
-    if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId), next: null } }
+    if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId, now()), next: null } }
     if (path === '/console/v1/regions') return { status: 200, body: { items: [{ name: data.regionName, title: 'Global', status: 'available', environments: ['dev', 'test', 'prod'], types: data.resourceTypes.map((t) => t.name) }], next: null } }
 
     if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, consoleTypes(s), req)
@@ -560,6 +562,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
     /* the tag policy, the Tag Editor and resource groups (phase 4) */
     const routeCtx = { session: s, body, headers: req.headers, now: now() }
+
+    /* access reviews, elevations, break-glass and the organization's accounts (phase 7 and 9) */
+    const timed = accessRoutes(data, routeCtx, path, params, method)
+    if (timed) return timed
     const tagged = tagRoutes(data, routeCtx, path, params, method)
     if (tagged) return tagged
 
@@ -584,6 +590,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     const method = req.method.toUpperCase()
     // the jobs the console started move on the clock: approvals land, applies finish, resources settle
     settleConsole(data, now())
+    settleAccess(dir, now())
 
     /* the demo identity provider and the BFF */
     if (path === '/demo-idp/people' && method === 'GET') return { status: 200, body: { items: demoPeople(dir), next: null } }
