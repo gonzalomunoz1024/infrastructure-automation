@@ -460,14 +460,14 @@ public abstract class PlatformContractTest {
         String to = new Wfrn(from.partition(), from.service(), from.region(), platform.otherAccountId(), from.type(), from.id()).format();
         long high = block(feedReader().snapshotResources(null, null, 1)).highWaterSeq();
 
-        Resource moved = block(console().rehomeResource(before.id(), new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()));
+        Resource moved = block(console().rehomeResource(before.id(), new RehomeRequest(before.wfrn(), to, platform.otherAccountId()), RequestOptions.none()));
         assertThat(moved.id()).isEqualTo(before.id());
         assertThat(moved.wfrn()).isEqualTo(to);
         assertThat(moved.accountId()).isEqualTo(platform.otherAccountId());
         assertThat(moved.region()).isEqualTo(before.region());
         assertThat(moved.builtFrom()).isEqualTo(before.builtFrom());
         assertThat(moved.previousWfrns()).containsExactly(before.wfrn());
-        Resource again = block(console().rehomeResource(before.id(), new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()));
+        Resource again = block(console().rehomeResource(before.id(), new RehomeRequest(before.wfrn(), to, platform.otherAccountId()), RequestOptions.none()));
         assertThat(again.wfrn()).as("the same body again changes nothing").isEqualTo(to);
         assertThat(again.updatedAt()).isEqualTo(moved.updatedAt());
 
@@ -488,14 +488,18 @@ public abstract class PlatformContractTest {
         assertThat(event.data().path("previousWfrn").asText()).isEqualTo(before.wfrn());
         assertThat(registered.items()).filteredOn(e -> before.id().equals(e.aggregateId())).as("one move, one event").hasSize(1);
 
-        String elsewhere = new Wfrn(from.partition(), from.service(), from.region(), platform.accountId(), from.type(), from.id()).format();
-        PlatformException rehomed = failure(console().rehomeResource(before.id(), new RehomeRequest(elsewhere, platform.accountId()),
+        String back = new Wfrn(from.partition(), from.service(), from.region(), platform.accountId(), from.type(), from.id()).format();
+        PlatformException stale = failure(admin().rehomeResource(before.id(), new RehomeRequest(before.wfrn(), back, platform.accountId()),
                 RequestOptions.none()));
-        assertThat(rehomed.isConflict()).isTrue();
-        assertThat(rehomed.errorText()).contains("resource.rehomed");
-        PlatformException wrongAccount = failure(admin().rehomeResource(vmId, new RehomeRequest(to, platform.accountId()), RequestOptions.none()));
+        assertThat(stale.isConflict()).as("a request naming a from the record has left").isTrue();
+        assertThat(stale.errorText()).contains("resource.rehomed");
+        Resource returned = block(admin().rehomeResource(before.id(), new RehomeRequest(to, back, platform.accountId()), RequestOptions.none()));
+        assertThat(returned.wfrn()).as("a record moves again").isEqualTo(back);
+        assertThat(returned.previousWfrns()).containsExactly(before.wfrn(), to);
+        assertThat(block(admin().getResourceByWfrn(to)).wfrn()).isEqualTo(back);
+        PlatformException wrongAccount = failure(admin().rehomeResource(vmId, new RehomeRequest(vmWfrn, to, platform.accountId()), RequestOptions.none()));
         assertThat(wrongAccount.isBadRequest()).as("the wfrn's account segment must be accountId").isTrue();
-        assertThat(failure(console().rehomeResource("vm-does-not-exist", new RehomeRequest(to, platform.otherAccountId()), RequestOptions.none()))
+        assertThat(failure(console().rehomeResource("vm-does-not-exist", new RehomeRequest(before.wfrn(), to, platform.otherAccountId()), RequestOptions.none()))
                 .isNotFound()).isTrue();
     }
 

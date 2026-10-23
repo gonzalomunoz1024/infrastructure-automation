@@ -553,14 +553,16 @@ paths:
       summary: Move a registry record to another account
       description: |
         P-23: the console moved the resource to another account of the same organization (hub
-        decision 30), so the record takes the new `wfrn` and `accountId`; its region stays. The old
-        wfrn joins `previousWfrns`, `GET /api/v1/resources/by-wfrn` still finds the record by it, and
-        `resource.registered` is emitted again with `data.previousWfrn`. The same body again answers
-        200 and changes nothing. 400 when the wfrn's account segment is not `accountId`, or its type
-        or region is not the record's; 409 `resource.rehomed` when the record has already moved to
-        another wfrn, `resource.busy` while a running job holds it, because that job's context names
-        the old account. For admins, or a service account holding `resources:rehome` (the `console`
-        preset); the BFF calls it after each move.
+        decision 30), so the record moves from `from` to the new `wfrn` and `accountId`; its region
+        stays. The old wfrn joins `previousWfrns`, `GET /api/v1/resources/by-wfrn` still finds the
+        record by it, and `resource.registered` is emitted again with `data.previousWfrn`. A record
+        moves as often as the console moves it, each move naming the wfrn it starts from. A record
+        already at `wfrn` answers 200 and changes nothing. 400 when the wfrn's account segment is not
+        `accountId`, or its type or region is not the record's; 409 `resource.rehomed` (with the
+        current wfrn) when the record is at neither `from` nor `wfrn`, `resource.busy` while a running
+        job holds it, because that job's context names the old account, and `wfrn.taken` when another
+        record holds `wfrn`. For admins, or a service account holding `resources:rehome` (the
+        `console` preset); the BFF calls it after each move.
       tags: [ Resources ]
       x-scopes: [ admin, resources:rehome ]
       x-platform-change: [ P-23 ]
@@ -5756,9 +5758,12 @@ components:
         at: { type: string, format: date-time }
     RehomeRequest:
       type: object
-      description: 'P-23: the account a record moves to, and the wfrn the console gave it there'
-      required: [ wfrn, accountId ]
+      description: 'P-23: the wfrn a record moves from, and the account and wfrn it moves to'
+      required: [ from, wfrn, accountId ]
       properties:
+        from:
+          $ref: '#/components/schemas/Wfrn'
+          description: 'The wfrn the record has now, as the state service''s move names it (`transferredFrom`)'
         wfrn: { $ref: '#/components/schemas/Wfrn' }
         accountId: { $ref: '#/components/schemas/AccountId' }
     BackfillRequest:

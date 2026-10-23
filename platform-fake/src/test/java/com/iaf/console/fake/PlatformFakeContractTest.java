@@ -55,7 +55,7 @@ class PlatformFakeContractTest extends PlatformContractTest {
         String from = vm.wfrn();
         Wfrn old = Wfrn.parse(from);
         String to = new Wfrn(old.partition(), old.service(), old.region(), "444444444444", old.type(), old.id()).format();
-        fake.registry().rehome(vm.id(), to, "444444444444", DevUsers.byName("gonzalo"), r -> false);
+        fake.registry().rehome(vm.id(), from, to, "444444444444", DevUsers.byName("gonzalo"), r -> false);
         HttpClient http = HttpClient.newHttpClient();
         HttpResponse<String> byOld = http.send(byWfrn(from), HttpResponse.BodyHandlers.ofString());
         assertThat(byOld.statusCode()).isEqualTo(200);

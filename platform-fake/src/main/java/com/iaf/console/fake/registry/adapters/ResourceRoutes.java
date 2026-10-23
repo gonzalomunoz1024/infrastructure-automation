@@ -148,7 +148,11 @@ public final class ResourceRoutes {
             if (wfrn == null || wfrn.isBlank()) {
                 throw ApiException.badRequest("wfrn is required");
             }
-            Registry.Rehomed rehomed = registry.rehome(id, wfrn, body.path("accountId").asText(null), caller, heldByARunningJob);
+            String from = body.path("from").asText(null);
+            if (from == null || from.isBlank()) {
+                throw ApiException.badRequest("from is required");
+            }
+            Registry.Rehomed rehomed = registry.rehome(id, from, wfrn, body.path("accountId").asText(null), caller, heldByARunningJob);
             return CommandResult.ok(rehomed.record().document());
         });
     }

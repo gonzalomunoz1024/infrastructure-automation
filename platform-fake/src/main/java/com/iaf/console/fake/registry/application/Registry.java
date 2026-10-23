@@ -473,28 +473,26 @@ public final class Registry {
     }
 
     /**
-     * Moves a record to another account under a new wfrn (P-23). The wfrn's account segment must be
-     * {@code accountId}, its type and region the record's; the same body again changes nothing. 409
-     * {@code resource.rehomed} once the record moved to another wfrn, {@code resource.busy} while
+     * Moves a record from {@code from} to another account under a new wfrn (P-23); a record moves as
+     * often as the console moves it, each old wfrn joining {@code previousWfrns}. A record already at
+     * {@code wfrn} changes nothing. The wfrn's account segment must be {@code accountId}, its type and
+     * region the record's. 409 {@code resource.rehomed} when the record is at neither {@code from} nor
+     * {@code wfrn}, {@code wfrn.taken} when another record holds the wfrn, {@code resource.busy} while
      * {@code busy} says a running job holds it.
      */
-    public synchronized Rehomed rehome(String id, String wfrn, String accountId, Caller caller, Predicate<ResourceRecord> busy) {
-        Wfrn target;
-        try {
-            target = Wfrn.parse(wfrn);
-        } catch (WfrnException e) {
-            throw ApiException.badRequest("wfrn.invalid: " + e.getMessage());
-        }
+    public synchronized Rehomed rehome(String id, String from, String wfrn, String accountId, Caller caller, Predicate<ResourceRecord> busy) {
+        Wfrn source = parseWfrn(from);
+        Wfrn target = parseWfrn(wfrn);
         if (accountId == null || !AccountScope.isAccountId(accountId)) {
             throw ApiException.badRequest("accountId must be a 12-digit account id");
         }
         ResourceRecord record = find(id).filter(r -> seesForRehome(caller, r)).orElseThrow(() -> ApiException.notFound("resource", id));
         String formatted = target.format();
-        if (formatted.equals(record.wfrn()) && accountId.equals(record.accountId())) {
-            return new Rehomed(record, false);
-        }
         if (!target.account().equals(accountId)) {
             throw ApiException.badRequest("the wfrn's account " + target.account() + " is not accountId " + accountId);
+        }
+        if (formatted.equals(record.wfrn())) {
+            return new Rehomed(record, false);
         }
         if (!target.type().equals(record.type())) {
             throw ApiException.badRequest("the wfrn names a " + target.type() + ", the record is a " + record.type());
@@ -506,8 +504,9 @@ public final class Registry {
             throw ApiException.badRequest("the wfrn's region " + target.region() + " is not the record's " + record.region()
                     + "; a move between regions is a new resource");
         }
-        if (!record.previousWfrns().isEmpty()) {
-            throw new ApiException(409, "resource.rehomed: the record already moved to " + record.wfrn(), Map.of("wfrn", record.wfrn()), null);
+        if (!source.format().equals(record.wfrn())) {
+            throw new ApiException(409, "resource.rehomed: the record is at " + record.wfrn() + ", not " + source.format(),
+                    Map.of("wfrn", record.wfrn()), null);
         }
         String holder = byWfrn.get(formatted);
         if (holder != null && !holder.equals(record.id())) {
@@ -518,7 +517,7 @@ public final class Registry {
         }
         long ns = clock.nanos();
         Instant at = FakeClock.fromNanos(ns);
-        String from = record.wfrn();
+        String previous = record.wfrn();
         record.rehome(formatted, accountId, at, ns);
         byWfrn.put(formatted, record.id());
         Delegation delegation = caller.delegation();
@@ -528,8 +527,19 @@ public final class Registry {
         Registrar by = new Registrar(REHOME, origin == null ? REHOME : origin.path("workflow").asText(REHOME), origin == null ? "0"
                 : origin.path("version").asText("0"), caller.actor(), record.owner(), new JobContext(accountId, record.region(), formatted, null,
                         Map.of()), person, null);
-        emitRegistered(record, by, false, at, from);
+        emitRegistered(record, by, false, at, previous);
         return new Rehomed(record, true);
+    }
+
+    private static Wfrn parseWfrn(String text) {
+        if (text == null || text.isBlank()) {
+            throw ApiException.badRequest("wfrn.invalid: a wfrn is required");
+        }
+        try {
+            return Wfrn.parse(text);
+        } catch (WfrnException e) {
+            throw ApiException.badRequest("wfrn.invalid: " + e.getMessage());
+        }
     }
 
     /** A caller who saw the record before it moved still finds it, so the same body again answers 200 rather than 404. */

@@ -142,7 +142,7 @@ class RegistryTest {
         String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
         long seq = events.lastSeq();
 
-        Registry.Rehomed moved = registry.rehome(record.id(), to, OTHER, DevUsers.byName("gonzalo"), r -> false);
+        Registry.Rehomed moved = registry.rehome(record.id(), from, to, OTHER, DevUsers.byName("gonzalo"), r -> false);
         assertThat(moved.moved()).isTrue();
         assertThat(record.wfrn()).isEqualTo(to);
         assertThat(record.accountId()).isEqualTo(OTHER);
@@ -163,14 +163,38 @@ class RegistryTest {
         assertThat(emitted.get(0).data().path("created").asBoolean()).isFalse();
         assertThat(emitted.get(0).context().accountId()).isEqualTo(OTHER);
 
-        Registry.Rehomed again = registry.rehome(record.id(), to, OTHER, DevUsers.byName("gonzalo"), r -> true);
+        Registry.Rehomed again = registry.rehome(record.id(), from, to, OTHER, DevUsers.byName("gonzalo"), r -> true);
         assertThat(again.moved()).as("the same body again changes nothing, even while a job runs").isFalse();
         assertThat(events.list(seq, 10, List.of("resource."), DevUsers.byName("gonzalo"))).hasSize(1);
 
         String third = new Wfrn(old.partition(), old.service(), old.region(), "333333333333", old.type(), old.id()).format();
-        assertThatThrownBy(() -> registry.rehome(record.id(), third, "333333333333", DevUsers.byName("gonzalo"), r -> false))
-                .isInstanceOf(ApiException.class).hasMessageContaining("resource.rehomed")
+        assertThatThrownBy(() -> registry.rehome(record.id(), from, third, "333333333333", DevUsers.byName("gonzalo"), r -> false))
+                .as("a stale request: the record is no longer at from").isInstanceOf(ApiException.class).hasMessageContaining("resource.rehomed")
                 .satisfies(e -> assertThat(((ApiException) e).status()).isEqualTo(409));
+    }
+
+    @Test
+    void aRecordMovesAgainAndEveryOldNameStillFindsIt() {
+        JobContext context = new JobContext(ACCOUNT, "global", null, null, Map.of());
+        ResourceRecord record = registry.register(new Registry.Request("vm", "vm-7301", null, attributes("api"), List.of()), by("job-16", context), null)
+                .record();
+        String a = record.wfrn();
+        Wfrn old = Wfrn.parse(a);
+        String b = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
+        String c = new Wfrn(old.partition(), old.service(), old.region(), "333333333333", old.type(), old.id()).format();
+        Caller admin = DevUsers.byName("gonzalo");
+        long seq = events.lastSeq();
+        assertThat(registry.rehome(record.id(), a, b, OTHER, admin, r -> false).moved()).isTrue();
+        assertThat(registry.rehome(record.id(), b, c, "333333333333", admin, r -> false).moved()).isTrue();
+        assertThat(record.wfrn()).isEqualTo(c);
+        assertThat(record.accountId()).isEqualTo("333333333333");
+        assertThat(record.previousWfrns()).containsExactly(a, b);
+        assertThat(registry.byWfrn(a)).contains(record);
+        assertThat(registry.byWfrn(b)).contains(record);
+        assertThat(registry.byWfrn(c)).contains(record);
+        assertThat(events.list(seq, 10, List.of("resource."), admin)).extracting(e -> e.data().path("previousWfrn").asText()).containsExactly(a, b);
+        assertThat(status(() -> registry.rehome(record.id(), a, b, OTHER, admin, r -> false))).as("replaying the first move").isEqualTo(409);
+        assertThat(registry.rehome(record.id(), b, c, "333333333333", admin, r -> false).moved()).as("replaying the second").isFalse();
     }
 
     @Test
@@ -181,16 +205,17 @@ class RegistryTest {
         Wfrn old = Wfrn.parse(record.wfrn());
         String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
         Caller admin = DevUsers.byName("gonzalo");
-        assertThat(status(() -> registry.rehome(record.id(), to, ACCOUNT, admin, r -> false))).as("account segment").isEqualTo(400);
+        assertThat(status(() -> registry.rehome(record.id(), old.format(), to, ACCOUNT, admin, r -> false))).as("account segment").isEqualTo(400);
         String image = new Wfrn(old.partition(), old.service(), old.region(), OTHER, "image", old.id()).format();
-        assertThat(status(() -> registry.rehome(record.id(), image, OTHER, admin, r -> false))).as("type").isEqualTo(400);
-        assertThat(status(() -> registry.rehome(record.id(), "not-a-wfrn", OTHER, admin, r -> false))).as("malformed").isEqualTo(400);
-        assertThat(status(() -> registry.rehome("vm-nope", to, OTHER, admin, r -> false))).isEqualTo(404);
-        assertThatThrownBy(() -> registry.rehome(record.id(), to, OTHER, admin, r -> true)).hasMessageContaining("resource.busy");
+        assertThat(status(() -> registry.rehome(record.id(), old.format(), image, OTHER, admin, r -> false))).as("type").isEqualTo(400);
+        assertThat(status(() -> registry.rehome(record.id(), old.format(), "not-a-wfrn", OTHER, admin, r -> false))).as("malformed").isEqualTo(400);
+        assertThat(status(() -> registry.rehome("vm-nope", old.format(), to, OTHER, admin, r -> false))).isEqualTo(404);
+        assertThatThrownBy(() -> registry.rehome(record.id(), old.format(), to, OTHER, admin, r -> true)).hasMessageContaining("resource.busy");
+        assertThat(status(() -> registry.rehome(record.id(), null, to, OTHER, admin, r -> false))).as("from is required").isEqualTo(400);
         assertThat(record.wfrn()).as("nothing moved").isEqualTo(old.format());
         Caller elsewhere = new Caller("sa-2", "console", null, List.of("team-data"), List.of(), false, Caller.SERVICE, Set.of("resources:rehome"),
                 "210987654321", null);
-        assertThat(status(() -> registry.rehome(record.id(), to, OTHER, elsewhere, r -> false))).as("another account's caller").isEqualTo(404);
+        assertThat(status(() -> registry.rehome(record.id(), old.format(), to, OTHER, elsewhere, r -> false))).as("another account's caller").isEqualTo(404);
     }
 
     @Test
@@ -202,9 +227,9 @@ class RegistryTest {
         String to = new Wfrn(old.partition(), old.service(), old.region(), OTHER, old.type(), old.id()).format();
         Caller console = new Caller("sa-1", "console", null, List.of("team-compute"), List.of(), false, Caller.SERVICE, Set.of("resources:rehome"),
                 ACCOUNT, null);
-        assertThat(registry.rehome(record.id(), to, OTHER, console, r -> false).moved()).isTrue();
+        assertThat(registry.rehome(record.id(), old.format(), to, OTHER, console, r -> false).moved()).isTrue();
         assertThat(registry.visible(record.id(), console)).isEmpty();
-        assertThat(registry.rehome(record.id(), to, OTHER, console, r -> false).moved()).isFalse();
+        assertThat(registry.rehome(record.id(), old.format(), to, OTHER, console, r -> false).moved()).isFalse();
     }
 
     private static int status(Runnable call) {
