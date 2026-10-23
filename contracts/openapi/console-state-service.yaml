@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-status: draft
 info:
   title: console-state-service
-  version: 1.0.0
+  version: 1.1.0
   summary: The console's own record of every resource, named by wfrn, from the first request to the tombstone.
   description: |
     Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
@@ -37,6 +37,26 @@ info:
     carry `expectedVersion`, and answers 409 `version.mismatch` when the resource moved on. The
     events of `contracts/asyncapi/console-events.yaml`, channel `state.resources`, carry the same
     versions, so a consumer can tell an event it has already applied.
+
+    **Relationships.** A resource names what it was built from by the platform's registry ids
+    (`builtFrom`, recorded from the job that registered it, P-02) and they are resolved to wfrns
+    when read, so a parent taken under management later joins the graph with nothing rewritten.
+    Lineage, the blast radius and the resource map walk those links through every account but draw
+    only the caller's: another account's resources are counted (`hidden`, `accounts`, `external`)
+    and never named, unless the caller is the console-internal principal.
+
+    **The trail.** Every event is a link in its resource's hash chain: `hash` is the SHA-256 of its
+    stored form (sensitive values sealed) and `previous` the hash of the event before. Every period
+    (an hour by default) the service seals each account's events of the period in a digest that
+    counts them, names the first and the last, hashes all of their hashes into `root`, carries the
+    hash of the account's previous digest and is signed with ES256; the public keys stay readable
+    after a rotation. An evidence pack holds all of it with the rules to check it away from the
+    console, and links each job to the platform's own evidence (P-12).
+
+    **Time travel.** `at` rebuilds a resource, or a list, as it was at an instant, from its log.
+    `revert-plan` says what it takes to bring a live resource back to an earlier version or instant:
+    a JSON merge patch for `:request-update` and the tag changes for `:tag`. Nothing reverts by
+    itself; the BFF shows the plan and starts the update when the person confirms.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -44,6 +64,8 @@ servers:
 tags:
   - name: Resources
   - name: Commands
+  - name: Relationships
+  - name: Activity
   - name: Health
 security:
   - consoleJwt: []
@@ -105,6 +127,10 @@ paths:
           in: query
           description: The order; a leading `-` is descending
           schema: { type: string, enum: [-updatedAt, updatedAt, -createdAt, createdAt, name, -name], default: -updatedAt }
+        - name: at
+          in: query
+          description: 'The list as it was at this instant: the resources that existed then, as they were, in wfrn order; `sort` and `updatedAfter` are refused with it'
+          schema: { type: string, format: date-time }
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/After'
       responses:
@@ -178,13 +204,17 @@ paths:
     get:
       operationId: getResource
       summary: Get a resource by wfrn
-      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had); `reveal=sensitive` answers the sensitive fields in clear instead of masked, for an internal principal (`svc` without `acct`) and for a person whose `roles` claim holds `account-admin`, and is ignored otherwise.'
+      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had) and `at` as it was at an instant (404 `resource.notYet` before it existed; one of the two at most), and either reads a deleted resource''s past instead of answering 410; `reveal=sensitive` answers the sensitive fields in clear instead of masked, for an internal principal (`svc` without `acct`) and for a person whose `roles` claim holds `account-admin`, and is ignored otherwise.'
       tags: [Resources]
       parameters:
         - name: asOf
           in: query
           description: A past version of the resource
           schema: { type: integer, minimum: 1 }
+        - name: at
+          in: query
+          description: A past instant
+          schema: { type: string, format: date-time }
         - name: reveal
           in: query
           schema: { type: string, enum: [sensitive] }
@@ -198,6 +228,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ConsoleResource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '410': { $ref: '#/components/responses/Gone' }
@@ -443,6 +474,298 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}/revert-plan:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getRevertPlan
+      summary: What it takes to bring a resource back to an earlier point
+      description: 'Compares the resource now with the resource at `version` or at the instant `at` (exactly one) and answers `changes`, the JSON merge patch (RFC 7386) from the attributes now to the attributes then, ready for `:request-update` and the type''s update workflow, `tags` for `:tag`, and every changed leaf in `fields` for the confirmation page. Nothing changes here. `possible` is false, with `reason`, when the resource is `deleted` (`resource.deleted`), busy in `pending`, `updating` or `deleting` (`resource.busy`), was deleted or never provisioned at that point (`resource.wasDeleted`, `resource.wasNotProvisioned`), did not exist yet (`resource.notYet`) or is already as it was (`resource.unchanged`). The plan is computed on clear values and answered masked; `reveal=sensitive` follows the rule of `getResource`.'
+      tags: [Resources]
+      parameters:
+        - name: version
+          in: query
+          description: The version to go back to
+          schema: { type: integer, minimum: 1 }
+        - name: at
+          in: query
+          description: The instant to go back to
+          schema: { type: string, format: date-time }
+        - name: reveal
+          in: query
+          schema: { type: string, enum: [sensitive] }
+      responses:
+        '200':
+          description: The plan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevertPlan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/wfrn/{wfrn}/events:verify:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: verifyResourceEvents
+      summary: Check a resource's hash chain
+      description: 'Reads the resource''s whole log in version order and checks that no version is missing, that each event''s `hash` is the SHA-256 of its stored form and that each `previous` is the hash of the event before. Events written before the chain began (no `hash`) are allowed only before the first chained one. A tombstoned resource''s log is checked the same way.'
+      tags: [Activity]
+      responses:
+        '200':
+          description: What the check found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChainCheck' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/wfrn/{wfrn}/lineage:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getLineage
+      summary: What a resource was built from and what was built from it
+      description: 'Walks `builtFrom` up and the live resources built from the resource down, `depth` hops each way. The resource comes first in `nodes`, its direct neighbours in `builtFrom` and `dependents`, and `edges` run from the resource built from to the one built, `via` the workflow whose job registered the latter. Only the caller''s account is drawn: `hidden` counts the resources of other accounts the walk reached (the console-internal principal sees them), and `unmanaged` lists the registry ids of parents the console does not manage. A deleted parent shows as `deleted`; a deleted resource keeps its lineage.'
+      tags: [Relationships]
+      parameters:
+        - name: depth
+          in: query
+          description: Hops each way
+          schema: { type: integer, minimum: 1, maximum: 32, default: 32 }
+        - name: limit
+          in: query
+          description: The most nodes drawn; `truncated` says the walk stopped there
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: The lineage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lineage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/wfrn/{wfrn}/blast-radius:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getBlastRadius
+      summary: What else goes when a resource goes
+      description: 'Every live resource built from it, directly or through others, `depth` hops down, in every account. `total`, `accounts` and `types` count them all; `items` names the caller''s own (at most 100), so another account''s resources are counted and never shown, unless the caller is the console-internal principal. The walk stops at 10,000 resources with `truncated`. The BFF shows it before a delete and before a bulk action.'
+      tags: [Relationships]
+      parameters:
+        - name: depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 32, default: 32 }
+      responses:
+        '200':
+          description: The blast radius
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlastRadius' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/resources:blast-radius:
+    post:
+      operationId: getBulkBlastRadius
+      summary: What else goes when several resources go
+      description: 'The blast radius of a bulk action: 1 to 100 resources of one account and region, counted once each however many of them a resource was built from. Changes nothing, so it takes no Idempotency-Key.'
+      tags: [Relationships]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlastRadiusRequest' }
+      responses:
+        '200':
+          description: The blast radius
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlastRadius' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/graph:
+    get:
+      operationId: getResourceGraph
+      summary: The resource map
+      description: 'The resources of an account (or up to 20 accounts, for the console-internal principal) matching the filters, by name, and the lineage between them, for a zoomable graph coloured by state or drift. Parents outside the filter that the caller may see are drawn as `context` nodes; resources of other accounts on either side of an edge are summed up in `external` by account, type and direction; parents the console does not manage are listed in `unmanaged`. Deleted resources are left out, except a deleted parent drawn for context.'
+      tags: [Relationships]
+      parameters:
+        - name: accountId
+          in: query
+          description: The accounts to map, repeated or comma-separated; a console account may only name its own
+          schema:
+            type: array
+            maxItems: 20
+            items: { $ref: '#/components/schemas/AccountId' }
+          style: form
+          explode: true
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string, enum: [pending, active, updating, deleting, failed] }
+        - name: name
+          in: query
+          description: A name prefix
+          schema: { type: string }
+        - name: drift
+          in: query
+          description: Only resources with an open finding
+          schema: { type: boolean }
+        - name: tag.<name>
+          in: query
+          description: Resources whose tag `<name>` equals the value
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - name: limit
+          in: query
+          description: The most nodes the map holds, context nodes included; `truncated` says it was reached
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: The map
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceGraph' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/activity:
+    get:
+      operationId: listActivity
+      summary: The account's activity trail
+      description: 'Every event of the account''s resources, newest first, masked, each as its `state.resources` envelope with its link in the resource''s hash chain. Filters combine; `wfrn` is a pattern (`*` and `?`). The trail of a tombstoned resource stays for the tombstone''s life.'
+      tags: [Activity]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: from
+          in: query
+          description: Events at or after this instant
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Events before this instant
+          schema: { type: string, format: date-time }
+        - name: type
+          in: query
+          description: One event type
+          schema: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested] }
+        - name: actor
+          in: query
+          description: The console user or service that caused the events
+          schema: { type: string }
+        - name: jobId
+          in: query
+          schema: { type: string }
+        - name: wfrn
+          in: query
+          description: A wfrn pattern (contracts/wfrn/SPEC.md)
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrailEntry' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/activity/digests:
+    get:
+      operationId: listTrailDigests
+      summary: The account's sealed periods
+      description: 'The digests of the account''s periods that overlap the window, oldest first: one per period that had events, each chained to the one before by `previous` and signed with ES256. A period is sealed once it has ended and a grace (`console.trail.grace`, 5 minutes by default) has passed, so late events of the period still land in it.'
+      tags: [Activity]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The digests, on one page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrailDigest' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/activity/keys:
+    get:
+      operationId: listTrailKeys
+      summary: The public keys that sign the digests
+      description: Every key that has signed a digest, as a JWK set, so a digest stays verifiable after its key is rotated out.
+      tags: [Activity]
+      responses:
+        '200':
+          description: The keys
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrailKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/activity/evidence:
+    get:
+      operationId: getEvidencePack
+      summary: The account's audit evidence pack for a period
+      description: 'The window widened to whole periods, at most 31 days and 50,000 events: every event in its stored, sealed form with its hash, the digests of the window, the public keys, `canonicalization` (how to rebuild the hashed bytes), what this service found when it checked all of it, and where the platform''s evidence record of every job the events name is (P-12). For the account''s admins and auditors (JWT `roles` holding `account-admin` or `auditor`) and the console-internal principal; anyone else gets 403.'
+      tags: [Activity]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The pack
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidencePack' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 components:
   securitySchemes:
     consoleJwt:
@@ -505,6 +828,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Unauthorized:
       description: No valid JWT
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 'Console IAM refused: the caller''s role does not allow it'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -627,6 +955,11 @@ components:
             failedStep: { type: string }
             message: { type: string }
         source: { type: string, enum: [backfill, discover], description: 'How an imported resource came under management; absent for a resource created from the console' }
+        builtFrom:
+          type: array
+          description: 'The registry ids of what it was built from, as the job that registered it recorded them (P-02); `getLineage` resolves them'
+          items: { type: string }
+        eventHash: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: 'The hash of its last event, the head of its chain' }
         deletedAt: { type: string, format: date-time }
         tombstoneUntil: { type: string, format: date-time, description: 'Until when the name answers 410 (90 days after deletedAt)' }
         createdAt: { type: string, format: date-time }
@@ -701,4 +1034,282 @@ components:
         name: { type: string }
         attributes: { type: object, additionalProperties: true }
         source: { type: string, enum: [backfill, discover] }
+        builtFrom:
+          type: array
+          description: The registry ids of what it was built from, when the import knows them
+          items: { type: string }
         actor: { type: string }
+    ResourceRef:
+      type: object
+      description: A resource as the relationship reads draw it
+      required: [wfrn, type, state, accountId, region]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        service: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        drift: { $ref: '#/components/schemas/DriftRef' }
+        observedStatus: { type: string, enum: [found, not_found, error] }
+    DriftRef:
+      type: object
+      description: The open finding, without its fields
+      required: [findingId]
+      properties:
+        findingId: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+    LineageEdge:
+      type: object
+      description: '`to` was built from `from`'
+      required: [from, to]
+      properties:
+        from: { $ref: '#/components/schemas/Wfrn' }
+        to: { $ref: '#/components/schemas/Wfrn' }
+        via: { type: [string, 'null'], description: 'The workflow whose job registered `to`, when the console knows it' }
+    Lineage:
+      type: object
+      required: [resource, builtFrom, dependents, nodes, edges, unmanaged, hidden, truncated]
+      properties:
+        resource: { $ref: '#/components/schemas/ResourceRef' }
+        builtFrom:
+          type: array
+          description: What it was built from, directly
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        dependents:
+          type: array
+          description: The live resources built from it, directly
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        nodes:
+          type: array
+          description: Every resource drawn, the resource first
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/LineageEdge' }
+        unmanaged:
+          type: array
+          description: The registry ids of parents the console does not manage
+          items: { type: string }
+        hidden: { type: integer, minimum: 0, description: Resources of other accounts the walk reached and does not draw }
+        truncated: { type: boolean, description: The walk reached `limit` nodes and stopped }
+    BlastRadiusRequest:
+      type: object
+      required: [wfrns]
+      properties:
+        wfrns:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: Resources of one account and region
+          items: { $ref: '#/components/schemas/Wfrn' }
+        depth: { type: integer, minimum: 1, maximum: 32, default: 32 }
+    BlastRadius:
+      type: object
+      required: [roots, total, accounts, types, items, depth, truncated]
+      properties:
+        roots:
+          type: array
+          description: The resources that go
+          items: { $ref: '#/components/schemas/Wfrn' }
+        total: { type: integer, minimum: 0, description: 'Every live resource built from them, in every account' }
+        accounts:
+          type: array
+          description: The count by account, the caller's first, then by count
+          items:
+            type: object
+            required: [accountId, count, yours]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              count: { type: integer, minimum: 1 }
+              yours: { type: boolean }
+        types:
+          type: array
+          description: The count by type, largest first
+          items:
+            type: object
+            required: [type, count]
+            properties:
+              type: { type: string }
+              count: { type: integer, minimum: 1 }
+        items:
+          type: array
+          maxItems: 100
+          description: The affected resources the caller may see, nearest first
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        depth: { type: integer, description: The hops walked }
+        truncated: { type: boolean, description: 'The walk stopped at 10,000 resources' }
+    GraphNode:
+      allOf:
+        - $ref: '#/components/schemas/ResourceRef'
+        - type: object
+          properties:
+            tags:
+              type: object
+              additionalProperties: { type: string }
+            updatedAt: { type: string, format: date-time }
+            context: { type: boolean, description: 'Drawn because a map node links to it, not because it matched the filters' }
+    ResourceGraph:
+      type: object
+      required: [nodes, edges, external, unmanaged, truncated]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/GraphNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/LineageEdge' }
+        external:
+          type: array
+          description: Resources of accounts the map does not show, linked to its nodes, counted by account, type and direction
+          items:
+            type: object
+            required: [accountId, type, direction, count]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              type: { type: string }
+              direction: { type: string, enum: [builtFrom, dependent], description: '`builtFrom` when map nodes were built from them, `dependent` when they were built from map nodes' }
+              count: { type: integer, minimum: 1 }
+        unmanaged:
+          type: array
+          description: The registry ids of parents the console does not manage
+          items: { type: string }
+        truncated: { type: boolean, description: The map reached `limit` nodes }
+    RevertPoint:
+      type: object
+      required: [version, at, state]
+      properties:
+        version: { type: integer, minimum: 1 }
+        at: { type: string, format: date-time, description: When the resource reached this version }
+        state: { $ref: '#/components/schemas/ResourceState' }
+    RevertPlan:
+      type: object
+      required: [wfrn, from, possible]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        from: { $ref: '#/components/schemas/RevertPoint', description: The resource now }
+        to: { $ref: '#/components/schemas/RevertPoint', description: The resource then; absent when it did not exist yet }
+        possible: { type: boolean }
+        reason: { type: string, enum: [resource.notYet, resource.deleted, resource.busy, resource.wasDeleted, resource.wasNotProvisioned, resource.unchanged], description: Why it cannot be reverted }
+        changes: { type: object, description: 'The JSON merge patch (RFC 7386) from the attributes now to the attributes then: `:request-update`''s `changes`', additionalProperties: true }
+        tags:
+          type: object
+          description: 'The tag changes for `:tag`'
+          required: [set, removed]
+          properties:
+            set:
+              type: object
+              additionalProperties: { type: string }
+            removed:
+              type: array
+              items: { type: string }
+        fields:
+          type: array
+          description: Every changed leaf, for the confirmation page
+          items:
+            type: object
+            required: [path]
+            properties:
+              path: { type: string, description: A JSON pointer into the attributes }
+              now: {}
+              then: {}
+    ChainLink:
+      type: object
+      description: 'An event''s place in its resource''s hash chain: `hash` is `sha256:` and the hex SHA-256 of the event''s stored form (EvidencePack `canonicalization`), `previous` the hash of the resource''s event before it. Both are absent on events written before the chain began.'
+      properties:
+        previous: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+    TrailEntry:
+      allOf:
+        - $ref: '#/components/schemas/ResourceEvent'
+        - type: object
+          required: [chain]
+          properties:
+            chain: { $ref: '#/components/schemas/ChainLink' }
+    ChainCheck:
+      type: object
+      required: [valid, entries, chained]
+      properties:
+        valid: { type: boolean }
+        entries: { type: integer, minimum: 0, description: The events read }
+        chained: { type: integer, minimum: 0, description: The events with a hash }
+        brokenAt: { type: [integer, 'null'], description: The first version that did not verify }
+        reason: { type: [string, 'null'], description: Why it did not verify }
+        head: { type: [string, 'null'], description: The hash of the last event that verified }
+    TrailDigest:
+      type: object
+      description: 'The seal of one account''s events in one period: `root` is the SHA-256 over each event''s hash followed by a newline, in time order (`at`, then `<wfrn>#<version>`); `previous` is the hash of the account''s digest before it; `hash` is the canonical SHA-256 over `id`, `accountId`, `region`, `from`, `to`, `count`, `firstEvent`, `lastEvent`, `root` and `previous`; `signature` is ES256 (r and s, base64url) over the hash''s text by the key `keyId`.'
+      required: [id, accountId, region, from, to, count, root, hash, keyId, signature, signedAt]
+      properties:
+        id: { type: string, description: '`<accountId>:<region>:<from>`' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        count: { type: integer, minimum: 0 }
+        firstEvent: { type: string, description: '`<wfrn>#<version>`' }
+        lastEvent: { type: string, description: '`<wfrn>#<version>`' }
+        root: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        previous: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        keyId: { type: string }
+        signature: { type: string }
+        signedAt: { type: string, format: date-time }
+    TrailKey:
+      type: object
+      description: A public JWK (RFC 7517) that signs digests
+      required: [kty, crv, kid, x, y]
+      properties:
+        kty: { type: string, const: EC }
+        crv: { type: string, const: P-256 }
+        kid: { type: string }
+        alg: { type: string, const: ES256 }
+        use: { type: string, const: sig }
+        x: { type: string }
+        y: { type: string }
+    EvidencePack:
+      type: object
+      required: [accountId, region, from, to, generatedAt, canonicalization, events, digests, keys, verification, jobs]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        from: { type: string, format: date-time, description: 'The window''s start, widened to a period''s' }
+        to: { type: string, format: date-time, description: 'The window''s end, widened to a period''s' }
+        generatedAt: { type: string, format: date-time }
+        canonicalization: { type: string, description: How a verifier rebuilds the bytes that were hashed }
+        events:
+          type: array
+          description: 'Every event of the window in its stored form, sensitive values sealed, with `previous` and `hash`, in time order'
+          items: { type: object, additionalProperties: true }
+        digests:
+          type: array
+          items: { $ref: '#/components/schemas/TrailDigest' }
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/TrailKey' }
+        verification:
+          type: object
+          required: [valid, events, digests, unsealed, problems]
+          properties:
+            valid: { type: boolean }
+            events: { type: integer, minimum: 0 }
+            digests: { type: integer, minimum: 0 }
+            unsealed: { type: integer, minimum: 0, description: Events of periods no digest covers yet }
+            problems:
+              type: array
+              items:
+                type: object
+                required: [subject, reason]
+                properties:
+                  subject: { type: string, description: 'The digest id or the event''s `<wfrn>#<version>`' }
+                  reason: { type: string }
+        jobs:
+          type: array
+          description: 'The jobs the events name and the platform''s evidence record of each (P-12), which the BFF''s full pack fetches beside it'
+          items:
+            type: object
+            required: [jobId, evidence]
+            properties:
+              jobId: { type: string }
+              evidence: { type: string, description: '`/api/v1/audit/{jobId}` on the platform' }
