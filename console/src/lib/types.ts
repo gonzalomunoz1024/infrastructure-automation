@@ -254,6 +254,8 @@ export interface QuotaRequest {
   decidedAt?: string
   decidedBy?: string
   comment?: string
+  /** who decides an ask no rule approved: `platform-team` (phase 7) */
+  routedTo?: string
 }
 
 export interface QuotaRequestInput {

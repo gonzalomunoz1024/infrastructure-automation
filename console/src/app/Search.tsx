@@ -4,7 +4,8 @@ import { isApiError } from '../lib/api'
 import { bff, signOut, switchAccount, switchRegion } from '../lib/bff'
 import { findType, partsOfWfrn, singularOf } from '../lib/descriptors'
 import { useQuery } from '../lib/queries'
-import { useRecent } from '../lib/recent'
+import { hrefOfVisit } from '../lib/personal'
+import { useRecentVisits } from '../pages/personal/usePersonal'
 import { pathOfWfrn, useConsole } from './console'
 import { useRefusal } from './Refusal'
 import { createPath, navigate, pathFor, resourcePath, type Route } from './router'
@@ -29,7 +30,9 @@ const APPEARANCE: { mode: ThemeMode; label: string }[] = [
 
 export function Search({ route, onClose }: { route: Route; onClose: () => void }) {
   const { services, types, decide, session, account, region, regions } = useConsole()
-  const recent = useRecent()
+  // the BFF's visits (phase 7), never a copy in this browser, so the next person on the device sees none
+  const recentVisits = useRecentVisits()
+  const recent = useMemo(() => recentVisits.data?.items ?? [], [recentVisits.data])
   const refusal = useRefusal()
   const toast = useToast()
   const { mode, setMode } = useTheme()
@@ -37,7 +40,10 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
 
   const items = useMemo<PaletteItem[]>(() => {
     const out: PaletteItem[] = []
-    for (const r of recent) out.push({ id: `recent-${r.href}`, group: 'Recent', label: r.label, hint: r.hint, icon: r.kind === 'resource' ? 'resource' : r.kind === 'service' ? 'grid' : r.kind === 'type' ? 'list' : 'document', run: () => navigate(r.href) })
+    for (const r of recent.slice(0, 8)) {
+      const to = hrefOfVisit(r)
+      if (to) out.push({ id: `recent-${r.kind}-${r.key}`, group: 'Recent', label: r.title, hint: r.kind === 'type' ? 'Resource type' : 'Resource', icon: r.kind === 'resource' ? 'resource' : 'list', run: () => navigate(to) })
+    }
     for (const s of services) out.push({ id: `service-${s.id}`, group: 'Services', label: s.title, hint: `${s.types.length} ${s.types.length === 1 ? 'type' : 'types'}`, icon: s.icon, keywords: s.types.map((t) => t.title).join(' '), run: () => navigate(pathFor('service', { service: s.id })) })
     for (const t of types) out.push({ id: `type-${t.service}-${t.name}`, group: 'Resource types', label: t.title, hint: t.service, icon: t.icon, keywords: `${t.name} ${t.plural} ${t.service}`, run: () => navigate(pathFor('type', { service: t.service, type: t.name })) })
 

@@ -342,12 +342,13 @@ describe('the BFF: identity and access', () => {
     expect(b.call('GET', '/console/v1/iam/quotas/nope').status).toBe(404)
 
     expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 80, reason: 'more' })).toMatchObject({ status: 400, body: { error: 'reason is 10 to 1000 characters' } })
-    const asked = b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 80, reason: 'the build farm grows next week' })
+    // 150 is past what the access-keys rule approves at once (twice the limit, 100 at most), so it waits for the platform team
+    const asked = b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 150, reason: 'the build farm grows next week' })
     expect(asked.status).toBe(202)
     const request = body<QuotaRequest>(asked)
-    expect(request).toMatchObject({ quotaKey: 'access-keys', currentLimit: 50, requestedLimit: 80, status: 'open', requestedBy: 'dana' })
+    expect(request).toMatchObject({ quotaKey: 'access-keys', currentLimit: 50, requestedLimit: 150, status: 'open', requestedBy: 'dana', routedTo: 'platform-team' })
     expect(body<Quota>(b.call('GET', '/console/v1/iam/quotas/access-keys')).pendingRequestId).toBe(request.requestId)
-    expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 90, reason: 'the build farm grows next week' })).toMatchObject({ status: 409, body: { error: 'an increase of access-keys is already requested', detail: { requestId: request.requestId } } })
+    expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 160, reason: 'the build farm grows next week' })).toMatchObject({ status: 409, body: { error: 'an increase of access-keys is already requested', detail: { requestId: request.requestId } } })
     expect(b.call('GET', `/console/v1/iam/quota-requests/${request.requestId}`).status).toBe(200)
 
     // someone else needs quota:set, which only the admins hold

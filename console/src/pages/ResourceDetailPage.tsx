@@ -5,7 +5,7 @@ import { useConsole, useRouteType } from '../app/console'
 import { ExplainedError } from '../app/commands'
 import { MenuButton, MenuSeparator } from '../app/MenuButton'
 import { ActionButton, ActionMenuItem } from '../app/Refusal'
-import { Link, navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
+import { Link, navigate, pathFor, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { api, isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
@@ -13,7 +13,8 @@ import { idOfWfrn, singularOf, wfrnOf, type ConsoleAction, type ConsoleType } fr
 import { ALLOWED } from '../lib/permissions'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { invalidate, useQuery } from '../lib/queries'
-import { pushRecent } from '../lib/recent'
+import { FavouriteStar } from './personal/FavouriteStar'
+import { useFavourites, useRecordVisit } from './personal/usePersonal'
 import { verbsOf } from '../lib/verbs'
 import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
@@ -75,11 +76,9 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
     wasOpen.current = open
   }, [open, refetchRecord, type.name])
 
-  useEffect(() => {
-    const label = detail?.name ?? resource?.name
-    if (!label) return
-    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, wfrn), label, hint: `${type.title} · ${resource?.status ?? detail?.state ?? ''}` })
-  }, [detail?.name, detail?.state, resource?.name, resource?.status, type, wfrn])
+  // the BFF keeps the visit for the console home (phase 7); the star makes it a favourite there
+  useRecordVisit('resource', wfrn, detail?.name ?? resource?.name)
+  const favourites = useFavourites()
 
   // the Drift tab counts the fields that drifted, as its table lists them
   const drifted = detail?.finding?.status === 'open' ? detail.finding.fields.length : 0
@@ -143,6 +142,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         }
         actions={
           <>
+            {!deleted && <FavouriteStar on={favourites.isFavourite(wfrn)} name={name} onToggle={() => favourites.toggle({ wfrn, type: type.name, name })} />}
             <IconButton label="Refresh" onClick={() => void Promise.all([record.refetch(), view.refetch()])}>
               <Icon name="refresh" size={16} className={cx((record.fetching || view.fetching) && 'animate-spin')} />
             </IconButton>

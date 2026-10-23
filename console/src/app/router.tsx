@@ -34,6 +34,7 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'service-quotas'
   | 'settings'
   | 'not-found'
 
@@ -76,6 +77,8 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // Service Quotas (phase 7): the account's limits, the rules that raise them, and the requests
+  { name: 'service-quotas', pattern: '/service-quotas', title: 'Service Quotas' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 
