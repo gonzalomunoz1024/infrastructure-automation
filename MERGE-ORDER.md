@@ -25,8 +25,9 @@ merged itself. When a head moves, the steward rebuilds the turns from that one o
 | 12 | #39 Blueprints and stacks | `console-root--state-blueprints` → #27 | Decision 33: `kind: Blueprint`, two samples, their checks, the stack routes, `state.stacks` (events 1.1.0) | Merge `console-root` in once turn 11 is merged: turn 12 below |
 | 13 | #16 The BFF's phase 9 paths | `console-root--phase-9-web` → phase-0 | Decision 27: the executive home, the copilot, the failure explainer | Merge `console-root` in once turn 12 is merged: turn 13 below (the web thread asked the steward to push it) |
 | 14 | #38 API clients and notifications | `console-root--bff-clients` → #16 | Decisions 31 (the CLI and SDKs' device sign-in, the shell, ChatOps), 32 (notifications, recent and favourites, digests) and 34 (organization admins), and the BFF's paths for decisions 29 and 30 | Merge `console-root` in once turn 13 is merged: turn 14 below |
+| 15 | #46 Every internal token names one callee | `console-root--single-audience` → #38 | Decision 35: one audience per internal token, no shared `console` audience, a token without `acct` only from a service the callee allows | Merge `console-root` in once turn 14 is merged: no conflict |
 
-Turns 1 to 9 merge with no conflict at all, checked by merging the heads in this order with no
+Turns 1 to 9, and 15, merge with no conflict at all, checked by merging the heads in this order with no
 recorded resolutions. Turns 10 to 14 conflict with what merged before them, because they grew
 beside it; their resolutions are below and in this branch's turn commits.
 
@@ -47,7 +48,8 @@ beside it; their resolutions are below and in this branch's turn commits.
   console shell, ChatOps identity and its Slack and Teams endpoints) and 32 notifications (the
   in-console feed, Slack, Teams and email per person, recent and favourites, the weekly digest),
   both the BFF thread's (#38), 33 blueprints and stacks (#39), 34 the BFF's organization admins
-  (#38). **The next free decision is 35.**
+  (#38), 35 every internal token names exactly one callee (#46, the BFF security review).
+  **The next free decision is 36.**
 - **Platform changes:** P-22 price lists over the API and a type's price binding (#18), P-23 moving a
   registry record to another account (#27). **The next free platform change is P-24.** A new one
   also takes the next pull request row in `platform-changes/README.md` section 5 (P-22 is 13,
@@ -91,8 +93,10 @@ beside it; their resolutions are below and in this branch's turn commits.
 
 Built from phase-0 `1a71005`, #25 `3ce66a0`, #11 `5cbf22f`, #20 `b0a0d52`, #15 `5d705e2`, #18
 `e42d270`, #22 `72485db`, #14 `0d6d8a5`, #17 `b7aae5f`, #19 `4d9c555`, #27 `e790a27`, #16
-`1bda04e`, #39 `a281cd3`, #38 `f195591`. Results, at every turn:
+`1bda04e`, #39 `a281cd3`, #38 `f195591`, #46 `690a3fc`. Results, at every turn:
 
 - `npm run check` with OPA 1.4.2: 0 failures, 0 warnings.
+- Turn 15 leaves the cost contract's (#18) bearer description as it was: decision 35's sentence is
+  still to be added there.
 - After turn 14, `npm run check:platform -- --from contracts/platform/openapi-c9529d5.json`:
   landed 1, pending 91, diverged 0.
