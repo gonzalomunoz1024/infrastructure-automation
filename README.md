@@ -7,8 +7,9 @@ over the state service (list, detail, create, update, verbs, tags, lineage, drif
 previews), changes them safely (blast radius, required tags, bulk in waves, retry with a fix,
 the Tag Editor, resource groups, launch more like this), the Requests page (jobs and
 approvals), cost and budgets (through the cost service, with budgets guarding creates),
-compliance scorecards (through the drift service), streams live changes, and passes IAM calls
-through to the identity service.
+compliance scorecards (through the drift service), the console copilot (which proposes what the
+console opens and never acts), streams live changes, and passes IAM calls through to the identity
+service.
 It never holds platform credentials in the browser: every platform call is made here, with the
 account's service account and a signed on-behalf-of assertion naming the person.
 
@@ -21,7 +22,9 @@ update convention), **4.2** (delete with dependents, bulk in waves, retry, skip 
 **4.3** (tags, the Tag Editor, resource groups), **4.4** (required tags at create), **4.5**
 (blast radius) and **4.6** (launch more like this); the BFF's side of cost and budgets
 (decision 25: Cost Explorer, price lists, chargeback, budgets, budget checks on creates,
-`budget.alert`) and of the compliance scorecards (**9.6**).
+`budget.alert`) and of the compliance scorecards (**9.6**), the executive home (**9.5**) and
+the failure explainer (**9.2**); and the copilot (**9.1**, hub decision 27), which also reads the
+failures no rule of the explainer knows.
 
 ## Running it
 
@@ -52,8 +55,9 @@ indexer 18085, cost 18086, web 3000 (the project's port decision of 2026-10-23; 
 other way round).
 
 To run against the real services, leave the demo profile off and set the settings below; the
-`mongo` profile keeps sessions and preferences in MongoDB (needed for more than one replica) and
-the `kafka` profile listens to the console's own events (identity changes drop cached decisions).
+`mongo` profile keeps sessions and preferences, and the copilot's conversations and turn counts, in
+MongoDB (needed for more than one replica) and the `kafka` profile listens to the console's own
+events (identity changes drop cached decisions).
 
 ## Settings
 
@@ -75,6 +79,8 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.drift.url`, `service-name`, `timeout` | The drift service, for the scorecards and the executive home's findings stats (`http://localhost:18084`; empty: `/demo-drift`, which serves scorecards only, so the demo's executive home counts no findings) |
 | `console.insights.baseline.source`, `lead-time`, `by-workflow.<workflow>` | The ticket baseline the executive home compares lead times with: where it comes from, the median ticket overall, and per workflow. With no lead time at all, hours saved is left out |
 | `console.insights.cache-ttl`, `max-jobs-per-account`, `concurrency` | How long an executive home answer is kept (5 minutes), the most requests one account counts in a period (10000), and how many accounts are read at once (8) |
+| `console.assistant.provider`, `turns-per-minute`, `conversation-ttl`, `turn-timeout`, `failure-wait` | The copilot: `devin` (the firm's Devin, the default), `demo` (rules in this process, the demo profile's) or anything else for none, when every turn fails `assistant.unavailable`; a person's turns in any minute (10, failure readings included); how long a conversation is kept from its start (24 h); when a turn not answered fails `assistant.timeout` (5 min); how long a job's explanation waits for the copilot's reading of a failure (5 s) |
+| `console.assistant.devin.base-url`, `api-key`, `poll-interval`, `request-timeout`, `max-acu-limit` | Devin's API (`https://api.devin.ai`), its key (from `CONSOLE_ASSISTANT_DEVIN_API_KEY`, the chart's secret, never a file), how often a turn's session is read (3 s), one call's timeout (30 s), and the most ACUs a session may spend (0: Devin's own limit) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
@@ -139,6 +145,7 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
 | `GET /console/v1/insights` | The executive home: resources managed, requests and how many were self-served, lead time against tickets, hours saved, drift found and fixed, adoption week by week |
 | `GET /console/v1/jobs/{jobId}/explanation` | Why a job failed and what to do next: the cause, the fix and the step to run again from, whether the person may retry, how often it happened and what fixed it last |
+| `POST /console/v1/assistant/turns`, `GET /console/v1/assistant/conversations/{conversationId}` | The copilot: a turn (`ask` with a message, `explain` with `context.wfrn`) answers 202 `{ conversationId, turnId }` and goes on in the background; the conversation, polled until the turn is `answered` (text, at most five proposals, an explanation) or `failed`; 429 with `Retry-After` past 10 turns a minute |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
 | `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
@@ -383,6 +390,52 @@ account's job; 409 `job.not-failed` with the status otherwise):
   the last 30 days (2000 at most), and the latest console retry (`retry-of`) of one of the ten
   most recent that succeeded: who ran it and when.
 
+## The copilot (WP 9.1, hub decision 27)
+
+The copilot reads what the person may read with their own session and never acts: what it
+proposes (a filtered list, a create wizard or a verb's form filled in, a console page) the console
+opens for the person to review and run as usual, through the preview and IAM.
+
+- `POST /console/v1/assistant/turns` stores the question and an assistant turn `thinking`,
+  answers 202 and goes on in the background; the console polls
+  `GET /console/v1/assistant/conversations/{conversationId}`. A conversation is its person's, in
+  the account and region it started in, for 24 hours: anyone else's, or an older one, is a 404.
+- A person has 10 turns in any minute, across their accounts and conversations, then a 429 with
+  `Retry-After`. Conversations and turn counts are kept in memory, or with the `mongo` profile in
+  `assistant_conversations` and `assistant_turns`, whose TTL indexes forget them, so every
+  replica counts the same turns.
+- The BFF gathers what the assistant gets with the person's session: the account and region with
+  the person's roles, the types the person may list or create (`<service>:list` on each type's
+  pattern, the descriptors' greying) with their create forms and the verbs the person may run,
+  forms without secret fields; the resources the question names; the page's context; the last ten
+  turns; and for `explain` the resource's detail, its activity (who created it and when, its last
+  change), its blast radius, its open drift finding and its monthly cost from
+  `Costs.monthlyCost`. Then a `FastPath` bean, when one is wired, may answer first; otherwise the
+  `AssistantPort` does.
+- Every answer is reviewed before it is stored, against the person's own permissions: at most
+  five proposals; a filter over a type the person may list, reduced to the list's filter; a create
+  only of a type the person may create, its input reduced to the form and `missing` worked out
+  from it; an action only with a verb the person may run on that wfrn, in the session's account
+  and region; an open only of a `/console/` route. Text loses its markup, and a sentence stating a
+  cost the cost service did not answer is dropped. What fails is dropped and logged.
+- A turn ends `answered`, or `failed` with `assistant.unavailable` (the assistant unreachable or
+  erring), `assistant.timeout` (no answer within 5 minutes) or `assistant.refused` (a refusal, or
+  nothing the console can show).
+- The `devin` adapter runs one Devin session per turn over the v1 API: it creates the session with
+  a prompt (`assistant/devin-prompt.txt`) carrying the gathered request and the answer's JSON
+  Schema (`assistant/answer-schema.json`, also its `structured_output_schema`), no organization
+  secret and no knowledge, unlisted; reads it every 3 seconds until it is finished (or blocked
+  after answering), and takes its structured output. A session past the turn timeout is ended.
+  The key is the BFF's, in the `Authorization` header only.
+- The failure explainer asks the copilot about a failure class its rules do not know (the
+  `FailureAdvisor` seam): the copilot's cause and fix, the platform's own message as the detail, at
+  the cost of one of the person's turns, kept an hour per job and failure.
+
+In the demo profile the copilot is the `demo` adapter, rules in this process: a list question
+("show the failed VMs tagged environment=prod that drifted") is the list's filter, "create a vm
+called web-9" the create wizard with the image still missing, "restart web-01" its action, and an
+explanation is written from the facts.
+
 ## Service tokens (hub decision 23)
 
 The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
@@ -427,8 +480,8 @@ needs. `/internal` is never routed by the ingress. The demos keep their dev head
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
-`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `iam`,
-`preferences`, `platform`, `identity`, `demo`, and `common` for the error handling and the
+`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `assistant`,
+`iam`, `preferences`, `platform`, `identity`, `demo`, and `common` for the error handling and the
 service pass-through (`common.relay`) shared by every slice. Each slice is `domain` (no Spring),
 `ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
 service to the kit's rules and adds one of its own: only `..demo..` packages may depend on
@@ -436,7 +489,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 294 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 384 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).
@@ -445,8 +498,10 @@ database (CI starts one).
 
 `deploy/helm/console-bff` is the chart; `Dockerfile` builds the image from the boot jar. The chart
 expects a secret with the session secret, the trust key, the OIDC client secret, the platform's
-internal token and the MongoDB URI (see `values.yaml`). Run at least two replicas with the `mongo`
-profile, and the `kafka` profile where the console's Kafka is reachable. Service tokens are on by
-default (`config.serviceTokens`): set `kubernetes.issuer` to the cluster's service-account issuer
-(`kubectl get --raw /.well-known/openid-configuration`) and give each client's pods a projected
-service-account token with audience `console-bff`.
+internal token and the MongoDB URI, and optionally the copilot's Devin API key
+(`assistant-devin-api-key`; without it every copilot turn fails `assistant.unavailable`; see
+`values.yaml`). The pods need egress to `config.assistant.devinBaseUrl`. Run at least two replicas
+with the `mongo` profile, and the `kafka` profile where the console's Kafka is reachable. Service
+tokens are on by default (`config.serviceTokens`): set `kubernetes.issuer` to the cluster's
+service-account issuer (`kubectl get --raw /.well-known/openid-configuration`) and give each
+client's pods a projected service-account token with audience `console-bff`.

@@ -433,6 +433,116 @@ GET  /console/v1/jobs/{jobId}/explanation                     -> JobExplanation
   (`detail.status`) for a job that is neither `failed`, `rolled-back` nor `needs-attention`.
   `status` is `needs-attention` for a paused job, `failed` otherwise.
 
+## Copilot (phase 9)
+
+Hub PR #16 (decision 27; see Phase 9 above) adds the copilot's two operations. They are not in
+the pinned contract; this service serves them with that branch's shapes and with these details
+its text does not spell out. The copilot reads only what the person may read with their own
+session and never acts: what it proposes, the console opens for the person to review and run as
+usual.
+
+```
+POST /console/v1/assistant/turns   AssistantAsk  -> 202 { conversationId, turnId }
+GET  /console/v1/assistant/conversations/{conversationId}  -> 200 AssistantConversation
+```
+
+```yaml
+AssistantAsk:
+  conversationId: string    # optional: a new conversation when left out
+  intent: ask | explain
+  message: string           # required for ask; at most 2000 characters
+  context:                  # where the person is; optional for ask
+    path: string            # the console route, kept only when it starts with /console/
+    service: string
+    type: string
+    wfrn: string            # required for explain: the resource to explain
+    filter: SearchFilter    # the list's filter on the page
+
+AssistantConversation:
+  conversationId: string    # conv_<ulid>, lowercase
+  status: thinking | ready | failed   # the last assistant turn's: under way, answered, failed
+  startedAt: date-time
+  turns: [AssistantTurn]    # oldest first
+
+AssistantTurn:
+  turnId: string            # turn_<ulid>, lowercase
+  role: person | assistant
+  at: date-time             # when the turn reached its status
+  status: thinking | answered | failed   # assistant turns only
+  text: string              # the person's words, or the answer in plain sentences (no markup)
+  proposals: [AssistantProposal]          # at most 5; left out when none
+  explanation: ResourceExplanation       # explain turns
+  error: { code, message }  # failed turns: assistant.unavailable | assistant.timeout | assistant.refused
+
+AssistantProposal:          # what the console opens; nothing runs until the person confirms it there
+  kind: filter | create | action | open
+  label: string
+  service: string           # filter, create, action
+  type: string              # filter, create, action
+  filter: SearchFilter      # filter
+  sort: name | -name | created | -created | updated | -updated   # filter, optional
+  input: { <field>: value } # create, action: the form's fields the question gave
+  missing: [string]         # create, action: the form's required fields still empty
+  wfrn: string              # action
+  verb: string              # action
+  path: string              # open: a route under /console/
+
+ResourceExplanation:
+  wfrn: string
+  summary: string
+  sections: [{ title, text }]
+  facts:                    # read by the BFF itself, never taken from the assistant
+    monthlyCost: number     # the cost service's, left out when it answered none
+    currency: string
+    createdAt: date-time
+    createdBy: string
+    lastChangeAt: date-time
+    lastChangeBy: string
+    dependents: integer     # the blast radius's total, in every account
+    drift: boolean
+
+SearchFilter: { q, state, drift, region, tags: { <name>: <value> } }   # an empty value: has the tag
+```
+
+- The turn is answered in the background: `POST` stores the person's turn and an assistant turn
+  `thinking`, answers 202, and the console polls the conversation until that turn is `answered`
+  or `failed`. A turn not answered within `console.assistant.turn-timeout` (5 minutes) fails
+  `assistant.timeout`; one still `thinking` 30 seconds past that (its instance stopped) reads as
+  failed with that code. The assistant unreachable or erring is `assistant.unavailable`; a
+  refusal, or an answer with nothing the console can show, `assistant.refused`.
+- Every answer is reviewed against the person's own permissions before it is stored, and what
+  fails is dropped and logged: at most five proposals, of the four kinds; a `filter` over a type
+  the person may list (`<service>:list` on the type's pattern), reduced to `SearchFilter`'s fields
+  and values; a `create` of a type the person may create (`<service>:create`) with its input
+  reduced to the create form and `missing` worked out from it; an `action` on a resource of the
+  session's account and region that is there, with a verb the person may run on that wfrn; an
+  `open` of a route under `/console/` (no `..`, no scheme, no host). No proposal fills a secret
+  field. Text, labels and sections lose their HTML and Markdown, and a sentence stating a cost
+  other than the cost service's for the resource is dropped.
+- What the assistant gets is gathered with the person's session: the account and region with the
+  person's managed roles, the types the person may list or create with their create forms and the
+  verbs the person may run (forms without secret fields), the resources the question names, the
+  page's context, the conversation's last ten turns, and for `explain` the resource's detail,
+  activity (created, last change), blast radius, open drift finding and, through
+  `Costs.monthlyCost`, its monthly cost. The assistant never gets a credential and nothing in what
+  it gets lets it call the console.
+- 400 with `problems` (each at its `field` pointer): `required` or `enum` at `/intent`,
+  `required` or `length` (over 2000 characters) at `/message`, `required` at `/context/wfrn` for
+  `explain`, `conversation.full` at `/conversationId` once a conversation holds 50 questions.
+- 404: a conversation that is another person's, of another account or region, or started more
+  than `console.assistant.conversation-ttl` (24 hours) ago; a `context.wfrn` that is no wfrn or of
+  another account or region; for `explain`, a resource that is not there (one the person may not
+  read is the 403 with a Denial its own page answers).
+- 429 with `Retry-After` (seconds) and `retryAfter` past `console.assistant.turns-per-minute` (10)
+  turns of the person in any minute, across instances with the `mongo` profile. The failure
+  explainer's readings (below) count too.
+- The write needs the CSRF token, as every write under `/console/` does.
+- `GET /console/v1/jobs/{jobId}/explanation` (WP 9.2) asks the copilot about a failure class no
+  rule knows: the cause's title and the fix (with an input reduced to the workflow's form) are the
+  copilot's, the cause's detail stays the platform's message, and `source` is `assistant`. The
+  explanation waits `console.assistant.failure-wait` (5 seconds) for the reading and answers with
+  its rules meanwhile; the reading goes on and the next explanation of the same failure shows it.
+
 ## Session
 
 `Session.account` carries `roles` (the managed roles the person holds in the account) and
