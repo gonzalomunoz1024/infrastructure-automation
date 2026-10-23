@@ -129,9 +129,11 @@ function TypeList({ type, route, create }: { type: ConsoleType; route: Route; cr
       title={`No ${lower} yet`}
       message={purposeOf(type)}
       action={
-        <ActionButton decision={create} what={createTitle} phase={3} size="sm" variant="primary" icon="plus">
-          Create your first one
-        </ActionButton>
+        type.create ? (
+          <ActionButton decision={create} what={createTitle} verb="create" size="sm" variant="primary" icon="plus" onClick={() => navigate(pathFor('create', { service: type.service, type: type.name }))}>
+            Create your first one
+          </ActionButton>
+        ) : undefined
       }
     />
   )
@@ -156,9 +158,11 @@ function TypeList({ type, route, create }: { type: ConsoleType; route: Route; cr
             <Button icon="download" disabled={rows.length === 0} onClick={() => exportRows(rows)}>
               Export page
             </Button>
-            <ActionButton decision={create} what={createTitle} phase={3} variant="primary" icon="plus">
-              {createTitle}
-            </ActionButton>
+            {type.create && (
+              <ActionButton decision={create} what={createTitle} verb="create" variant="primary" icon="plus" onClick={() => navigate(pathFor('create', { service: type.service, type: type.name }))}>
+                {createTitle}
+              </ActionButton>
+            )}
           </>
         }
       />

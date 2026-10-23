@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { Button, CopyIconButton, EmptyState, Tag, cx, longDate, relativeTime, type DotKind, type Tone } from '@iaf/ui'
+import { Button, CopyIconButton, EmptyState, cx, longDate, relativeTime, type DotKind, type Tone } from '@iaf/ui'
+import { DotTag } from './DotTag'
 import { errorMessage, isApiErrorLike } from './errors'
 import type { CheckStatus, Effect } from './types'
 
@@ -121,13 +122,13 @@ export function ExternalLink({ href, children, className, ariaLabel }: { href: s
 
 const EFFECT_TONE: Record<Effect, Tone> = { create: 'accent', change: 'warning', delete: 'critical', read: 'neutral', none: 'neutral', unknown: 'neutral' }
 
-/** create / change / delete / read as a tinted capsule; delete is the only critical one. */
+/** create / change / delete / read as a capsule coloured by its dot (the console's decision 6: AA on both themes); delete is the only critical one. */
 export function EffectTag({ effect, size = 'sm' }: { effect: Effect | string; size?: 'sm' | 'md' }) {
   const e = (effect in EFFECT_TONE ? effect : 'unknown') as Effect
   return (
-    <Tag tone={EFFECT_TONE[e]} size={size} outline={e === 'unknown' || e === 'none'}>
+    <DotTag tone={EFFECT_TONE[e]} size={size}>
       {e}
-    </Tag>
+    </DotTag>
   )
 }
 

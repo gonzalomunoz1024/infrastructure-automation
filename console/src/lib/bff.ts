@@ -2,7 +2,7 @@ import { get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, BffConsoleType, BffRegion, ConsoleResource, DemoPerson, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, SearchHit, Suggestion } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
@@ -32,6 +32,16 @@ export interface ResourceListParams extends ListParams, ResourceFilters {
 export interface IamListParams extends ListParams {
   q?: string
 }
+
+export interface JobListParams extends ListParams {
+  wfrn?: string
+  status?: string
+  workflow?: string
+  requester?: string
+}
+
+/** The write headers with a caller-chosen Idempotency-Key: one key per form submission, kept across retries of the same body. */
+const keyed = (key?: string, version?: number) => ({ headers: { 'Idempotency-Key': key ?? idempotencyKey(), ...(version !== undefined ? { 'If-Match': String(version) } : {}) } })
 
 export const bff = {
   /* the session */
@@ -90,11 +100,27 @@ export const bff = {
     },
   },
 
-  /* resources, from the state service through the BFF: one page per call; counts by lifecycle state */
+  /*
+   * resources, from the state service through the BFF: one page per call, counts by lifecycle
+   * state; creates, updates and verbs (phase 3) answer 202 with the job that carries them out
+   */
   resources: {
     list: (type: string, params?: ResourceListParams) => page<ConsoleResource>(b(`/r/${enc(type)}`), params),
     /** how many match the filters, by lifecycle state; the counts stop at `cappedAt` */
     counts: (type: string, filters?: ResourceFilters) => get<ResourceCounts>(`${b(`/r/${enc(type)}:counts`)}${qs(filters)}`),
+    get: (type: string, wfrn: string) => get<ConsoleResourceDetail>(b(`/r/${enc(type)}/${enc(wfrn)}`)),
+    /** POST /r/{type}: the key is the form submission's, so a retry of the same body answers the first result (P-21) */
+    create: (type: string, body: CommandInput, key?: string) => request<CommandAccepted>('POST', b(`/r/${enc(type)}`), body, keyed(key)),
+    previewCreate: (type: string, body: CommandInput) => request<ConsolePreview>('POST', b(`/r/${enc(type)}:preview`), body),
+    /** PATCH /r/{type}/{wfrn}: only the type's mutable fields, through its update workflow */
+    update: (type: string, wfrn: string, body: CommandInput, key?: string, version?: number) => request<CommandAccepted>('PATCH', b(`/r/${enc(type)}/${enc(wfrn)}`), body, keyed(key, version)),
+    /** POST /r/{type}/{wfrn}:{verb}: a destructive verb needs `confirm: true` in the body */
+    run: (type: string, wfrn: string, verb: string, body: CommandInput, key?: string) => request<CommandAccepted>('POST', b(`/r/${enc(type)}/${enc(wfrn)}:${verb}`), body, keyed(key)),
+    preview: (type: string, wfrn: string, verb: string, body: CommandInput) => request<ConsolePreview>('POST', b(`/r/${enc(type)}/${enc(wfrn)}:${verb}:preview`), body),
+    activity: (type: string, wfrn: string, params?: ListParams) => page<ActivityEntry>(b(`/r/${enc(type)}/${enc(wfrn)}/activity`), params),
+    drift: (type: string, wfrn: string) => get<{ items: Finding[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/drift`)),
+    lineage: (type: string, wfrn: string) => get<{ resource: ResourceRef; nodes: ResourceRef[]; edges: { from: string; to: string; via?: string }[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/lineage`)),
+    setTags: (type: string, wfrn: string, tags: Record<string, string>) => request<Record<string, string>>('PUT', b(`/r/${enc(type)}/${enc(wfrn)}/tags`), tags, keyed()),
   },
   search: (params: { q: string; type?: string } & ListParams) => page<SearchHit>(b('/search'), params),
   suggest: (q: string, limit = 8) => get<{ items: Suggestion[] }>(`${b('/suggest')}${qs({ q, limit })}`),
@@ -110,6 +136,13 @@ export const bff = {
     get: (requestId: string) => get<AccessRequest>(b(`/access-requests/${enc(requestId)}`)),
     create: (body: AccessRequestInput) => request<AccessRequest>('POST', b('/access-requests'), body, writeHeaders()),
     decide: (requestId: string, body: { decision: 'approve' | 'reject'; comment?: string }) => request<AccessRequest>('POST', b(`/access-requests/${enc(requestId)}:decide`), body, writeHeaders()),
+  },
+
+  /* jobs as the BFF lists them, scoped to the session's account */
+  jobs: {
+    list: (params?: JobListParams) => page<BffJobSummary>(b('/jobs'), params),
+    get: (jobId: string) => get<BffJobDetail>(b(`/jobs/${enc(jobId)}`)),
+    cancel: (jobId: string, key?: string) => request<{ jobId: string; status: string }>('POST', b(`/jobs/${enc(jobId)}:cancel`), undefined, keyed(key)),
   },
 }
 

@@ -7,7 +7,7 @@ import { useMemo, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEve
  * off and the rest matched as usual. A wfrn in a path is one percent-encoded segment. No library.
  */
 
-export type RouteName = 'home' | 'signin' | 'service' | 'type' | 'resource' | 'requests' | 'request' | 'iam' | 'iam-users' | 'iam-user' | 'iam-groups' | 'iam-group' | 'iam-roles' | 'iam-role' | 'iam-keys' | 'iam-requests' | 'iam-request' | 'settings' | 'not-found'
+export type RouteName = 'home' | 'signin' | 'service' | 'type' | 'create' | 'resource' | 'requests' | 'request' | 'iam' | 'iam-users' | 'iam-user' | 'iam-groups' | 'iam-group' | 'iam-roles' | 'iam-role' | 'iam-keys' | 'iam-requests' | 'iam-request' | 'settings' | 'not-found'
 
 export interface RouteDef {
   name: RouteName
@@ -23,6 +23,8 @@ export const ROUTES: RouteDef[] = [
   { name: 'signin', pattern: '/signin', title: 'Sign in', bare: true },
   { name: 'service', pattern: '/console/:service', title: 'Service' },
   { name: 'type', pattern: '/console/:service/:type', title: 'Resources' },
+  // a static last segment outranks the wfrn of `resource` (resolve picks the most specific pattern)
+  { name: 'create', pattern: '/console/:service/:type/create', title: 'Create' },
   { name: 'resource', pattern: '/console/:service/:type/:wfrn', title: 'Resource' },
   { name: 'requests', pattern: '/requests', title: 'Requests' },
   { name: 'request', pattern: '/requests/:id', title: 'Request' },

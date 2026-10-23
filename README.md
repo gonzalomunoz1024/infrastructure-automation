@@ -8,7 +8,26 @@ This branch is shaped like the repository it will become: an npm workspace at th
 CI, no platform files. The hub branch `console-root` holds the plan, the decisions and the
 contracts this build pins.
 
-## What is here (phases 0, 1 and 3a)
+## What is here (phases 0, 1 and 3)
+
+Phase 3b makes the console change resources, with the request in view at every step:
+
+- a create wizard for every type a workflow creates, generated from the workflow's input schema:
+  a step per `x-console` group, checked a step at a time, then a review that shows what was asked
+  for, what the run will touch, what it costs a month and what policy says, before Create
+- a resource page that follows its request: a banner while it runs or waits for its approver, the
+  state as it settles, and once deleted the record kept readable until its tombstone ends; tabs for
+  the configuration (with the fields that drifted marked), drift, activity, relationships, tags,
+  permissions and the JSON
+- an Actions menu with the type's workflows: each opens a drawer that previews the run (its steps,
+  the resources it touches, the cost, policy's decision), takes a reason, and for a destructive one
+  asks for the resource's name; a workflow waits while another request changes the resource, and a
+  delete is held back by what was built from it
+- view as code on every wizard, drawer and record: the `iaf` CLI, the REST calls through the
+  console and the platform, a `WorkflowRun` manifest and JSON, with sensitive inputs masked
+- every failed call said in words with what to do next, empty states that say what a type is for,
+  and a getting-started tour on each service's page, written from what its providers publish
+- in mock mode, writes run on a clock (6 s to approve, 8 s to apply) and survive a reload
 
 Phase 3a makes the lists work at the size the console is built for, and the whole console usable
 with the keyboard alone:
@@ -55,15 +74,16 @@ Phase 0 built the shell and the read-only pages:
 - a development-only platform feed over server-sent events
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
-Nothing writes to the platform yet: every button that does so is shown and says which phase
-brings it.
+What the console does not do yet is still shown, and says which phase brings it: editing, tags,
+cloning, bulk actions and retrying a failed request in phase 4, drift's revert, accept and ignore
+in phase 5.
 
 ## Workspaces
 
 | Package                | Path                   | What it is                                                                                                                                      |
 | ---------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@iaf/console`         | `console/`             | The web app: React 19, Vite 8, TypeScript 5.9, Tailwind 4, Vitest, Playwright                                                                   |
-| `@iaf/console-kit`     | `packages/console-kit` | The console's composites: forks of the platform's SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList behind a provider, plus VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar and CursorPager |
+| `@iaf/console-kit`     | `packages/console-kit` | The console's composites: forks of the platform's SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList behind a provider, plus VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar, CursorPager, DotTag, CodeView and a labelled ConfirmDialog |
 | `@iaf/ui`              | `packages/ui`          | Atlas, the platform's design system, copied verbatim from the platform at `c9529d5`                                                             |
 | `@iaf/wfrn`            | `packages/wfrn`        | The TypeScript twin of the wfrn resource name, judged by the hub's fixtures                                                                      |
 
@@ -147,7 +167,7 @@ npm run lint              # eslint over every workspace
 npm run typecheck         # tsc -b in every workspace
 npm test                  # vitest in every workspace
 npm run build             # vite build
-npm run e2e               # the shell, identity, list and keyboard journeys in Playwright, in mock mode
+npm run e2e               # the shell, identity, list, keyboard and resources journeys in Playwright, in mock mode
 npm run contracts:verify  # the copied contracts still match contracts.lock
 ```
 
@@ -194,6 +214,9 @@ type, so the feed must subscribe to every one).
 1. **Atlas is vendored, verbatim, at `c9529d5`.** The platform does not publish it as a package
    yet (platform change P-14 does); copying it unchanged keeps the diff to that package empty.
    The console's only changes to Atlas are two token overrides in `console/src/index.css`.
+   Where Atlas falls short, the console forks the component into console-kit instead: the kit's
+   `ConfirmDialog` ties the type-to-confirm label to its input, which Atlas's does not (a screen
+   reader announced an unnamed field). A note for P-14.
 2. **The platform's composites are forked into `@iaf/console-kit`, behind a provider.** The
    platform's SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and
    ProblemList read the platform's API client directly; the forks read a `ConsoleKitProvider`
@@ -225,7 +248,8 @@ type, so the feed must subscribe to every one).
 6. **Status colour is in the dot.** `LifecycleBadge` (resource states) and `StatusBadge` (jobs
    and steps), both in console-kit, show a coloured dot next to a label in the primary text
    colour, instead of Atlas's `StateTag`, whose coloured text does not reach AA on its tints; the
-   kit's `StepTimeline` uses `StatusBadge` for the same reason. A note for P-14.
+   kit's `StepTimeline` uses `StatusBadge` for the same reason, and `DotTag` does the same for any
+   other word with a tone (a preview's effects and policy decision, drift, roles). A note for P-14.
 7. **wfrns are derived until the platform mints them.** A resource that carries a `wfrn` (P-05)
    is shown as named; one that does not gets a wfrn derived from the partition, region and
    account in the header plus its id, marked as derived (dimmed in lists, tagged on its page).
@@ -353,25 +377,82 @@ type, so the feed must subscribe to every one).
     page with `React.lazy`, under a quiet loading state, so the first load carries the shell and
     one page. "Skip to content", the first stop of the Tab order, focuses `#main`.
 
+25. **The create wizard is generated from the create workflow's schema.** The ungrouped fields
+    make the first step, each `x-console.group` a step of its own in schema order, then the review
+    (`console/src/pages/create/steps.ts`); the type's schema lends its `group`, `help` and
+    `sensitive` hints to the workflow's input where the input has none, so a provider that groups
+    its type gets the same wizard. Next checks the step and moves the focus to the first field that
+    needs attention, or to the next step's heading. The review asks the BFF for the preview (cost,
+    policy, the resources the run touches) and shows the request as code; Create sends one
+    Idempotency-Key per body (`lib/submission.ts`), so a second click or a retry starts one job.
+26. **The resource page reads two sources and keeps going on one.** The platform's record and
+    the BFF's view (`GET /console/v1/r/{type}/{wfrn}`) load side by side, and either alone draws
+    the page. While a request is open the page polls every 2.5 seconds and follows it to its end.
+    Drift is read as the contract gives it: `drift` (a boolean), the open `finding` and
+    `observedAt`; a resource no scan has read yet says "Not checked yet" rather than "In sync". A
+    410 is a tombstone (under `detail` from the BFF, at the top level from the state service): the
+    page says when it was deleted and until when it stays readable, and nothing runs on it.
+27. **Every workflow on a resource runs from one menu and one drawer.** The Actions menu is a
+    `MenuButton` (decision 22) of `ActionMenuItem`s, which follow `ActionButton`'s rules: denied
+    shows the lock and opens the refusal, a later phase says which, and while another request is
+    changing the resource (the BFF answers 409 unless it is active or failed) an item says it waits.
+    `?action=<verb>` opens the drawer from a link. The type's verbs leave out the workflow that
+    creates it (`lib/verbs.ts`: an image's build is its create, not something done to an image).
+    Destructive verbs sit beside the menu as buttons and confirm by name; a delete with live
+    dependents is refused by name (409 `dependents.exist`, agreed with the BFF for phase 4).
+28. **View as code shows the request, never a secret.** `lib/code.ts` writes the CLI as `iaf
+    <service> <verb>-<type> --field value`, the REST calls through the console and to the
+    platform, and the manifest as `apiVersion: iaf.platform/v1`, `kind: WorkflowRun`, the form
+    to keep in Git; a type's `sensitive` fields and the workflow's own are replaced by
+    `<sensitive: fill in>` before any of it is written. The kit's `CodeView` scrolls in a region
+    that takes the keyboard's focus, so the code reads without a mouse.
+29. **Failures are said in words, with what to do next.** `lib/plain.ts` turns a status and the
+    BFF's error code into a title and a next step (a 409 says something changed first and to
+    reload, a 429 how long to wait, a 504 that the request may still be running, so check the
+    requests before sending it again); problems go back to the fields they name; a refusal is
+    never explained here, the refusal dialog names the layer that decided.
+30. **Step-up keeps the person's place.** A 403 `step-up.required` (or any 403 whose detail says
+    `stepUp`) sends the browser to the BFF's `login` with `returnTo` set to the console's own hash
+    route, which the BFF cannot know (a Referer carries no fragment); the BFF accepts only paths
+    starting with `/`.
+31. **Getting-started tours are generated, not written.** `lib/tour.ts` orders a service's types
+    so a type comes after what its create needs (`x-resource` inputs), says what each create asks
+    for and what can be done afterwards, and ends with following requests and access. A new
+    provider's service gets a tour with no console change; the person can dismiss it per service.
+32. **The mock runs requests on a clock, from the same rows as the list.** `console/src/mock/
+    commands.ts` answers the BFF's creates, verbs, previews, tags, activity, drift, lineage and
+    jobs: an approval lands after 6 seconds, the apply 8 seconds later, a name with `fail` fails,
+    and every write goes into a journal the browser keeps and replays after a reload. Its rows are
+    the list's rows (`mock/resources.ts`) with the console's own requests laid over them, so the
+    list and the resource page show the same wfrn, account, state and drift. A resource younger
+    than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
+    review's quota rule and the Quotas card count `resources.<type>` with one function
+    (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journeys (shell, identity, list, keyboard), their helpers and
-                  screenshots
+  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources), their
+                  helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
-                  Refusal (the refusal dialog and ActionButton), MenuButton, Hint, access (the
-                  pending requests query), the router, the console context
+                  Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
+                  access (the pending requests query), commands (running a change and explaining
+                  its failure), CodeDisclosure, GettingStarted, the router, the console context
   src/lib/        api (fetch, traceparent, X-User, X-Csrf-Token, ETag cache, paging), bff (the
                   BFF client, sign-in, sign-out, switching), session, permissions, sse, queries,
                   descriptors, accounts, regions, recent, store, resourceList (the list's
                   filters, sorts, columns and counts), listState (the list in the query),
-                  preferences (saved views and columns), keyed, csv
-  src/mock/       the mock server (platform and BFF), the directory, the dataset and the browser
-                  installer, with the samples
+                  preferences (saved views and columns), keyed, csv, code (view as code), plain
+                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll
+  src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
+                  (resources) and the writes on a clock (commands), and the browser installer,
+                  with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
-                  src/pages/list/ the list's saved views menu and column chooser
+                  src/pages/list/ the list's saved views menu and column chooser,
+                  src/pages/create/ the wizard's steps, src/pages/resource/ the resource page's
+                  tabs, request banner and action drawer
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

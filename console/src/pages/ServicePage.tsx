@@ -2,8 +2,9 @@ import { useEffect } from 'react'
 import { Card, EmptyState, Icon, PageHeader, SkeletonRows, Stat, plural, type IconName } from '@iaf/ui'
 import { ErrorState } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
+import { GettingStarted } from '../app/GettingStarted'
 import { ActionButton } from '../app/Refusal'
-import { Link, pathFor, type PageProps } from '../app/router'
+import { Link, navigate, pathFor, type PageProps } from '../app/router'
 import { bff } from '../lib/bff'
 import { findService, purposeOf, singularOf, type ConsoleType } from '../lib/descriptors'
 import { encodeTokens } from '../lib/listState'
@@ -15,7 +16,8 @@ import type { ResourceState } from '../lib/types'
 /*
  * A service's landing page: one card per resource type with how many there are in each lifecycle
  * state (the BFF's counts, "1,000+" past its cap), each count a link to the list filtered to it;
- * or, when there are none yet, what the type is for and how to make the first.
+ * or, when there are none yet, what the type is for and how to make the first. Beside them, the
+ * service's getting-started tour, until the person dismisses it.
  */
 
 export default function ServicePage({ route }: PageProps) {
@@ -48,10 +50,13 @@ export default function ServicePage({ route }: PageProps) {
   return (
     <>
       <PageHeader eyebrow="Service" title={service.title} subtitle={`${plural(service.types.length, 'resource type')}, run by ${service.owners.join(' and ')}.`} />
-      <div className="space-y-6">
-        {service.types.map((t) => (
-          <TypeOverview key={t.name} type={t} />
-        ))}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+        <div className="min-w-0 space-y-6">
+          {service.types.map((t) => (
+            <TypeOverview key={t.name} type={t} />
+          ))}
+        </div>
+        <GettingStarted service={service} className="lg:sticky lg:top-6" />
       </div>
     </>
   )
@@ -107,9 +112,11 @@ function TypeOverview({ type }: { type: ConsoleType }) {
           title={`No ${lower} yet`}
           message={`${purpose} The first one appears here.`}
           action={
-            <ActionButton decision={decide(type, 'create')} what={createTitle} phase={3} size="sm" variant="primary" icon="plus">
-              Create your first one
-            </ActionButton>
+            type.create ? (
+              <ActionButton decision={decide(type, 'create')} what={createTitle} verb="create" size="sm" variant="primary" icon="plus" onClick={() => navigate(pathFor('create', { service: type.service, type: type.name }))}>
+                Create your first one
+              </ActionButton>
+            ) : undefined
           }
         />
       ) : (

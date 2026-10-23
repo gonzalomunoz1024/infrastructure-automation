@@ -62,7 +62,8 @@ describe('x-console keywords', () => {
 
   it('renders each widget: picker, slider, code and key-value', () => {
     const html = render()
-    expect(html).toContain('aria-label="Image"')
+    // a picker is named by its label and what it shows (WCAG 2.5.3)
+    expect(html).toContain('aria-label="Image: ')
     expect(html).toContain('images from the inventory')
     expect(html).toMatch(/<input[^>]*id="x-cpu"[^>]*type="range"/)
     expect(html).toContain('max="64"')
@@ -95,7 +96,9 @@ describe('x-console keywords', () => {
 
   it('links the help page by the field', () => {
     const html = render()
-    expect(html).toContain('aria-label="Help for Name"')
+    // the link's visible words are part of its name (WCAG 2.5.3)
+    expect(html).toContain('aria-label="Learn more about Name"')
+    expect(html).toContain('Learn more')
     expect(html).toContain('href="https://wiki.example.test/vm#name"')
     expect(html).toContain('target="_blank"')
   })

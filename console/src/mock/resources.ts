@@ -1,13 +1,14 @@
 import { lifecycleOf, type LifecycleClass } from '@iaf/console-kit'
 import { serviceOf } from '../lib/descriptors'
-import { RESOURCE_STATES, type ConsoleResource, type JobSummary, type Resource, type ResourceCounts, type ResourceState, type ResourceType, type SearchHit, type Suggestion } from '../lib/types'
+import { RESOURCE_STATES, type BffJobSummary, type ConsoleResource, type JobSummary, type Resource, type ResourceCounts, type ResourceState, type ResourceType, type SearchHit, type Suggestion } from '../lib/types'
 
 /*
  * The BFF's view of the platform's resources, for mock mode: `GET /console/v1/r/{type}` lists the
  * account's rows from the state service, `/search` and `/suggest` read the index. Here both are
  * computed from the captured platform samples: each resource belongs to one account (its owning
  * team's), carries a minted wfrn, and its provider status folds onto the lifecycle state. The
- * detail thread reuses `consoleResourceOf` for `GET /console/v1/r/{type}/{wfrn}`.
+ * resource page's routes (./commands) build on `consoleResourceOf` and lay what the console's own
+ * requests did over it, so a row and its page always agree.
  */
 
 export interface ResourceContext {
@@ -48,6 +49,33 @@ export function mintWfrn(r: Resource, rt: ResourceType | undefined, ctx: Resourc
   return `wfrn:${ctx.partition}:${service}:${ctx.region}:${ctx.accountId}:${segment(r.type)}/${id}`
 }
 
+/** A platform job as the BFF summarises it: the same fields, its id spelled `jobId`. */
+export function toBffJob(j: JobSummary): BffJobSummary {
+  return { jobId: j.id, workflow: j.workflow, status: j.status, title: j.title, version: j.version, requester: j.requester, wfrn: j.wfrn, startedAt: j.startedAt, endedAt: j.endedAt, durationMs: j.durationMs, kind: j.kind, progress: j.progress, errorClass: j.errorClass, failedStep: j.failedStep }
+}
+
+/** A field where what the provider reports differs from what was asked for. */
+export interface DriftedField {
+  path: string
+  expected: unknown
+  observed: unknown
+}
+
+/**
+ * The drift the samples carry, so the filter, the badge and the Drift tab have something to show:
+ * vm-demo02's memory was doubled by hand in vSphere, and every generated sample whose number ends
+ * in 7 runs two more CPUs than it asked for.
+ */
+export function driftOf(r: Resource): DriftedField[] {
+  const a = r.attributes ?? {}
+  if (r.id === 'vm-demo02') {
+    const expected = Number(a.memoryGb ?? 16)
+    return [{ path: 'memoryGb', expected, observed: expected * 2 }]
+  }
+  if (/-\d+7$/.test(r.id) && typeof a.cpu === 'number') return [{ path: 'cpu', expected: a.cpu, observed: a.cpu + 2 }]
+  return []
+}
+
 /** A platform resource as the BFF lists it. */
 export function consoleResourceOf(r: Resource, world: MockWorld, ctx: ResourceContext): ConsoleResource {
   const rt = world.resourceTypes.find((t) => t.name === r.type)
@@ -58,9 +86,9 @@ export function consoleResourceOf(r: Resource, world: MockWorld, ctx: ResourceCo
   if (r.visibility) tags.visibility = r.visibility
   const rawTags = attributes.tags
   if (rawTags && typeof rawTags === 'object' && !Array.isArray(rawTags)) for (const [k, v] of Object.entries(rawTags)) if (typeof v === 'string') tags[k] = v
-  const lastJob = r.createdBy?.jobId ? world.jobs.find((j) => j.id === r.createdBy.jobId) : undefined
-  // a few rows drift, so the filter and the badge have something to show: every seventh sample
-  const drift = /7$/.test(r.id)
+  const created = r.createdBy?.jobId ? world.jobs.find((j) => j.id === r.createdBy.jobId) : undefined
+  const drifted = driftOf(r)
+  const drift = drifted.length > 0
   return {
     wfrn: mintWfrn(r, rt, ctx),
     type: r.type,
@@ -70,18 +98,18 @@ export function consoleResourceOf(r: Resource, world: MockWorld, ctx: ResourceCo
     state: stateOf(r, rt),
     version: 1,
     attributes,
-    observed: drift ? { ...attributes, status: r.status, cpu: typeof attributes.cpu === 'number' ? attributes.cpu + 2 : attributes.cpu } : { status: r.status },
+    observed: drift ? { ...attributes, status: r.status, ...Object.fromEntries(drifted.map((f) => [f.path, f.observed])) } : { status: r.status },
     drift,
     tags,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt ?? r.createdAt,
-    lastJob,
+    lastJob: created ? toBffJob(created) : undefined,
   }
 }
 
-/** The account's rows of one type. */
-export function consoleResourcesOf(typeName: string, world: MockWorld, ctx: ResourceContext, accounts: readonly string[]): ConsoleResource[] {
-  return world.resources.filter((r) => r.type === typeName && accountOfResource(r, accounts) === ctx.accountId).map((r) => consoleResourceOf(r, world, ctx))
+/** The account's rows of one type; `rowOf` lets the server lay the console's own requests over each. */
+export function consoleResourcesOf(typeName: string, world: MockWorld, ctx: ResourceContext, accounts: readonly string[], rowOf: (r: Resource) => ConsoleResource = (r) => consoleResourceOf(r, world, ctx)): ConsoleResource[] {
+  return world.resources.filter((r) => r.type === typeName && accountOfResource(r, accounts) === ctx.accountId).map(rowOf)
 }
 
 function text(v: unknown): string {

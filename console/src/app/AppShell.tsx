@@ -23,6 +23,7 @@ const HomePage = lazy(() => import('../pages/HomePage'))
 const ServicePage = lazy(() => import('../pages/ServicePage'))
 const TypeListPage = lazy(() => import('../pages/TypeListPage'))
 const ResourceDetailPage = lazy(() => import('../pages/ResourceDetailPage'))
+const CreatePage = lazy(() => import('../pages/CreatePage'))
 const RequestsPage = lazy(() => import('../pages/RequestsPage'))
 const RequestPage = lazy(() => import('../pages/RequestPage'))
 const IamPage = lazy(() => import('../pages/IamPage'))
@@ -49,6 +50,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   signin: SignInPage,
   service: ServicePage,
   type: TypeListPage,
+  create: CreatePage,
   resource: ResourceDetailPage,
   requests: RequestsPage,
   request: RequestPage,

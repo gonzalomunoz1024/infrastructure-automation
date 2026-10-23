@@ -9,7 +9,8 @@ import { MANAGED_ROLES, ROLE_SUMMARY, roleLabel } from '../lib/session'
 import type { AccessRequest } from '../lib/types'
 import { useConsole } from './console'
 import { Hint } from './Hint'
-import { LaterButton } from './Phase'
+import { useCloseMenu } from './MenuButton'
+import { LaterButton, phaseNote } from './Phase'
 import { RoleTag } from './RoleTag'
 import { Link, pathFor } from './router'
 
@@ -250,10 +251,16 @@ export interface ActionButtonProps {
   className?: string
   children: string
   onClick?: () => void
+  /** a spinner in place of the icon while the action is being sent */
+  loading?: boolean
+  /** allowed, but not now (a form with problems, a policy that refuses) */
+  disabled?: boolean
+  /** a hook for tests and the menu: the verb the button runs */
+  verb?: string
 }
 
 /** An action as the decision allows it: live, greyed for a later phase, or locked with the refusal behind it. */
-export function ActionButton({ decision, what, phase, variant = 'secondary', size, icon, className, children, onClick }: ActionButtonProps) {
+export function ActionButton({ decision, what, phase, variant = 'secondary', size, icon, className, children, onClick, loading, disabled, verb }: ActionButtonProps) {
   const refusal = useRefusal()
   if (!decision.allowed && decision.denied) {
     const d = decision.denied
@@ -261,7 +268,7 @@ export function ActionButton({ decision, what, phase, variant = 'secondary', siz
     const note = `Not allowed: ${denialTitle(d)}. Select to see why.`
     return (
       <Hint label={note} className={className}>
-        <Button variant={variant} size={size} icon="lock" data-denied={d.layer} onClick={() => refusal.show({ denied: d, what })}>
+        <Button variant={variant} size={size} icon="lock" data-denied={d.layer} data-verb={verb} onClick={() => refusal.show({ denied: d, what })}>
           {children}
           <span className="sr-only">. {note}</span>
         </Button>
@@ -276,8 +283,76 @@ export function ActionButton({ decision, what, phase, variant = 'secondary', siz
     )
   }
   return (
-    <Button variant={variant} size={size} icon={icon} className={className} onClick={onClick}>
+    <Button variant={variant} size={size} icon={icon} className={className} onClick={onClick} loading={loading} disabled={disabled || loading} data-verb={verb}>
       {children}
     </Button>
+  )
+}
+
+export interface ActionMenuItemProps {
+  decision: Decision
+  /** what the item does, for the refusal's title */
+  what: string
+  /** the phase that brings it; until then the item says so and does nothing */
+  phase?: number
+  icon?: IconName
+  /** destructive: drawn in red */
+  danger?: boolean
+  /** one quiet line under the title */
+  description?: string
+  children: string
+  onSelect?: () => void
+  verb?: string
+  /** why the item cannot run right now (a change is in flight); it then says so and does nothing */
+  unavailable?: string
+}
+
+/**
+ * One item of a MenuButton's menu, under the same rules as ActionButton: a denied action shows
+ * its lock and opens the refusal, a later phase says which phase brings it, an unavailable one
+ * says why, anything else runs. Inert items stay in the menu's arrow order (aria-disabled), as
+ * the menu pattern asks; the menu closes, giving the focus back to its button, before anything
+ * opens, so a drawer or the refusal gives it back there too.
+ */
+export function ActionMenuItem({ decision, what, phase, icon, danger, description, children, onSelect, verb, unavailable }: ActionMenuItemProps) {
+  const refusal = useRefusal()
+  const close = useCloseMenu()
+  const denied = !decision.allowed && decision.denied ? decision.denied : null
+  const later = !denied && !!phase
+  const waiting = !denied && !later && !!unavailable
+  const inert = later || waiting
+  const note = denied ? `Not allowed: ${denied.reason}` : later ? phaseNote(phase!) : waiting ? unavailable : description
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      tabIndex={-1}
+      data-verb={verb}
+      data-denied={denied?.layer}
+      data-phase={later ? phase : undefined}
+      data-unavailable={waiting || undefined}
+      aria-disabled={inert || undefined}
+      onClick={() => {
+        if (denied) {
+          close()
+          refusal.show({ denied, what })
+          return
+        }
+        if (inert) return
+        close()
+        onSelect?.()
+      }}
+      className={cx(
+        'flex w-full items-start gap-2.5 px-3 py-2 text-left text-sm outline-none transition-colors',
+        'hover:bg-surface-secondary focus:bg-surface-secondary focus:ring-2 focus:ring-inset focus:ring-accent/60',
+        inert ? 'cursor-not-allowed text-secondary' : danger && !denied ? 'text-critical' : 'text-primary',
+      )}
+    >
+      <Icon name={denied ? 'lock' : (icon ?? 'play')} size={14} className={cx('mt-0.5 shrink-0', !danger && 'text-tertiary')} />
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium">{children}</span>
+        {note && <span className="mt-0.5 block text-caption text-tertiary">{note}</span>}
+      </span>
+    </button>
   )
 }
