@@ -372,11 +372,15 @@ export function newTagRow(key = '', value = ''): TagRow {
   return { id: `tag-row-${rowSeq}`, key, value }
 }
 
-/** A draft holding tags someone gave (a clone's): the required ones as set, the rest as rows. */
-export function draftOf(tags: Record<string, string>, required: readonly RequiredTag[]): TagsDraft {
+/** A draft holding tags someone gave (a clone's): the required ones as set (one that equals the create's field it copies keeps following it), the rest as rows. */
+export function draftOf(tags: Record<string, string>, required: readonly RequiredTag[], input: Record<string, unknown> = {}): TagsDraft {
   const keys = new Set(required.map((t) => t.key))
   const values = Object.fromEntries(Object.entries(tags).filter(([k]) => keys.has(k)))
-  return { values, edited: Object.keys(values), extra: Object.entries(tags).filter(([k]) => !keys.has(k)).map(([k, v]) => newTagRow(k, v)) }
+  const follows = (key: string) => {
+    const tag = required.find((t) => t.key === key)
+    return !!tag && !!inputFieldOf(tag) && tagDefault(tag, input) === values[key]
+  }
+  return { values, edited: Object.keys(values).filter((k) => !follows(k)), extra: Object.entries(tags).filter(([k]) => !keys.has(k)).map(([k, v]) => newTagRow(k, v)) }
 }
 
 /** A required tag's value in the form: what the person set, else its default. */

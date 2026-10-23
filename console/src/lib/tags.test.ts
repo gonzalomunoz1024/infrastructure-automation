@@ -127,6 +127,9 @@ describe('the create form’s tags', () => {
     expect(draft.values).toEqual({ owner: 'team-data' })
     expect(draft.edited).toEqual(['owner'])
     expect(draft.extra.map((r) => [r.key, r.value])).toEqual([['team', 'web']])
+    // a tag that equals the create's field it copies keeps following that field
+    expect(draftOf({ environment: 'prod' }, POLICY, { environment: 'prod' }).edited).toEqual([])
+    expect(draftOf({ environment: 'prod' }, POLICY, { environment: 'dev' }).edited).toEqual(['environment'])
     expect(andList(['Owner', 'Cost centre', 'Environment'])).toBe('Owner, Cost centre and Environment')
   })
 })

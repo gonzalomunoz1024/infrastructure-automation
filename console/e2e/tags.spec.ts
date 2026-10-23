@@ -251,6 +251,32 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(page.getByRole('tabpanel').getByRole('button', { name: /^Manage tags/ })).toHaveAttribute('data-denied', 'console-iam')
   })
 
+  test('a machine is copied in its own account: the wizard opens filled from it and creates the copy', async ({ page }) => {
+    // what the resource page's Create similar opens
+    await signInAs(page, /Continue as Gonzalo Munoz/, `/console/compute/vm/create?from=${encodeURIComponent(vmWfrn('vm-demo02'))}`)
+    const note = page.locator('[data-clone]')
+    await expect(note).toContainText('A copy of')
+    await expect(note.getByRole('link', { name: 'api-01' })).toBeVisible()
+    await expect(page.locator('#create-name')).toHaveValue('api-01-copy')
+    // another account of Gonzalo's is offered, locked with the reason the BFF gave
+    await expect(note.getByRole('group', { name: 'Create it in another account' }).getByRole('button', { name: /^Data/ })).toHaveAttribute('data-denied', 'platform')
+    await expectNoSeriousA11y(page, 'create wizard as a copy')
+    await page.screenshot({ path: shot('create-clone-desktop'), fullPage: true })
+
+    // the boot image and the tags come from the source; the account's defaults fill what it lacked
+    await page.getByRole('button', { name: 'Next' }).click()
+    await expect(page.getByRole('button', { name: selectNamed('Image id') })).toContainText(/ubuntu-24\.04-cis-l1/)
+    await page.getByRole('button', { name: 'Next' }).click()
+    await expect(page.getByRole('heading', { name: 'Tags', level: 2, exact: true })).toBeFocused()
+    await expect(page.locator('#create-tag-owner')).toHaveValue('team-compute')
+    await expect(page.locator('#create-tag-cost-centre')).toHaveValue('cc-1042')
+    await expect(page.getByRole('button', { name: 'Environment: dev' })).toBeVisible()
+    await expect(page.locator('[data-tag-row="visibility"]')).toBeVisible()
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.locator('form [data-verb="create"]').click()
+    await expect(page.getByRole('heading', { name: 'api-01-copy', level: 1 })).toBeVisible()
+  })
+
   test('the Tags step and the Tags drawer fit a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await signInAs(page, /Continue as Dana Reyes/, '/console/compute')
