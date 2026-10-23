@@ -41,7 +41,7 @@ final class ContractSchemas {
      * {@code #/components/schemas/...} resolve; the document's own root (an AsyncAPI {@code id}, the
      * OpenAPI paths) is left out, since it is not a schema.
      */
-    private static JsonSchema schema(String resource, String pointer) {
+    static JsonSchema schema(String resource, String pointer) {
         try (InputStream in = ContractSchemas.class.getClassLoader().getResourceAsStream(resource)) {
             JsonNode document = YAML.readTree(in);
             ObjectNode root = YAML.createObjectNode();
