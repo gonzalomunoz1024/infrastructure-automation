@@ -36,7 +36,7 @@ info:
     `drift.findings`, `<type>:<accountId>:<budgetId>:<version>` on `cost.events` (a threshold crossed is
     `<type>:<accountId>:<budgetId>:<period>-<threshold>`, a chargeback month `<type>:<accountId>:<month>:<version>`)
     and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
-    subject id is the account, policy, role, group, user, key or quota id). A producer that retries
+    subject id is the account, policy, role, group, user, key, quota, access request or guardrail id). A producer that retries
     publishes the same key; a re-emitted event gets a new `id` and the same `key`.
 
     **Partitions.** `state.resources` and `drift.findings` are partitioned by `wfrn`, so one
@@ -131,6 +131,7 @@ channels:
       accessKeyChanged: { $ref: '#/components/messages/accessKeyChanged' }
       quotaChanged: { $ref: '#/components/messages/quotaChanged' }
       accessRequestChanged: { $ref: '#/components/messages/accessRequestChanged' }
+      guardrailChanged: { $ref: '#/components/messages/guardrailChanged' }
     bindings:
       kafka:
         topic: identity.changes
@@ -535,6 +536,18 @@ components:
             properties:
               type: { const: AccessRequestChanged }
               aggregate: { const: access-request }
+    guardrailChanged:
+      name: GuardrailChanged
+      title: An organization guardrail began, changed or stopped applying to the account
+      summary: 'One event per account the guardrail touches (`context.accountId`); `deleted` where it no longer applies. The account''s authorization version moves with it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: GuardrailChanged }
+              aggregate: { const: guardrail }
     budgetChanged:
       name: BudgetChanged
       title: A budget was created, changed or deleted
@@ -727,7 +740,7 @@ components:
         - type: object
           required: [data]
           properties:
-            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request], description: The subject kind }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request, guardrail], description: The subject kind }
             aggregateId: { type: string, description: The subject id (the accountId for an account) }
             data:
               type: object
