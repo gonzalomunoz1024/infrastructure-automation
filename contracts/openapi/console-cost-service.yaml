@@ -430,7 +430,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: "The BFF's internal ES256 JWT (iss console-bff, aud console-cost-service), a person's (acct) or a service token (svc, no acct)"
+      description: "The BFF's internal ES256 JWT (iss console-bff, verified against its `/.well-known/jwks.json`): `aud` exactly `console-cost-service` (decision 35: a token naming another audience, or more than one, is a 401), a person's (`acct`, `roles`) or a service token (`svc` equal to `sub`, no `acct`), which this service accepts only from the service principals it lists as allowed to call it as themselves (decision 35): `console-bff` for every route, `console-drift-service` for the price lists and `POST /v1/cost:estimate` only"
   parameters:
     AccountId:
       name: accountId
