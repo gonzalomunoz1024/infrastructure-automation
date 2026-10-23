@@ -1289,7 +1289,7 @@ components:
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
         roles:
           type: array
-          description: The managed roles the person holds in the account (Viewer, Operator, Admin, Auditor)
+          description: 'The managed role names the person holds in the account: viewer, operator, account-admin, auditor (shown as Viewer, Operator, Admin, Auditor)'
           items: { type: string }
         groups:
           type: array

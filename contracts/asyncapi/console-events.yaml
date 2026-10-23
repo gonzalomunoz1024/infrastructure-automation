@@ -45,11 +45,12 @@ info:
     opens a resource in `pending`; `UpdateRequested` makes it `updating`; `DeleteRequested` makes it
     `deleting`. The three job events are the same types whatever the job: `ProvisioningStarted`
     keeps the state it finds (`pending`, `updating` or `deleting`); `ProvisioningSucceeded` makes a
-    created or updated resource `active` and a deleted one `deleted`; `ProvisioningFailed` makes a
-    created resource `failed` and returns an updated or deleted one to `active` (the resource is
-    still there as it was), with the failure in `data`. `Deleted` is the tombstone (`GET
-    /v1/wfrn/{wfrn}` answers 410 for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete
-    job or the platform retiring the resource; `Imported` opens a resource straight in `active`;
+    created or updated resource `active`; `ProvisioningFailed` makes a created resource `failed`
+    and returns an updated or deleted one to `active` (the resource is still there as it was),
+    with the failure in `data`. A succeeded delete job is recorded as `Deleted` alone, never as a
+    `ProvisioningSucceeded` first: `Deleted` is the tombstone (`GET /v1/wfrn/{wfrn}` answers 410
+    for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete job or the platform retiring
+    the resource; `Imported` opens a resource straight in `active`;
     `Observed`, `DriftDetected`, `DriftResolved` and `Tagged` change the resource's observed truth,
     drift flag and tags without changing its state. `data.state` on every event is the state after
     it, so a consumer never needs the table above.

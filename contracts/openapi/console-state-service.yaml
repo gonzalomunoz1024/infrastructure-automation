@@ -178,7 +178,7 @@ paths:
     get:
       operationId: getResource
       summary: Get a resource by wfrn
-      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had); `reveal=sensitive` answers the sensitive fields in clear instead of masked, for the console-internal principal and for a BFF call made for an account admin, and is ignored otherwise.'
+      description: 'The current record; `asOf` rebuilds it as it was at that version from its log (404 for a version it never had); `reveal=sensitive` answers the sensitive fields in clear instead of masked, for an internal principal (`svc` without `acct`) and for a person whose `roles` claim holds `account-admin`, and is ignored otherwise.'
       tags: [Resources]
       parameters:
         - name: asOf
@@ -420,7 +420,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: The console's internal JWT (issued by the identity service), with `sub`, `acct` (the console account), `region`, `groups` and `svc` (the calling service)
+      description: "The console's internal JWT, minted by the identity service: `sub` (the person, or the service), `acct` (the console account; absent on a service's own call), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there: `viewer`, `operator`, `account-admin`, `auditor`) and `svc` (the calling service). Admin-only decisions test `roles` for `account-admin`, never a group name."
   parameters:
     WfrnPath:
       name: wfrn

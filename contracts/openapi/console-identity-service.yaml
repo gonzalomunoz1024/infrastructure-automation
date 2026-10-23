@@ -23,6 +23,14 @@ info:
     `authorize` decision carries), 404 unknown or out of scope, 409 a conflict (a name in use, a
     version mismatch), 429 over a quota.
 
+    **Managed IAM.** Every account is born with four managed roles, `viewer`, `operator`,
+    `account-admin` and `auditor` (shown as Viewer, Operator, Admin and Auditor), their policies,
+    and four groups that hold them: `viewers`, `members` (operator; the account's owning identity
+    provider team joins it at sign-in), `owners` (account-admin) and `auditors`. Managed roles keep
+    their names and policies; `owners` keeps the account-admin role and at least one member. The
+    internal JWT the identity service mints carries the person's `groups` and `roles`, so every
+    service decides admin-only things on `roles` containing `account-admin`, never on a group name.
+
     **Names and ids.** The console's own IAM records are wfrns too, in the `iam` service with an
     empty region (they live in no region) and kebab-case kinds: `user`, `group`, `role`, `policy`,
     `access-key`, `quota`, `access-request`, as in
@@ -169,7 +177,7 @@ paths:
     post:
       operationId: createAccount
       summary: Create an account
-      description: Internal principal only. Mints the twelve-digit account id, creates the owners group and the `account-admin` role, and asks the platform for the account's console service account (P-03).
+      description: Internal principal only. Mints the twelve-digit account id, creates the four managed roles and their groups (`owners` holds `account-admin`), and asks the platform for the account's console service account (P-03).
       tags: [Accounts]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1049,7 +1057,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: The console's internal JWT, with `sub`, `acct` (the console account), `groups` and `svc` (the calling service)
+      description: "The console's internal JWT, minted by the identity service: `sub` (the person, or the service), `acct` (the console account; absent on a service's own call), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there: `viewer`, `operator`, `account-admin`, `auditor`) and `svc` (the calling service). Admin-only decisions test `roles` for `account-admin`, never a group name."
     bundleToken:
       type: http
       scheme: bearer
@@ -1200,7 +1208,7 @@ components:
           items: { type: string }
         roles:
           type: array
-          description: The managed role names the person holds there (Viewer, Operator, Admin, Auditor)
+          description: 'The managed role names the person holds there: viewer, operator, account-admin, auditor'
           items: { type: string }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
     User:

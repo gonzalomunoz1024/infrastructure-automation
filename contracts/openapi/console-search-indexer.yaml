@@ -194,7 +194,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: The console's internal JWT, with `sub`, `acct` and `svc`
+      description: "The console's internal JWT, minted by the identity service: `sub` (the person, or the service), `acct` (the console account; absent on a service's own call), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there: `viewer`, `operator`, `account-admin`, `auditor`) and `svc` (the calling service). Admin-only decisions test `roles` for `account-admin`, never a group name."
   parameters:
     AccountId:
       name: accountId
