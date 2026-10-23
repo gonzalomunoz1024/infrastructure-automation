@@ -221,6 +221,8 @@ test.describe('identity and access in mock mode', () => {
     await expect(pending).toContainText('80 asked by you')
     await quotas.getByRole('button', { name: 'Withdraw the request for more access keys' }).click()
     await expect(quotas.getByRole('button', { name: 'Request an increase of access keys' })).toBeVisible()
+    // one resources quota per resource type, named by the type
+    await expect(quotas.locator('[data-quota="resources.vm"]')).toContainText(/Virtual machines: \d+ of \d+/)
 
     // the account picker: gonzalo is also admin of Data
     await page.getByRole('button', { name: /^Account: Compute/ }).click()

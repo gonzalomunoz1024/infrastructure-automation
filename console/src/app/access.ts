@@ -10,16 +10,20 @@ import { useConsole } from './console'
  * overview and the access requests page read the same query, so they agree and refetch together.
  * Reading the account's requests takes access-request:list, which the account-admin and auditor
  * policies grant and any group an admin gives it (the approver groups). The identity service
- * answers anyone else with their own requests only (and 403 when they ask for someone else's),
- * so the hook knows the queue is readable from the roles that read it, or from what came back:
- * someone else's request, or one that names this person among its approvers. What a person may
- * decide is narrower: the pending requests that name them among the approvers, other than their own.
+ * answers anyone else's list with their own requests only, and refuses them someone else's with
+ * a 403, so the hook asks once for the requests of a requester nobody is: a 200 says the person
+ * reads the queue, a 403 that they see their own only. What a person may decide is narrower: the
+ * pending requests that name them among the approvers, which never name the requester.
  */
 
 export const PENDING_KEY = (accountId: string, userId: string, roles: readonly string[]) => ['access-requests', 'pending', accountId, userId, [...roles].sort().join(',')] as const
+const READABLE_KEY = (accountId: string, userId: string, roles: readonly string[]) => ['access-requests', 'readable', accountId, userId, [...roles].sort().join(',')] as const
 
-/** the managed roles whose policies read the account's requests */
+/** the managed roles whose policies read the account's requests: no need to ask */
 const READING_ROLES: readonly string[] = [ADMIN_ROLE, 'auditor']
+
+/** a requester no person is (user ids never hold a tilde): asking for their requests tells a reader from everyone else */
+export const PROBE_REQUESTER = '~someone-else'
 
 /** the queues that answered 403, by the key above, so the hook stops polling them */
 const refused = new Set<string>()
@@ -57,22 +61,33 @@ export function useAccessRequestQueue({ enabled = true }: { enabled?: boolean } 
     },
     { enabled, refetchInterval: enabled && !refused.has(id) ? 30_000 : undefined },
   )
+  const reads = useQuery<boolean>(READABLE_KEY(account.id, userId, roles), () => readsQueue(roles, (params) => bff.accessRequests.list(params)), { enabled })
   const pending = q.data?.items ?? []
   return {
     pending,
     toDecide: pending.filter((r) => mayDecide(r, userId)),
-    readable: q.data ? readsQueue(roles, userId, q.data) : null,
-    loading: q.loading,
-    error: q.error,
-    refetch: q.refetch,
+    readable: q.data?.refused ? false : (reads.data ?? null),
+    loading: q.loading || reads.loading,
+    error: q.error ?? reads.error,
+    refetch: async () => {
+      await Promise.all([q.refetch(), reads.refetch()])
+    },
   }
 }
 
-/** Whether the answer shows the account's queue rather than only the person's own requests. */
-export function readsQueue(roles: readonly string[], userId: string, answer: { items: readonly AccessRequest[]; refused: boolean }): boolean {
-  if (answer.refused) return false
+/**
+ * Whether the person reads the account's queue rather than only their own requests: one of the
+ * managed roles that read it, or a 200 to a list of someone else's requests (a 403 says no).
+ */
+export async function readsQueue(roles: readonly string[], list: (params: { requester: string; limit: number }) => Promise<unknown>): Promise<boolean> {
   if (roles.some((r) => READING_ROLES.includes(r))) return true
-  return answer.items.some((r) => r.requester.userId !== userId || (r.approvers ?? []).includes(userId))
+  try {
+    await list({ requester: PROBE_REQUESTER, limit: 1 })
+    return true
+  } catch (e) {
+    if (isApiError(e) && e.status === 403) return false
+    throw e
+  }
 }
 
 /** A request this person may decide: pending, naming them among its approvers, and not their own. */

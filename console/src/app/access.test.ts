@@ -1,24 +1,30 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../lib/api'
 import type { AccessRequest } from '../lib/types'
-import { mayDecide, readsQueue } from './access'
+import { PROBE_REQUESTER, mayDecide, readsQueue } from './access'
 
 const request = (requester: string, approvers: string[], status: AccessRequest['status'] = 'pending'): AccessRequest => ({ requestId: `areq_${requester}`, accountId: '1', requester: { userId: requester }, action: 'compute:create', role: 'operator', status, requestedAt: '2026-10-23T09:00:00Z', approvers })
 
 describe('the access request queue', () => {
-  it('is readable to the roles that read it, or when the answer shows more than the person’s own', () => {
-    expect(readsQueue(['account-admin'], 'gonzalo', { items: [], refused: false })).toBe(true)
-    expect(readsQueue(['auditor'], 'ann', { items: [], refused: false })).toBe(true)
-    // the identity service answers anyone else with their own requests only
-    expect(readsQueue(['operator'], 'mateo', { items: [], refused: false })).toBe(false)
-    expect(readsQueue(['operator'], 'mateo', { items: [request('mateo', ['gonzalo'])], refused: false })).toBe(false)
-    // someone else's request, or one naming the person among its approvers
-    expect(readsQueue(['viewer', 'approver'], 'mia', { items: [request('dana', ['gonzalo', 'mia'])], refused: false })).toBe(true)
-    expect(readsQueue(['viewer', 'approver'], 'mia', { items: [request('mia', ['dana', 'gonzalo', 'mia'])], refused: false })).toBe(true)
-    expect(readsQueue(['account-admin'], 'gonzalo', { items: [], refused: true })).toBe(false)
+  it('is readable to the managed roles that read it, without asking', async () => {
+    const list = vi.fn(() => Promise.resolve({ items: [] }))
+    await expect(readsQueue(['account-admin'], list)).resolves.toBe(true)
+    await expect(readsQueue(['auditor', 'viewer'], list)).resolves.toBe(true)
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it('asks for someone else’s requests otherwise: a 200 reads the queue, a 403 sees only their own', async () => {
+    const reader = vi.fn(() => Promise.resolve({ items: [] }))
+    await expect(readsQueue(['viewer', 'approver'], reader)).resolves.toBe(true)
+    expect(reader).toHaveBeenCalledWith({ requester: PROBE_REQUESTER, limit: 1 })
+    const refused = () => Promise.reject(new ApiError(403, { error: 'no policy allows access-request:list' }))
+    await expect(readsQueue(['operator'], refused)).resolves.toBe(false)
+    // anything else is an error to show, not an answer
+    await expect(readsQueue(['operator'], () => Promise.reject(new ApiError(503, { error: 'identity unavailable' })))).rejects.toThrow('identity unavailable')
   })
 
   it('lets a person decide a pending request naming them, never their own', () => {
-    expect(mayDecide(request('mia', ['dana', 'mia']), 'dana')).toBe(true)
+    expect(mayDecide(request('mia', ['dana']), 'dana')).toBe(true)
     expect(mayDecide(request('mia', ['dana', 'mia']), 'mia')).toBe(false)
     expect(mayDecide(request('mia', ['dana']), 'gonzalo')).toBe(false)
     expect(mayDecide(request('mia', ['dana'], 'approved'), 'dana')).toBe(false)

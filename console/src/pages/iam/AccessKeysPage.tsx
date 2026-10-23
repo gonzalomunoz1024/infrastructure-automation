@@ -5,6 +5,7 @@ import { useConsole } from '../../app/console'
 import { Link, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
+import type { ConsoleType } from '../../lib/descriptors'
 import type { AccessKey, AccessKeyCreated, IamUser, Quota, QuotaRequest } from '../../lib/types'
 import { KeyStatusTag, personLabel, useIamWrite } from './common'
 
@@ -40,7 +41,8 @@ function quotaTone(q: Quota): ProgressTone {
 }
 
 export default function IamAccessKeysPage({ route }: PageProps) {
-  const { account, me, admin } = useConsole()
+  const { account, me, admin, services } = useConsole()
+  const types = useMemo(() => services.flatMap((s) => s.types), [services])
   const write = useIamWrite()
   const filterUser = admin ? route.query.user || '' : ''
   // a person's own keys, or for an admin everyone's (or one person's)
@@ -134,7 +136,7 @@ export default function IamAccessKeysPage({ route }: PageProps) {
           ) : (
             <ul className="space-y-4" aria-label="Quotas">
               {(quotas.data?.items ?? []).map((q) => (
-                <QuotaItem key={q.key} quota={q} onAsk={setAsking} />
+                <QuotaItem key={q.key} quota={q} title={quotaTitle(q.key, types)} onAsk={setAsking} />
               ))}
               {quotas.data && quotas.data.items.length === 0 && <li className="text-caption text-tertiary">No quotas apply.</li>}
             </ul>
@@ -153,18 +155,18 @@ export default function IamAccessKeysPage({ route }: PageProps) {
         />
       )}
       {shown && <SecretDialog created={shown.key} rotated={shown.rotated} onClose={() => setShown(null)} />}
-      {asking && <QuotaIncreaseDialog quota={asking} onClose={() => setAsking(null)} />}
+      {asking && <QuotaIncreaseDialog quota={asking} title={quotaTitle(asking.key, types)} onClose={() => setAsking(null)} />}
       {confirm?.kind === 'revoke' && <ConfirmDialog title={`Revoke ${confirm.key.keyId}?`} tone="danger" icon="trash" confirmLabel="Revoke" onClose={() => setConfirm(null)} onConfirm={() => revoke(confirm.key)} message="Anything using this key is refused from now on. This cannot be undone; create a new key instead if it is still needed." />}
       {confirm?.kind === 'rotate' && <ConfirmDialog title={`Rotate ${confirm.key.keyId}?`} tone="warning" icon="refresh" confirmLabel="Rotate" onClose={() => setConfirm(null)} onConfirm={() => rotate(confirm.key)} message="A new secret is issued for the same key id. The old secret keeps working for a short grace period so you can switch clients over." />}
     </>
   )
 }
 
-/** 'resources.compute' → 'Compute resources'; 'jobs-per-minute' → 'Jobs per minute'. */
-export function quotaTitle(key: string): string {
+/** 'resources.vm' → the type's title, 'Virtual machines' (a type the console does not know: 'Resources of type vm'); 'jobs-per-minute' → 'Jobs per minute'. */
+export function quotaTitle(key: string, types: readonly Pick<ConsoleType, 'name' | 'title'>[] = []): string {
   if (key.startsWith('resources.')) {
-    const service = key.slice('resources.'.length)
-    return `${service.charAt(0).toUpperCase()}${service.slice(1)} resources`
+    const name = key.slice('resources.'.length)
+    return types.find((t) => t.name === name)?.title ?? `Resources of type ${name}`
   }
   return quotaLabel(key)
 }
@@ -175,17 +177,16 @@ export function suggestedLimit(limit: number): number {
   return Math.max(limit + 1, Math.ceil((limit * 1.5) / step) * step)
 }
 
-function QuotaItem({ quota: q, onAsk }: { quota: Quota; onAsk: (q: Quota) => void }) {
+function QuotaItem({ quota: q, title, onAsk }: { quota: Quota; title: string; onAsk: (q: Quota) => void }) {
   const { account, me, admin } = useConsole()
   const write = useIamWrite()
   const pendingId = q.pendingRequestId
   const pending = useQuery<QuotaRequest>(['iam', 'quota-requests', account.id, pendingId ?? 'none'], () => bff.iam.quotaRequests.get(pendingId!), { enabled: !!pendingId })
   const [busy, setBusy] = useState(false)
   const r = pending.data
-  const title = quotaTitle(q.key)
   const withdraw = async (request: QuotaRequest) => {
     setBusy(true)
-    await write('Withdraw a quota request', () => bff.iam.quotaRequests.withdraw(request.requestId).then(() => true), { title: 'Request withdrawn', message: `${title} keeps its limit of ${q.limit.toLocaleString()}.` })
+    await write('Withdraw a quota request', () => bff.iam.quotaRequests.withdraw(request.requestId).then(() => true), { title: 'Request withdrawn', message: `The quota for ${title.toLowerCase()} keeps its limit of ${q.limit.toLocaleString()}.` })
     setBusy(false)
   }
   return (
@@ -215,9 +216,8 @@ function QuotaItem({ quota: q, onAsk }: { quota: Quota; onAsk: (q: Quota) => voi
   )
 }
 
-function QuotaIncreaseDialog({ quota: q, onClose }: { quota: Quota; onClose: () => void }) {
+function QuotaIncreaseDialog({ quota: q, title, onClose }: { quota: Quota; title: string; onClose: () => void }) {
   const write = useIamWrite()
-  const title = quotaTitle(q.key)
   const [limit, setLimit] = useState(String(suggestedLimit(q.limit)))
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
