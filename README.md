@@ -17,6 +17,14 @@ Phase 4 changes resources in place, safely:
   provider reports, a preview, the request as code, and a stale version caught before it lands
 - before a delete, what depends on the resource, in words and nearest first, and a delete refused
   while anything does
+- the request page on the BFF's job: a step that failed pauses the request, which offers the ways
+  on its policies allow (retry the step, retry with changes and the step to run from, skip it,
+  abort), with what went wrong in words; its approvals are decided there in one call, and a
+  request that ended badly runs again as a new one
+- bulk actions on a list's selection, as one request in waves: the workflow's own waves, two
+  waves or all at once, how many at a time and the share of failures that stops it; the drawer
+  shows the waves it makes of these rows, names the rows that cannot run and leaves them out in
+  one click, and the request page follows every wave and row
 
 Phase 4 adds tags and resource groups, across every type of the account and region:
 
@@ -95,9 +103,8 @@ Phase 0 built the shell and the read-only pages:
 - a development-only platform feed over server-sent events
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
-What the console does not do yet is still shown, and says which phase brings it: tags,
-cloning, bulk actions and retrying a failed request in phase 4, drift's revert, accept and ignore
-in phase 5.
+What the console does not do yet is still shown, and says which phase brings it: drift's revert,
+accept and ignore in phase 5.
 
 ## Workspaces
 
@@ -449,6 +456,35 @@ type, so the feed must subscribe to every one).
     than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
     review's quota rule and the Quotas card count `resources.<type>` with one function
     (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+33. **A request is read from the BFF's job alone, and steered by its `can`.** The request page
+    reads `GET /console/v1/jobs/{jobId}` and nothing from the platform: the job's `can` decides
+    each choice it shows (cancel, retry, skip, abort), its `attention` names the paused step and
+    the ways on the platform offers, its `approvals` are decided in one call
+    (`approvals:decide`, what was left said with why), and a bulk run's `batch` lists its waves
+    and rows. A paused job retried goes on in place; an ended one runs again as a new request,
+    which the page opens. Retry with changes sends only the fields changed (the BFF merges them
+    over the job's input) and the step only when it differs from where the retry starts anyway; a
+    create keeps its name, and a bulk run takes no changes. Each pause gets its own
+    Idempotency-Key, so a second retry of a step is not the first one replayed. What went wrong
+    is one card (`FailureCard`), so a fuller explanation can take its place.
+34. **A bulk run is one request in waves, judged row by row before it is sent.** The list's
+    selection runs any verb with a batch route (create aside). The rollout is the workflow's own
+    unless the person changes it: kept, the request names none and the BFF applies its own;
+    changed, it is sent whole, its waves always ending at 100%, so the waves the drawer shows
+    ("3, then 10, then 37 rows") are the ones that run. `:batch:preview` judges every row: the
+    ones that cannot run as they are are named with why and left out in one click; what depends
+    on the rows is shown for a delete or a destructive verb only. An input every row answers from
+    its own attributes (a VM's environment) stays each row's, never flattened to one value; a
+    workflow with a reason of its own takes it in its form. A destructive verb asks for the verb
+    and the count typed out (`delete 12`).
+35. **The mock steers jobs by the BFF's own rules.** `console/src/mock/jobs.ts` follows the BFF's
+    `Jobs.can` and `JobRetries`: cancel is open to any job still running (paused ones too) under
+    `jobs:cancel`, a retry asks the target workflow's own action, failed, rolled-back and paused
+    jobs run again but a cancelled one does not, and a batch reruns only its failed rows. A step
+    fails on cue: a create named with `fail` fails its first run, and any other verb whose
+    `reason` contains `fail` fails until a retry's change removes it. A wave whose prod rows wait
+    is approved by a person (one decision a wave) or, after 6 seconds, by the platform's own
+    approver; a rerun keeps the job it retries in the mock's own state (`retryOf`).
 36. **A delete shows what depends on the resource first, and is refused while anything does.** The
     preview of a delete or a destructive verb carries its blast radius (what was built from it, up
     to three steps away; `byAccount` counts what lives in other accounts and never names it), and

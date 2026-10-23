@@ -101,6 +101,23 @@ export function deciderOf(by: string): string {
 
 const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
+const COUNT_WORDS: Record<string, [one: string, many: string]> = {
+  pending: ['waits for its wave', 'wait for their wave'],
+  'waiting-approval': ['waits for an approver', 'wait for an approver'],
+  queued: ['waits for a free slot', 'wait for a free slot'],
+  running: ['running', 'running'],
+  succeeded: ['succeeded', 'succeeded'],
+  failed: ['failed', 'failed'],
+  cancelled: ['cancelled', 'cancelled'],
+  skipped: ['not run', 'not run'],
+}
+
+/** A count of rows in one status, as a phrase: "1 row waits for its wave", "47 rows wait for their wave". */
+export function countLine(status: string, count: number): string {
+  const words = COUNT_WORDS[status]
+  return `${count} ${count === 1 ? 'row' : 'rows'} ${words ? words[count === 1 ? 0 : 1] : status.replace(/-/g, ' ')}`
+}
+
 /** What a row's status says in words, for the rows' table. */
 export const ROW_WORDS: Record<string, string> = {
   pending: 'Waits for its wave',

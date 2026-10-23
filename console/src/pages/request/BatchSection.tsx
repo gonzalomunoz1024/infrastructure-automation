@@ -1,11 +1,11 @@
-import { ProgressBar, Tag, plural, type Tone } from '@iaf/ui'
+import { ProgressBar, plural } from '@iaf/ui'
 import { Section, StatusBadge, VirtualTable, When, WfrnText, type VirtualColumn } from '@iaf/console-kit'
 import { pathOfWfrn } from '../../app/console'
 import { Link, href, pathFor } from '../../app/router'
 import type { ConsoleType } from '../../lib/descriptors'
 import { describeRollout, rolloutOf } from '../../lib/rollout'
 import type { BatchRow, BatchWave, BffJobDetail } from '../../lib/types'
-import { ROW_WORDS, rowCounts } from './parts'
+import { ROW_WORDS, countLine, rowCounts } from './parts'
 
 /*
  * A bulk run (WP 4.2): how far it got, the rollout in words, its waves in order, why it stopped
@@ -13,7 +13,8 @@ import { ROW_WORDS, rowCounts } from './parts'
  * its resource once its wave released it.
  */
 
-const WAVE_TONE: Record<string, Tone> = { pending: 'neutral', 'waiting-approval': 'warning', running: 'accent', succeeded: 'healthy', failed: 'critical', stopped: 'neutral' }
+// a wave's status as the status word whose tone it shares (StatusBadge keeps its label at AA)
+const WAVE_STATUS: Record<string, string> = { pending: 'queued', 'waiting-approval': 'waiting-approval', running: 'running', succeeded: 'succeeded', failed: 'failed', stopped: 'cancelled' }
 const WAVE_WORDS: Record<string, string> = { pending: 'Not released yet', 'waiting-approval': 'Waits for approvers', running: 'Running', succeeded: 'Succeeded', failed: 'Rows failed', stopped: 'Stopped' }
 
 export function BatchSection({ job, types }: { job: BffJobDetail; types: ConsoleType[] }) {
@@ -62,9 +63,7 @@ export function BatchSection({ job, types }: { job: BffJobDetail; types: Console
         <ProgressBar value={done} max={Math.max(1, total)} tone={failed ? 'critical' : job.status === 'succeeded' ? 'healthy' : 'accent'} label={`${done} of ${total} rows done${failed ? `, ${failed} failed` : ''}`} showLabel showValue />
         <p className="flex flex-wrap gap-x-3 gap-y-1 text-caption text-secondary" aria-label="Rows by status">
           {counts.map((c) => (
-            <span key={c.status}>
-              {plural(c.count, 'row')} {(ROW_WORDS[c.status] ?? c.status).toLowerCase()}
-            </span>
+            <span key={c.status}>{countLine(c.status, c.count)}</span>
           ))}
         </p>
       </div>
@@ -94,9 +93,7 @@ function WaveItem({ wave, count }: { wave: BatchWave; count: number }) {
         <span className="font-medium text-primary">
           Wave {wave.index + 1} of {count}
         </span>
-        <Tag size="sm" tone={WAVE_TONE[wave.status] ?? 'neutral'} dot>
-          {WAVE_WORDS[wave.status] ?? wave.status}
-        </Tag>
+        <StatusBadge size="sm" status={WAVE_STATUS[wave.status] ?? wave.status} label={WAVE_WORDS[wave.status] ?? wave.status} />
       </div>
       <p className="mt-1 text-caption text-secondary">
         {plural(wave.size, 'row')}, up to {wave.percent}% of the run

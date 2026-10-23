@@ -87,7 +87,8 @@ export function BulkDrawer({ type, action, rows, onClose, onAccepted }: BulkDraw
   const planned = plannedRollout(rollout, ownRollout, n)
   const input = useMemo(() => cleanInput(value), [value])
   const items = kept.map((r) => ({ wfrn: r.wfrn, input: rowInputOf(action.input, subject, own, r.attributes) }))
-  const body = batchBodyOf(action.verb, items, input, rollout, reason)
+  const ownReason = !!action.input.properties?.reason
+  const body = batchBodyOf(action.verb, items, input, rollout, ownReason ? undefined : reason)
   const complete = isComplete(schema, value) && n > 0 && n <= max && rolloutFields.length === 0
   const debounced = useDebounce(JSON.stringify(body), 350)
   const preview = useQuery(['batch-preview', type.name, debounced], () => bff.resources.previewBatch(type.name, JSON.parse(debounced) as typeof body), { enabled: complete })
@@ -96,7 +97,8 @@ export function BulkDrawer({ type, action, rows, onClose, onAccepted }: BulkDraw
   const decision = decide(type, action.verb)
   const policy = judged?.policy.decision
   const blocked = unrunnable.length > 0 || policy === 'deny'
-  const affected = judged?.affected
+  // what depends on the rows matters to a delete or a destructive verb; a restart leaves them standing
+  const affected = action.verb === 'delete' || action.destructive ? judged?.affected : undefined
 
   const send = async (confirm: boolean) => {
     const payload = confirm ? { ...body, confirm: true } : body
@@ -187,9 +189,12 @@ export function BulkDrawer({ type, action, rows, onClose, onAccepted }: BulkDraw
               </p>
             </fieldset>
 
-            <Field label="Reason" htmlFor="bulk-reason" hint="Optional. It stays with the request and every row’s activity." error={fieldError('/reason')}>
-              <Textarea id="bulk-reason" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-            </Field>
+            {/* a workflow with a reason of its own takes it in its form; the request's reason would say it twice */}
+            {!ownReason && (
+              <Field label="Reason" htmlFor="bulk-reason" hint="Optional. It stays with the request and every row’s activity." error={fieldError('/reason')}>
+                <Textarea id="bulk-reason" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+              </Field>
+            )}
           </form>
 
           <section aria-label="What will happen" className="mt-6">

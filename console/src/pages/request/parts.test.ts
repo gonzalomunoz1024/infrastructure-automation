@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BffJobDetail } from '../../lib/types'
-import { childrenOf, decidedLine, deciderOf, defaultFromStep, failureOf, retryFixOf, rowCounts } from './parts'
+import { childrenOf, countLine, decidedLine, deciderOf, defaultFromStep, failureOf, retryFixOf, rowCounts } from './parts'
 
 const steps = [
   { id: 'validate', name: 'Validate', type: 'validate', status: 'succeeded' },
@@ -82,6 +82,13 @@ describe('a bulk run’s rows', () => {
       { status: 'failed', count: 1 },
       { status: 'odd', count: 1 },
     ])
+  })
+
+  it('says each count in a phrase that agrees with it', () => {
+    expect(countLine('pending', 47)).toBe('47 rows wait for their wave')
+    expect(countLine('pending', 1)).toBe('1 row waits for its wave')
+    expect(countLine('succeeded', 50)).toBe('50 rows succeeded')
+    expect(countLine('rolled-back', 2)).toBe('2 rows rolled back')
   })
 
   it('pairs a request’s child jobs with the step timeline by their ids', () => {
