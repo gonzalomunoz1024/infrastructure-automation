@@ -65,6 +65,9 @@ class ResourcesEndpointTest extends DemoApp {
             String etag = detail.headers().getETag();
             assertNotNull(etag, "the detail carries the state service's ETag");
             assertEquals(304, console.getAt(VM + "/{wfrn}", gonzalo, Map.of("If-None-Match", etag), wfrn).status());
+            assertTrue(etag.startsWith("\"" + detail.json().path("version").asText() + "."), "the ETag leads with the state version, for If-Match: " + etag);
+            assertEquals(200, console.getAt(VM + "/{wfrn}", gonzalo, Map.of("If-None-Match", "\"" + detail.json().path("version").asText() + "\""), wfrn).status(),
+                    "the state version alone is not the page's ETag, as the page's last job may have moved on");
 
             Console.Reply list = console.get(VM + "?q=web-09", gonzalo);
             assertEquals(200, list.status(), list.body());

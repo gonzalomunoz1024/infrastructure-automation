@@ -208,15 +208,17 @@ public class Resources {
                 .onErrorResume(e -> e instanceof NotFoundException || e instanceof GoneException, e -> Mono.empty());
     }
 
-    /** One resource, as {@code <service>:get} on its wfrn allows. */
+    /**
+     * One resource, as {@code <service>:get} on its wfrn allows. Its ETag is
+     * {@code "<version>.<digest>"}: the state service's version, which {@code If-Match} on an update
+     * is checked against, and a digest of the whole page, so a 304 never hides a last job, jobs,
+     * lineage or verbs that moved on while that version stood.
+     */
     public Mono<Detail> get(Session session, String type, String wfrn, String ifNoneMatch) {
         return types.byType(session, type).flatMap(t -> {
             checkName(session, t, wfrn);
             return access.require(session, AccessCheck.action(t.service(), GET_VERB), wfrn)
-                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, ifNoneMatch))).flatMap(answer -> {
-                if (answer.notModified()) {
-                    return Mono.just(new Detail(null, answer.etag(), true));
-                }
+                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, null))).flatMap(answer -> {
                 StateResource r = answer.resource();
                 return Mono.zip(can(session, t, r), recentJobs(session, r), lineageOf(session, r)).map(tuple -> {
                     List<String> can = tuple.getT1();
@@ -226,7 +228,9 @@ public class Resources {
                     FindingView finding = FindingView.of(r, findingCan(can));
                     List<ResourceRef> builtFrom = lineage.map(l -> refs(l.builtFrom())).orElse(List.of());
                     List<ResourceRef> dependents = lineage.map(l -> refs(l.dependents())).orElse(List.of());
-                    return new Detail(ResourceView.detail(r, lastJob, finding, jobs, builtFrom, dependents, can), answer.etag(), false);
+                    ResourceView view = ResourceView.detail(r, lastJob, finding, jobs, builtFrom, dependents, can);
+                    String etag = pageETag(r.version(), view);
+                    return new Detail(view, etag, etag.equals(ifNoneMatch == null ? null : ifNoneMatch.replace("W/", "").trim()));
                 });
             });
         });
@@ -1096,9 +1100,20 @@ public class Resources {
                 List.of(Problem.error("confirm.required", "/confirm", "set confirm to true to run " + action.verb())));
     }
 
+    /** A resource page's ETag: the state version, then a digest of everything the page shows. */
+    private String pageETag(Long version, ResourceView view) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(view));
+            return "\"" + version + "." + java.util.HexFormat.of().formatHex(digest, 0, 8) + "\"";
+        } catch (java.security.NoSuchAlgorithmException | com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("the resource page's ETag could not be computed", e);
+        }
+    }
+
     private static void requireState(StateResource r, String ifMatch, String... allowed) {
         if (ifMatch != null && !ifMatch.isBlank()) {
-            String version = ifMatch.replace("\"", "").replace("W/", "").trim();
+            // a page's ETag is "<version>.<digest>"; only the version is compared
+            String version = ifMatch.replace("\"", "").replace("W/", "").trim().split("\\.", 2)[0];
             if (!version.equals(String.valueOf(r.version()))) {
                 throw new ConflictException("the resource moved on to version " + r.version(), Map.of("version", r.version()));
             }
