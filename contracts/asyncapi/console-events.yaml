@@ -712,8 +712,8 @@ components:
       required: [workflow]
       properties:
         retryOf: { type: string, description: The failed job the retry follows }
-        workflow: { type: string, description: The workflow the retry runs, the create workflow unless the request named another }
-        jobId: { type: string, description: The rerun job, when it was started before the retry was recorded }
+        workflow: { type: string, description: 'The workflow the retry runs, the create workflow unless the request named another' }
+        jobId: { type: string, description: 'The rerun job, when it was started before the retry was recorded' }
     DeletedData:
       type: object
       required: [tombstoneUntil]
