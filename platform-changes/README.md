@@ -126,7 +126,7 @@ relies on the change.
 | P-21 | Idempotency for every verb: `DELETE` and `PATCH`, capacity sized to peak, context headers in the fingerprint | `gateway` | Phase 2 | 60 |
 | P-23 | Moving a registry record to another account: `POST /resources/{id}:rehome` with the new wfrn and account, old wfrns kept as aliases | `resources`, `audit` | Phase 7 | 60 |
 
-Total: about 2,065 agent minutes. Sections 5 and 6 cover how they split into pull requests and
+Total: about 2,125 agent minutes. Sections 5 and 6 cover how they split into pull requests and
 what each one risks for existing callers.
 
 ## 3. Rules every change follows
@@ -1376,7 +1376,7 @@ callers. The lanes show what can run in parallel. The console team opens none of
 
 P-17 rides with each PR. PR 10 should go first in lane D after PR 4, because it closes a data
 exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 720 minutes. With
-four lanes the whole set is about 2,065 minutes of work done in roughly 900 minutes of elapsed
+four lanes the whole set is about 2,125 minutes of work done in roughly 900 minutes of elapsed
 working time.
 
 ## 6. Compatibility: what existing callers see
