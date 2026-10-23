@@ -486,7 +486,50 @@ To be written with WP 9.5.
 
 ### Cost and budgets (55 to 59)
 
-To be written with WP 7.3 and 9.3.
+55. **The Cost Explorer is a link.** Everything it shows lives in its URL: the range (a preset, or
+    custom days), the granularity, the grouping, the service, type and tag filters, the scope, one
+    resource's wfrn and chart or table (`#/cost?range=3m&groupBy=tag:environment`), so a view is
+    shared by pasting it and the CSV is the table on screen. Ranges are UTC days, as the cost
+    service closes them: month to date and the last 30 days go by day, three and twelve months by
+    month, and a custom range by day up to 62 days and by month beyond, until the person picks
+    otherwise. A grouping draws its seven largest by name and folds the rest into Other, as the
+    cost service's `top` does, and every figure says it is an estimate from list prices, never an
+    invoice.
+56. **What no price covers counts as nothing, and says so.** The ledger charges only what a price
+    list prices, and only while a resource is active, updating or deleting; the explorer counts the
+    rest as Not priced and names their types, and a resource's page says "Not priced" with the
+    reason behind its info button. A group's points are the steps of its rounded running total, so
+    the days add up to the total to the cent, and the explorer, budgets, the chargeback and the
+    executive home read one ledger (`mock/cost.ts`) and never disagree. The forecast is the month
+    so far plus the run rate for the days left, its likely range taken from the last 14 closed
+    days.
+57. **Budgets read the same ledger and block in the create review.** A budget's spent and forecast
+    are the explorer's numbers for its scope, the account or one tag's value. A budget that blocks
+    creates and is over adds a `deny` rule `budget.exceeded` to a create's preview, naming itself
+    and carrying its `budgetId`, and one the new resource would push over adds a `warn`; a create
+    sent anyway answers 409 `budget.exceeded` with the budgets in `detail.budgets`. Creating is an
+    admin's (`adminOnly`, as the BFF gives no `can.create`), while editing and deleting follow each
+    budget's `can`; a change carries `If-Match` (400 without it), and a 409 `version.conflict` says
+    someone changed it first and loads their version into the drawer. Alerts arrive as
+    `budget.alert` events and refresh the budgets.
+58. **A closed month's chargeback is a file you can check.** The chargeback needs `cost:export` and
+    shows a month by cost centre, account, service and, on request, a tag's value, with the
+    subtotals finance reads. A month is final once it has closed: published once with the SHA-256
+    of its CSV and never restated, so a rate changed later never rewrites what finance received;
+    the current month is provisional and grows. Download saves the cost service's CSV byte for byte
+    (UTF-8, CRLF, no byte order mark) and the browser hashes it with `crypto.subtle` before saying
+    it matches; an organization export names the accounts it left out (`skippedAccounts`,
+    `X-Console-Skipped-Accounts`).
+59. **A group keeps its colour, from one validated palette.** The series take an eight-slot
+    categorical palette in a fixed order (`packages/console-kit/src/palette.ts`), checked for
+    colour-blind separation of neighbouring slots and for contrast against both surfaces, with dark
+    steps of its own; three light slots fall under 3:1 on white, one more reason a chart of two
+    series or more names them in a legend and every chart has a table view. The folded rest is
+    Other in the tertiary ink, and a filter that drops a group never repaints the others.
+    `StackedBarChart` is one keyboard stop whose arrows, Home and End step a column at a time, each
+    saying its values. Where cost is a side note (a resource's "Monthly cost", the home's widget) a
+    refusal leaves it out rather than showing a lock; the explorer, budgets and chargeback show the
+    refusal with its "See why".
 
 ### The copilot (60 to 64)
 
